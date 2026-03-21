@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import delete, select
 
 from app.db.session import SessionLocal
@@ -166,6 +168,88 @@ def test_patch_character_noop_payload_is_stable(client) -> None:
 
 def test_patch_character_returns_404_for_unknown_character(client) -> None:
     response = client.patch("/api/characters/99999999", json={"sync_enabled": False})
+    assert response.status_code == 404
+
+
+def test_track_character_structure_updates_accessible_structure(client) -> None:
+    session = SessionLocal()
+    try:
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+
+        user = User(primary_character_id=None)
+        session.add(user)
+        session.flush()
+        character = EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1",
+            sync_enabled=True,
+        )
+        session.add(character)
+        session.flush()
+        user.primary_character_id = character.id
+        session.add(
+            CharacterAccessibleStructure(
+                character_id=character.id,
+                structure_id=1022734985680,
+                structure_name="Jita Freeport",
+                system_name="Jita",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 11, 0, tzinfo=UTC),
+                tracking_enabled=False,
+                polling_tier="user",
+                last_snapshot_at=None,
+                confidence_score=0.42,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post("/api/characters/90000042/structures/1022734985680/track")
+    assert response.status_code == 200
+    assert response.json()["message"] == "Enabled tracking for structure 1022734985680 via character 90000042."
+
+    detail = client.get("/api/characters/90000042/structures")
+    assert detail.status_code == 200
+    assert detail.json()[0]["tracking_enabled"] is True
+
+
+def test_track_character_structure_returns_404_for_missing_character_or_access(client) -> None:
+    response = client.post("/api/characters/99999999/structures/1022734985680/track")
+    assert response.status_code == 404
+
+    session = SessionLocal()
+    try:
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+
+        user = User(primary_character_id=None)
+        session.add(user)
+        session.flush()
+        character = EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1",
+            sync_enabled=True,
+        )
+        session.add(character)
+        session.flush()
+        user.primary_character_id = character.id
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post("/api/characters/90000042/structures/1022734985680/track")
     assert response.status_code == 404
 
 

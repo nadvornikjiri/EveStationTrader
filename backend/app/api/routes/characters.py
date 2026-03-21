@@ -53,4 +53,9 @@ def get_character_structures(character_id: int) -> list[AccessibleStructureItem]
 
 @router.post("/{character_id}/structures/{structure_id}/track", response_model=MessageResponse)
 def track_structure(character_id: int, structure_id: int) -> MessageResponse:
+    try:
+        CharacterService().enable_character_structure_tracking(character_id, structure_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     return MessageResponse(message=f"Enabled tracking for structure {structure_id} via character {character_id}.")

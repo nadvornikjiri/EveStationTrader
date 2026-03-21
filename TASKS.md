@@ -450,6 +450,23 @@ Priority rationale:
 - Mismatches:
   - only the shared `sync_enabled` flag is persisted; granular sync toggles remain future work
 
+### T07C - Persisted Character Structure Tracking Flag
+
+- Status: `DONE`
+- Objective: make `POST /api/characters/{id}/structures/{structure_id}/track` persist the character-scoped tracking flag instead of returning a stub message.
+- Dependencies:
+  - T07A
+- Acceptance criteria:
+  - the route resolves the target by public EVE `character_id`
+  - tracking an accessible structure persists `tracking_enabled=True` on `character_accessible_structures`
+  - repeated track requests are deterministic and idempotent
+  - missing characters or inaccessible structures fail deterministically instead of returning a success stub
+  - deterministic backend tests cover first-time tracking, idempotent re-track behavior, and missing-character or missing-structure behavior
+- Implementation mapping:
+  - the structure-track route now persists `tracking_enabled=True` on the matching accessible-structure row and reuses the same value on repeat calls
+- Mismatches:
+  - this packet only persists the character-scoped tracking flag; shared tracked-structure pool updates remain future work
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`

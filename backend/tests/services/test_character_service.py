@@ -175,3 +175,30 @@ def test_update_character_sync_enabled_raises_none_for_missing_character() -> No
     service = CharacterService(session_factory=lambda: session)
 
     assert service.update_character_sync_enabled(90000042, True) is None
+
+
+def test_enable_character_structure_tracking_sets_flag_and_is_idempotent() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    tracked_structure = service.enable_character_structure_tracking(90000042, 1022734985680)
+    assert tracked_structure.tracking_enabled is True
+
+    tracked_structure_again = service.enable_character_structure_tracking(90000042, 1022734985680)
+    assert tracked_structure_again.tracking_enabled is True
+
+    detail = service.get_character(90000042)
+    assert detail.structures[0].tracking_enabled is True
+
+
+def test_enable_character_structure_tracking_raises_for_missing_character_or_structure() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    with pytest.raises(LookupError, match="90000099"):
+        service.enable_character_structure_tracking(90000099, 1022734985680)
+
+    with pytest.raises(LookupError, match="1022734985799"):
+        service.enable_character_structure_tracking(90000042, 1022734985799)

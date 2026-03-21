@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07C`
+- title: Persisted Character Structure Tracking Flag
+- status: `PASS`
+- summary: persisted `tracking_enabled=True` for accessible structures, added idempotent re-track behavior, and covered missing-character and missing-access cases in backend tests.
+
+## 2026-03-21
+
 - task id: `T07B`
 - title: Persisted Character Sync Toggle Updates
 - status: `PASS`

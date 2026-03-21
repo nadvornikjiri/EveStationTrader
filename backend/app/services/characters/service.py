@@ -12,6 +12,30 @@ class CharacterService:
     def __init__(self, *, session_factory: Callable[[], Session] = SessionLocal) -> None:
         self.session_factory = session_factory
 
+    def enable_character_structure_tracking(self, character_id: int, structure_id: int) -> CharacterAccessibleStructure:
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                raise LookupError(f"Character {character_id} was not found.")
+
+            structure = session.scalar(
+                select(CharacterAccessibleStructure).where(
+                    CharacterAccessibleStructure.character_id == character.id,
+                    CharacterAccessibleStructure.structure_id == structure_id,
+                )
+            )
+            if structure is None:
+                raise LookupError(f"Structure {structure_id} is not accessible for character {character_id}.")
+
+            if not structure.tracking_enabled:
+                structure.tracking_enabled = True
+            session.commit()
+            session.refresh(structure)
+            return structure
+        finally:
+            session.close()
+
     def update_character_sync_enabled(self, character_id: int, sync_enabled: bool | None) -> EsiCharacter | None:
         session = self.session_factory()
         try:
