@@ -253,6 +253,41 @@ Priority rationale:
 - Mismatches:
   - server-side filtering and additional trade filters remain unimplemented
 
+### T05D - Trade Page Item Detail Selection
+
+- Status: `DONE`
+- Objective: connect the existing item-detail API to the trade page so the lower-right execution context panel reflects the currently selected opportunity row.
+- Dependencies:
+  - T05B
+  - T05C
+- Acceptance criteria:
+  - the trade page selects a deterministic default item row from the filtered/sorted result set
+  - changing the selected item row requeries item detail for the selected `(target, source, type, period)` scope
+  - the detail panel renders API-backed order rows and key metrics for the selected item
+  - selection resets safely when target/source/filter changes remove the previously selected item
+  - frontend tests cover default detail loading, row-driven detail changes, and selection reset behavior
+- Likely files/modules:
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/components/trade/ItemDetailPanel.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- Out of scope:
+  - live order-book realism beyond the existing detail endpoint payload
+  - backend-side item-detail analytics changes
+  - keyboard-navigation polish for row selection
+- Test hints:
+  - mock item-detail responses for multiple items
+  - verify the default selected row loads detail on first render
+  - verify selecting a different row updates the rendered detail panel
+  - verify target/source changes reset detail selection to an available item
+- Implementation mapping:
+  - the trade page now tracks selected item state and queries the item-detail endpoint for the active row
+  - the item table exposes deterministic row selection and the detail panel renders API-backed order rows plus summary metrics
+- Mismatches:
+  - the item-detail endpoint still returns placeholder order stacks rather than live CCP order-book data
+
 ## T06 - Sync Operations Dashboard
 
 - Status: `PARTIAL`

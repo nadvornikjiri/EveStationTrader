@@ -1,5 +1,37 @@
 ## 2026-03-21
 
+- task id: `T05D`
+- title: Trade Page Item Detail Selection
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 1, 14, 15, 17.2
+- acceptance criteria covered:
+  - the trade page now selects a deterministic default item from the filtered item-result set
+  - selecting a different item row requeries item detail for the active target, source, type, and period scope
+  - the execution-context panel now renders API-backed order rows and key metrics for the selected item
+  - item selection resets safely when control changes remove the currently selected row
+  - frontend tests cover default detail loading, row-driven detail changes, and selection reset behavior
+- files changed:
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/types/trade.ts`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/components/trade/ItemDetailPanel.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+  - `TASKS.md`
+- short implementation summary: Connected the trade-page item table to the existing item-detail API so the execution-context panel now follows the selected opportunity instead of remaining static scaffold text.
+- important decisions:
+  - the selected item defaults to the first row in the current filtered-and-sorted item list
+  - selection resets automatically whenever filters or source/target changes remove the currently selected row
+  - the detail panel intentionally renders the backend-provided placeholder order stacks without changing the backend contract
+- open follow-ups:
+  - add keyboard and screen-reader friendly row-selection controls beyond pointer-based row clicks
+  - replace placeholder order rows with live order-book-derived detail when ingestion exists
+  - add item-detail loading and empty-state polish beyond the current lightweight panel states
+
+## 2026-03-21
+
 - task id: `T05C`
 - title: Trade Page Controls And Client-Side Filtering
 - status: `PASS`

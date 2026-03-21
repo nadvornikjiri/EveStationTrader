@@ -8,6 +8,7 @@ import { TradePage } from "./TradePage";
 const mockUseTargets = vi.fn();
 const mockUseSourceSummaries = vi.fn();
 const mockUseOpportunityItems = vi.fn();
+const mockUseOpportunityItemDetail = vi.fn();
 
 vi.mock("../hooks/useTradeData", () => ({
   useTargets: () => mockUseTargets(),
@@ -15,17 +16,17 @@ vi.mock("../hooks/useTradeData", () => ({
     mockUseSourceSummaries(targetLocationId, periodDays),
   useOpportunityItems: (targetLocationId: number | null, sourceLocationId: number | null, periodDays: number) =>
     mockUseOpportunityItems(targetLocationId, sourceLocationId, periodDays),
+  useOpportunityItemDetail: (
+    targetLocationId: number | null,
+    sourceLocationId: number | null,
+    typeId: number | null,
+    periodDays: number,
+  ) => mockUseOpportunityItemDetail(targetLocationId, sourceLocationId, typeId, periodDays),
 }));
 
 const targets = [
   { location_id: 1, name: "Jita", location_type: "npc_station", region_name: "The Forge", system_name: "Jita" },
-  {
-    location_id: 3,
-    name: "Perimeter Keepstar",
-    location_type: "structure",
-    region_name: "The Forge",
-    system_name: "Perimeter",
-  },
+  { location_id: 3, name: "Perimeter Keepstar", location_type: "structure", region_name: "The Forge", system_name: "Perimeter" },
 ];
 
 const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>> = {
@@ -146,6 +147,25 @@ const itemRows = [
   },
 ];
 
+const itemDetailsByType = {
+  34: {
+    type_id: 34,
+    item_name: "Tritanium",
+    target_market_sell_orders: [{ price: 120, volume: 12, order_value: 1440, cumulative_volume: 12 }],
+    source_market_sell_orders: [{ price: 100, volume: 10, order_value: 1000 }],
+    source_market_buy_orders: [{ price: 95, volume: 15, order_value: 1425 }],
+    metrics: itemRows[0],
+  },
+  35: {
+    type_id: 35,
+    item_name: "Pyerite",
+    target_market_sell_orders: [{ price: 97, volume: 8, order_value: 776, cumulative_volume: 8 }],
+    source_market_sell_orders: [{ price: 90, volume: 11, order_value: 990 }],
+    source_market_buy_orders: [{ price: 87, volume: 12, order_value: 1044 }],
+    metrics: itemRows[1],
+  },
+};
+
 function renderPage() {
   const queryClient = new QueryClient();
   return render(
@@ -165,6 +185,11 @@ beforeEach(() => {
   }));
   mockUseOpportunityItems.mockImplementation(() => ({
     data: itemRows,
+    refetch: vi.fn(),
+  }));
+  mockUseOpportunityItemDetail.mockImplementation((_: number | null, __: number | null, typeId: number | null) => ({
+    data: typeId === null ? undefined : itemDetailsByType[typeId as keyof typeof itemDetailsByType],
+    isLoading: false,
     refetch: vi.fn(),
   }));
 });
@@ -206,6 +231,27 @@ test("supports search, threshold changes, and sortable item rows", async () => {
   expect(within(rows[2]).getByText("Tritanium")).toBeInTheDocument();
 });
 
+test("loads item detail for the selected row and updates when a different row is clicked", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const detailPanel = screen.getByText("Execution Context").closest("section");
+
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 34, 14);
+  expect(detailPanel).not.toBeNull();
+  expect(within(detailPanel as HTMLElement).getByText("Demand Source")).toBeInTheDocument();
+  expect(within(detailPanel as HTMLElement).getByText("Adam4EVE")).toBeInTheDocument();
+
+  await user.clear(screen.getByLabelText("Min ROI"));
+  await user.type(screen.getByLabelText("Min ROI"), "0");
+  await user.clear(screen.getByLabelText("Warning Threshold"));
+  await user.type(screen.getByLabelText("Warning Threshold"), "100");
+  await user.click(within(screen.getAllByRole("table")[1]).getByText("Pyerite"));
+
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 35, 14);
+  expect(within(detailPanel as HTMLElement).getByText("Pyerite")).toBeInTheDocument();
+  expect(within(detailPanel as HTMLElement).getByText("Fallback")).toBeInTheDocument();
+});
+
 test("requeries summaries and items when target or period changes and resets source selection", async () => {
   const user = userEvent.setup();
   renderPage();
@@ -220,5 +266,6 @@ test("requeries summaries and items when target or period changes and resets sou
   await user.selectOptions(screen.getByLabelText("Target Market"), "3");
   expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(3, 30);
   expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(3, 4, 30);
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, 4, 34, 30);
   expect(screen.getByText("Dodixie")).toBeInTheDocument();
 });

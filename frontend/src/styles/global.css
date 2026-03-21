@@ -142,6 +142,10 @@ select,
   background: rgba(102, 183, 255, 0.12);
 }
 
+.data-table tbody tr {
+  cursor: pointer;
+}
+
 .sort-button {
   border: 0;
   padding: 0;
@@ -167,6 +171,45 @@ select,
 .detail-grid {
   display: grid;
   gap: 14px;
+}
+
+.detail-list,
+.detail-metrics {
+  margin: 0;
+  padding: 0;
+}
+
+.detail-list {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.detail-list li,
+.detail-metrics > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.detail-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.detail-metrics {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-metrics dt {
+  color: var(--muted);
+}
+
+.detail-metrics dd {
+  margin: 0;
 }
 
 .status-card {
