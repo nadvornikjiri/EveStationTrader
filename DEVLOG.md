@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07D`
+- title: Link Additional EVE SSO Characters To Existing User
+- status: `PASS`
+- summary: linked second-character SSO callbacks to the existing user under the current single-user MVP assumption, while preserving repeat-callback update behavior and duplicate prevention.
+
+## 2026-03-21
+
 - task id: `T07C`
 - title: Persisted Character Structure Tracking Flag
 - status: `PASS`

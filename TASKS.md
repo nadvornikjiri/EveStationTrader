@@ -467,6 +467,36 @@ Priority rationale:
 - Mismatches:
   - this packet only persists the character-scoped tracking flag; shared tracked-structure pool updates remain future work
 
+### T07D - Link Additional EVE SSO Characters To Existing User
+
+- Status: `DONE`
+- Objective: make a second distinct EVE SSO callback attach the new character to the existing user instead of creating a second user row.
+- Dependencies:
+  - T07 auth callback persistence
+- Acceptance criteria:
+  - first callback for a new installation still creates the initial user, character, token, and sync-state rows
+  - a callback for a different public `character_id` links that character to the existing user instead of creating a second user
+  - existing-character callbacks still update the same character/token records without duplication
+  - the existing user's `primary_character_id` remains stable unless it is currently unset
+  - deterministic backend tests cover first-character creation, second-character linking, repeat callbacks, and duplicate prevention
+- Likely files/modules:
+  - `backend/app/services/auth/service.py`
+  - `backend/tests/services/test_auth_service.py`
+- Out of scope:
+  - real authenticated session ownership
+  - `/api/characters/connect` route redesign
+  - queueing initial sync jobs
+  - structure discovery from assets/orders
+- Test hints:
+  - reuse the mocked ESI callback client with two distinct `character_id` values
+  - assert one `users` row with two linked `esi_characters`
+  - keep the single-user assumption explicit in test naming and assertions
+- Implementation mapping:
+  - `AuthService.handle_callback()` now links a second distinct character to the first existing user row under the current single-user MVP assumption
+  - existing-character callbacks still update in place without duplicating token or sync-state rows
+- Mismatches:
+  - linking still relies on the current single-user app assumption rather than real session ownership
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`
