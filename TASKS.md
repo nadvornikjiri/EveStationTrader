@@ -376,6 +376,36 @@ Priority rationale:
   - worker health and fallback diagnostics are still synthetic
   - next scheduled sync is still not derived from a real scheduler state
 
+### T06C - Persisted Fallback Diagnostics
+
+- Status: `DONE`
+- Objective: replace synthetic fallback diagnostics with rows derived from persisted structure demand-resolution data.
+- Dependencies:
+  - T06B
+  - T11C
+- Acceptance criteria:
+  - `SyncService.get_fallback_status()` reads persisted structure-target rows instead of returning hardcoded examples
+  - diagnostics are derived from real structure locations and persisted resolved-demand fields for implemented sources like `local_structure` and `regional_fallback`
+  - NPC locations are excluded
+  - empty-data behavior is stable and deterministic
+  - deterministic backend tests cover structure rows using local demand, structure rows using fallback, and no persisted structure-demand rows
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_sync_service.py`
+- Out of scope:
+  - worker health telemetry
+  - ESI rate-limit telemetry
+  - frontend sync page redesign
+  - new sync orchestration
+- Test hints:
+  - seed tracked-structure and resolved-demand rows directly
+  - use persisted structure/location names rather than synthetic labels
+  - keep repeated calls deterministic in ordering and values
+- Implementation mapping:
+  - `SyncService.get_fallback_status()` now derives diagnostics from persisted tracked-structure and structure-demand rows instead of hardcoded samples
+- Mismatches:
+  - this packet grounds fallback diagnostics in persisted data but does not add worker or rate-limit telemetry
+
 ## T07 - Characters, Auth, And Multi-User Support
 
 - Status: `PARTIAL`

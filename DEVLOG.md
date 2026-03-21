@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T06C`
+- title: Persisted Fallback Diagnostics
+- status: `PASS`
+- summary: replaced synthetic fallback diagnostics with persisted tracked-structure and structure-demand rows, while keeping empty and NPC-excluded cases deterministic.
+
+## 2026-03-21
+
 - task id: `T07G`
 - title: Character Sync Route Triggers Structure Discovery
 - status: `PASS`

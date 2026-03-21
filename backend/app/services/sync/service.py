@@ -8,7 +8,16 @@ from app.db.session import SessionLocal
 from app.api.schemas.sync import FallbackDiagnostic, SyncJobRunResponse, SyncStatusCard
 from app.services.adam4eve.client import Adam4EveClient
 from app.services.adam4eve.ingestion import AdamNpcDemandIngestionService, AdamNpcDemandRecord
-from app.models.all_models import Item, Location, MarketDemandResolved, MarketPricePeriod, Region, SyncJobRun
+from app.models.all_models import (
+    Item,
+    Location,
+    MarketDemandResolved,
+    MarketPricePeriod,
+    Region,
+    StructureDemandPeriod,
+    SyncJobRun,
+    TrackedStructure,
+)
 from app.services.esi.client import EsiClient
 from app.services.esi.history_ingestion import (
     EsiRegionalHistoryIngestionService,
@@ -275,19 +284,70 @@ class SyncService:
             session.close()
 
     def get_fallback_status(self) -> list[FallbackDiagnostic]:
-        return [
-            FallbackDiagnostic(
-                structure_name="Perimeter Market Keepstar",
-                structure_id=1022734985679,
-                demand_source="local_structure",
-                confidence_score=0.88,
-                coverage_pct=0.82,
-            ),
-            FallbackDiagnostic(
-                structure_name="Amamake Exchange",
-                structure_id=1029876543210,
-                demand_source="regional_fallback",
-                confidence_score=0.41,
-                coverage_pct=0.43,
-            ),
-        ]
+        session = self.session_factory()
+        try:
+            tracked_structures = session.scalars(
+                select(TrackedStructure)
+                .join(Location, Location.location_id == TrackedStructure.structure_id)
+                .where(Location.location_type == "structure")
+                .order_by(TrackedStructure.structure_id.asc())
+            ).all()
+            if not tracked_structures:
+                return []
+
+            tracked_location_ids = [
+                location_id
+                for location_id in session.scalars(
+                    select(Location.id).where(Location.location_id.in_([row.structure_id for row in tracked_structures]))
+                ).all()
+            ]
+            demand_rows = session.scalars(
+                select(MarketDemandResolved)
+                .where(MarketDemandResolved.location_id.in_(tracked_location_ids))
+                .order_by(
+                    MarketDemandResolved.location_id.asc(),
+                    MarketDemandResolved.computed_at.desc(),
+                    MarketDemandResolved.id.desc(),
+                )
+            ).all()
+
+            latest_demand_by_location_id: dict[int, MarketDemandResolved] = {}
+            for demand_row in demand_rows:
+                latest_demand_by_location_id.setdefault(demand_row.location_id, demand_row)
+
+            diagnostics: list[FallbackDiagnostic] = []
+            for tracked_structure in tracked_structures:
+                location = session.scalar(
+                    select(Location).where(Location.location_id == tracked_structure.structure_id)
+                )
+                if location is None:
+                    continue
+
+                fallback_demand_row = latest_demand_by_location_id.get(location.id)
+                if fallback_demand_row is None:
+                    continue
+
+                coverage_pct = 0.0
+                structure_period = session.scalar(
+                    select(StructureDemandPeriod).where(
+                        StructureDemandPeriod.structure_id == tracked_structure.structure_id,
+                        StructureDemandPeriod.type_id == fallback_demand_row.type_id,
+                        StructureDemandPeriod.period_days == fallback_demand_row.period_days,
+                    )
+                )
+                if structure_period is not None:
+                    coverage_pct = structure_period.coverage_pct
+
+                diagnostics.append(
+                    FallbackDiagnostic(
+                        structure_name=tracked_structure.name,
+                        structure_id=tracked_structure.structure_id,
+                        demand_source=fallback_demand_row.demand_source,
+                        confidence_score=fallback_demand_row.confidence_score,
+                        coverage_pct=coverage_pct,
+                    )
+                )
+
+            return diagnostics
+        finally:
+            session.close()
