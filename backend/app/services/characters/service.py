@@ -12,6 +12,24 @@ class CharacterService:
     def __init__(self, *, session_factory: Callable[[], Session] = SessionLocal) -> None:
         self.session_factory = session_factory
 
+    def update_character_sync_enabled(self, character_id: int, sync_enabled: bool | None) -> EsiCharacter | None:
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                return None
+
+            if sync_enabled is not None and character.sync_enabled != sync_enabled:
+                character.sync_enabled = sync_enabled
+                session.commit()
+                session.refresh(character)
+            else:
+                session.commit()
+
+            return character
+        finally:
+            session.close()
+
     def list_characters(self) -> list[CharacterListItem]:
         session = self.session_factory()
         try:

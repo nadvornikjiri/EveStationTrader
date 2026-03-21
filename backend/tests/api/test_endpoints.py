@@ -1,4 +1,4 @@
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.db.session import SessionLocal
 from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState, User
@@ -85,6 +85,87 @@ def test_get_characters(client) -> None:
 
 def test_get_character_returns_404_for_unknown_character(client) -> None:
     response = client.get("/api/characters/99999999")
+    assert response.status_code == 404
+
+
+def test_patch_character_updates_sync_enabled(client) -> None:
+    session = SessionLocal()
+    try:
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+
+        user = User(primary_character_id=None)
+        session.add(user)
+        session.flush()
+        character = EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1",
+            sync_enabled=True,
+        )
+        session.add(character)
+        session.flush()
+        user.primary_character_id = character.id
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.patch("/api/characters/90000042", json={"sync_enabled": False})
+    assert response.status_code == 200
+    assert response.json()["message"] == "Sync for character 90000042 is now disabled."
+
+    session = SessionLocal()
+    try:
+        persisted_character: EsiCharacter | None = session.scalar(
+            select(EsiCharacter).where(EsiCharacter.character_id == 90000042)
+        )
+        assert persisted_character is not None
+        assert persisted_character.sync_enabled is False
+    finally:
+        session.close()
+
+    detail = client.get("/api/characters/90000042")
+    assert detail.json()["sync_enabled"] is False
+    assert detail.json()["sync_toggles"]["assets"] is False
+
+
+def test_patch_character_noop_payload_is_stable(client) -> None:
+    session = SessionLocal()
+    try:
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+
+        user = User(primary_character_id=None)
+        session.add(user)
+        session.flush()
+        character = EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1",
+            sync_enabled=True,
+        )
+        session.add(character)
+        session.flush()
+        user.primary_character_id = character.id
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.patch("/api/characters/90000042", json={})
+    assert response.status_code == 200
+    assert response.json()["message"] == "No changes applied to character 90000042."
+
+
+def test_patch_character_returns_404_for_unknown_character(client) -> None:
+    response = client.patch("/api/characters/99999999", json={"sync_enabled": False})
     assert response.status_code == 404
 
 

@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07B`
+- title: Persisted Character Sync Toggle Updates
+- status: `PASS`
+- summary: persisted `sync_enabled` updates on `esi_characters`, added no-op and missing-character handling, and covered the patch/read-after-write path with backend tests.
+
+## 2026-03-21
+
 - task id: `T07A`
 - title: Persisted Character Reads
 - status: `PASS`

@@ -32,7 +32,15 @@ def sync_character(character_id: int) -> MessageResponse:
 
 @router.patch("/{character_id}", response_model=MessageResponse)
 def patch_character(character_id: int, payload: CharacterPatchRequest) -> MessageResponse:
-    return MessageResponse(message=f"Updated character {character_id} with {payload.model_dump(exclude_none=True)}.")
+    updated_character = CharacterService().update_character_sync_enabled(character_id, payload.sync_enabled)
+    if updated_character is None:
+        raise HTTPException(status_code=404, detail=f"Character {character_id} was not found.")
+
+    if payload.sync_enabled is None:
+        return MessageResponse(message=f"No changes applied to character {character_id}.")
+
+    state = "enabled" if updated_character.sync_enabled else "disabled"
+    return MessageResponse(message=f"Sync for character {character_id} is now {state}.")
 
 
 @router.get("/{character_id}/structures", response_model=list[AccessibleStructureItem])

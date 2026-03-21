@@ -434,6 +434,22 @@ Priority rationale:
   - character sync toggles are still a simple shared `sync_enabled` projection rather than per-domain persisted settings
   - skills remain placeholder empty data until a real character sync pipeline exists
 
+### T07B - Persisted Character Sync Toggle Updates
+
+- Status: `DONE`
+- Objective: make `PATCH /api/characters/{id}` update persisted character sync enablement instead of returning a stub message.
+- Dependencies:
+  - T07A
+- Acceptance criteria:
+  - patching a public EVE `character_id` with `sync_enabled` persists the new value to `esi_characters`
+  - list/detail reads reflect the updated `sync_enabled` state after the patch
+  - missing characters fail deterministically instead of returning a success stub
+  - deterministic backend tests cover update, no-op payload behavior, and missing-character behavior
+- Implementation mapping:
+  - `PATCH /api/characters/{id}` now persists the shared `sync_enabled` flag and the existing list/detail reads reflect the updated value
+- Mismatches:
+  - only the shared `sync_enabled` flag is persisted; granular sync toggles remain future work
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`

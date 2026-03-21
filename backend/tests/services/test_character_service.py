@@ -133,3 +133,45 @@ def test_get_character_raises_for_missing_public_character_id() -> None:
 
     with pytest.raises(LookupError, match="90000042"):
         service.get_character(90000042)
+
+
+def test_update_character_sync_enabled_persists_and_list_reads_reflect_it() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    updated_character = service.update_character_sync_enabled(90000042, False)
+
+    assert updated_character is not None
+    assert updated_character.sync_enabled is False
+
+    characters = service.list_characters()
+    detail = service.get_character(90000042)
+
+    assert characters[0].sync_enabled is False
+    assert detail.sync_enabled is False
+    assert detail.sync_toggles == {
+        "assets": False,
+        "orders": False,
+        "skills": False,
+        "structures": False,
+    }
+
+
+def test_update_character_sync_enabled_noop_payload_leaves_value_unchanged() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    updated_character = service.update_character_sync_enabled(90000042, None)
+
+    assert updated_character is not None
+    assert updated_character.sync_enabled is True
+    assert service.list_characters()[0].sync_enabled is True
+
+
+def test_update_character_sync_enabled_raises_none_for_missing_character() -> None:
+    session = build_session()
+    service = CharacterService(session_factory=lambda: session)
+
+    assert service.update_character_sync_enabled(90000042, True) is None
