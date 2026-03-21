@@ -402,6 +402,38 @@ Priority rationale:
 - Mismatches:
   - token exchange, persistence, user linking, and structure discovery are not implemented end to end
 
+### T07A - Persisted Character Reads
+
+- Status: `DONE`
+- Objective: replace the demo-backed character list/detail reads with persisted character, sync-state, and accessible-structure data.
+- Dependencies:
+  - T02
+  - T07 auth callback persistence
+- Acceptance criteria:
+  - `CharacterService.list_characters()` reads persisted `esi_characters` rows and joins available sync-state data
+  - accessible structure counts come from persisted `character_accessible_structures`
+  - `CharacterService.get_character(character_id)` returns persisted character detail and structures for the requested public EVE character id
+  - missing characters fail deterministically instead of returning demo data
+  - deterministic backend tests cover list, detail, structure mapping, and missing-character behavior
+- Likely files/modules:
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/services/test_character_service.py`
+  - `backend/tests/api/test_endpoints.py`
+- Out of scope:
+  - live EVE SSO token exchange changes
+  - per-toggle sync preferences persistence
+  - structure discovery from ESI assets/orders
+- Test hints:
+  - seed `EsiCharacter`, `EsiCharacterSyncState`, and `CharacterAccessibleStructure` rows directly in SQLite fixtures
+  - verify public `character_id` values are preserved at the service/API boundary
+  - verify empty-structure characters still return stable defaults
+- Implementation mapping:
+  - the character service now reads persisted character, sync-state, and accessible-structure rows instead of serving hardcoded demo payloads
+  - missing characters now raise a deterministic not-found error for the API layer
+- Mismatches:
+  - character sync toggles are still a simple shared `sync_enabled` projection rather than per-domain persisted settings
+  - skills remain placeholder empty data until a real character sync pipeline exists
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`

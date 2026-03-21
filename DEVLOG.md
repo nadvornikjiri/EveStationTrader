@@ -1,5 +1,33 @@
 ## 2026-03-21
 
+- task id: `T07A`
+- title: Persisted Character Reads
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 11, 12B, 14
+- acceptance criteria covered:
+  - `CharacterService.list_characters()` now reads persisted `esi_characters` rows and joins sync-state data
+  - accessible structure counts now come from persisted `character_accessible_structures`
+  - `CharacterService.get_character(character_id)` now returns persisted detail and structures for the requested public EVE character id
+  - missing characters now fail deterministically with a not-found path instead of returning demo data
+  - deterministic backend tests cover list, detail, structure mapping, and missing-character behavior
+- files changed:
+  - `backend/app/services/characters/service.py`
+  - `backend/app/api/routes/characters.py`
+  - `backend/tests/services/test_character_service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `TASKS.md`
+- short implementation summary: Replaced the demo-backed character read path with persisted character, sync-state, and accessible-structure queries so the characters API now reflects stored auth data.
+- important decisions:
+  - character list/detail IDs are exposed as public EVE `character_id` values rather than internal database row ids
+  - missing-character reads raise a deterministic 404 path through the API layer
+  - sync toggles are still projected from the shared `sync_enabled` flag until per-domain preference persistence exists
+- open follow-ups:
+  - persist per-domain sync toggle settings instead of mirroring a single `sync_enabled` flag
+  - populate character skills from real sync data rather than an empty placeholder list
+  - add structure discovery and tracking flows that write `character_accessible_structures` end to end
+
+## 2026-03-21
+
 - task id: `T05D`
 - title: Trade Page Item Detail Selection
 - status: `PASS`

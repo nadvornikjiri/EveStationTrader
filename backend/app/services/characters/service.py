@@ -1,47 +1,119 @@
-from datetime import UTC, datetime
+from collections.abc import Callable
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail, CharacterListItem
-from app.core.security import build_esi_scopes
+from app.db.session import SessionLocal
+from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState
 
 
 class CharacterService:
+    def __init__(self, *, session_factory: Callable[[], Session] = SessionLocal) -> None:
+        self.session_factory = session_factory
+
     def list_characters(self) -> list[CharacterListItem]:
-        return [
-            CharacterListItem(
-                id=1,
-                character_name="Demo Trader",
-                corporation_name="Open Traders Union",
-                granted_scopes=build_esi_scopes(),
-                sync_enabled=True,
-                last_token_refresh=datetime.now(UTC),
-                last_successful_sync=datetime.now(UTC),
-                assets_sync_status="ok",
-                orders_sync_status="ok",
-                skills_sync_status="pending",
-                structures_sync_status="ok",
-                accessible_structure_count=2,
-            )
-        ]
+        session = self.session_factory()
+        try:
+            characters = session.scalars(select(EsiCharacter).order_by(EsiCharacter.character_id.asc())).all()
+            if not characters:
+                return []
+
+            character_ids = [character.id for character in characters]
+            sync_states = {
+                state.character_id: state
+                for state in session.scalars(
+                    select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id.in_(character_ids))
+                ).all()
+            }
+            structure_counts_rows = session.execute(
+                select(
+                    CharacterAccessibleStructure.character_id,
+                    func.count(CharacterAccessibleStructure.id),
+                )
+                .where(CharacterAccessibleStructure.character_id.in_(character_ids))
+                .group_by(CharacterAccessibleStructure.character_id)
+            ).all()
+            structure_counts: dict[int, int] = {
+                character_id: structure_count for character_id, structure_count in structure_counts_rows
+            }
+
+            return [
+                self._build_character_list_item(
+                    character=character,
+                    sync_state=sync_states.get(character.id),
+                    accessible_structure_count=structure_counts.get(character.id, 0),
+                )
+                for character in characters
+            ]
+        finally:
+            session.close()
 
     def get_character(self, character_id: int) -> CharacterDetail:
-        structure = AccessibleStructureItem(
-            structure_name="Perimeter Market Keepstar",
-            structure_id=1022734985679,
-            system_name="Perimeter",
-            region_name="The Forge",
-            access_verified_at=datetime.now(UTC),
-            tracking_enabled=True,
-            polling_tier="core",
-            last_snapshot_at=datetime.now(UTC),
-            confidence_score=0.88,
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                raise LookupError(f"Character {character_id} was not found.")
+
+            structures = session.scalars(
+                select(CharacterAccessibleStructure)
+                .where(CharacterAccessibleStructure.character_id == character.id)
+                .order_by(CharacterAccessibleStructure.structure_name.asc())
+            ).all()
+
+            return CharacterDetail(
+                id=character.character_id,
+                character_name=character.character_name,
+                corporation_name=character.corporation_name,
+                granted_scopes=self._split_scopes(character.granted_scopes),
+                sync_enabled=character.sync_enabled,
+                sync_toggles={
+                    "assets": character.sync_enabled,
+                    "orders": character.sync_enabled,
+                    "skills": character.sync_enabled,
+                    "structures": character.sync_enabled,
+                },
+                structures=[self._build_structure_item(structure) for structure in structures],
+                skills=[],
+            )
+        finally:
+            session.close()
+
+    def _build_character_list_item(
+        self,
+        *,
+        character: EsiCharacter,
+        sync_state: EsiCharacterSyncState | None,
+        accessible_structure_count: int,
+    ) -> CharacterListItem:
+        return CharacterListItem(
+            id=character.character_id,
+            character_name=character.character_name,
+            corporation_name=character.corporation_name,
+            granted_scopes=self._split_scopes(character.granted_scopes),
+            sync_enabled=character.sync_enabled,
+            last_token_refresh=sync_state.last_token_refresh if sync_state else None,
+            last_successful_sync=sync_state.last_successful_sync if sync_state else None,
+            assets_sync_status=sync_state.assets_sync_status if sync_state else "pending",
+            orders_sync_status=sync_state.orders_sync_status if sync_state else "pending",
+            skills_sync_status=sync_state.skills_sync_status if sync_state else "pending",
+            structures_sync_status=sync_state.structures_sync_status if sync_state else "pending",
+            accessible_structure_count=accessible_structure_count,
         )
-        return CharacterDetail(
-            id=character_id,
-            character_name="Demo Trader",
-            corporation_name="Open Traders Union",
-            granted_scopes=build_esi_scopes(),
-            sync_enabled=True,
-            sync_toggles={"assets": True, "orders": True, "skills": False, "structures": True},
-            structures=[structure],
-            skills=["Accounting IV", "Broker Relations IV"],
+
+    def _build_structure_item(self, structure: CharacterAccessibleStructure) -> AccessibleStructureItem:
+        return AccessibleStructureItem(
+            structure_name=structure.structure_name,
+            structure_id=structure.structure_id,
+            system_name=structure.system_name,
+            region_name=structure.region_name,
+            access_verified_at=structure.access_verified_at,
+            tracking_enabled=structure.tracking_enabled,
+            polling_tier=structure.polling_tier,
+            last_snapshot_at=structure.last_snapshot_at,
+            confidence_score=structure.confidence_score,
         )
+
+    def _split_scopes(self, granted_scopes: str) -> list[str]:
+        return granted_scopes.split() if granted_scopes else []

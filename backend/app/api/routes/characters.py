@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail, CharacterListItem, CharacterPatchRequest
 from app.api.schemas.common import MessageResponse
@@ -19,7 +19,10 @@ def connect_character() -> MessageResponse:
 
 @router.get("/{character_id}", response_model=CharacterDetail)
 def get_character(character_id: int) -> CharacterDetail:
-    return CharacterService().get_character(character_id)
+    try:
+        return CharacterService().get_character(character_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{character_id}/sync", response_model=MessageResponse)
@@ -34,7 +37,10 @@ def patch_character(character_id: int, payload: CharacterPatchRequest) -> Messag
 
 @router.get("/{character_id}/structures", response_model=list[AccessibleStructureItem])
 def get_character_structures(character_id: int) -> list[AccessibleStructureItem]:
-    return CharacterService().get_character(character_id).structures
+    try:
+        return CharacterService().get_character(character_id).structures
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{character_id}/structures/{structure_id}/track", response_model=MessageResponse)
