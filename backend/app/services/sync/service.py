@@ -17,6 +17,7 @@ from app.models.all_models import (
     StructureDemandPeriod,
     SyncJobRun,
     TrackedStructure,
+    WorkerHeartbeat,
 )
 from app.services.esi.client import EsiClient
 from app.services.esi.history_ingestion import (
@@ -41,6 +42,7 @@ class SyncService:
         ("esi_history_sync", "ESI region sync"),
         ("opportunity_rebuild", "Opportunity rebuild"),
     )
+    WORKER_HEARTBEAT_STALE_MINUTES = 15
 
     def __init__(
         self,
@@ -91,19 +93,36 @@ class SyncService:
                     )
                 )
 
-            cards.append(
-                SyncStatusCard(
-                    key="worker",
-                    label="Worker health",
-                    status="healthy",
-                    last_successful_sync=datetime.now(UTC),
-                    next_scheduled_sync=None,
-                    recent_error_count=0,
-                )
+            heartbeat = session.scalar(
+                select(WorkerHeartbeat).order_by(WorkerHeartbeat.recorded_at.desc(), WorkerHeartbeat.id.desc())
             )
+            cards.append(self._build_worker_status_card(heartbeat))
             return cards
         finally:
             session.close()
+
+    def _build_worker_status_card(self, heartbeat: WorkerHeartbeat | None) -> SyncStatusCard:
+        if heartbeat is None:
+            return SyncStatusCard(
+                key="worker",
+                label="Worker health",
+                status="idle",
+                last_successful_sync=None,
+                next_scheduled_sync=None,
+                recent_error_count=0,
+            )
+
+        heartbeat_time = self._ensure_utc(heartbeat.recorded_at)
+        age_minutes = (datetime.now(UTC) - heartbeat_time).total_seconds() / 60
+        status = "healthy" if age_minutes <= self.WORKER_HEARTBEAT_STALE_MINUTES else "degraded"
+        return SyncStatusCard(
+            key="worker",
+            label="Worker health",
+            status=status,
+            last_successful_sync=heartbeat_time,
+            next_scheduled_sync=None,
+            recent_error_count=0,
+        )
 
     def list_jobs(self) -> list[SyncJobRunResponse]:
         session = self.session_factory()

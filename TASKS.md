@@ -406,6 +406,36 @@ Priority rationale:
 - Mismatches:
   - this packet grounds fallback diagnostics in persisted data but does not add worker or rate-limit telemetry
 
+### T06D - Persisted Worker Health Card
+
+- Status: `DONE`
+- Objective: replace the synthetic worker health card with a value derived from a real persisted heartbeat source.
+- Dependencies:
+  - T06B
+- Acceptance criteria:
+  - `SyncService.get_status()` derives the `worker` card from persisted worker-health data instead of hardcoding it
+  - worker health exposes at least `status`, `last_successful_sync` or equivalent heartbeat timestamp, and deterministic default behavior
+  - the card remains stable when no worker heartbeat exists yet
+  - deterministic backend tests cover fresh heartbeat, stale heartbeat, and no heartbeat data
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/models/all_models.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/alembic/versions/*` if a new persisted heartbeat field or table is required
+- Out of scope:
+  - scheduler-derived `next_scheduled_sync`
+  - ESI rate-limit telemetry
+  - frontend redesign
+  - broader sync-job orchestration
+- Test hints:
+  - keep the heartbeat freshness rule explicit and deterministic
+  - do not reuse manual `sync_job_runs` as a fake worker heartbeat
+  - verify stable defaults when no heartbeat has been recorded yet
+- Implementation mapping:
+  - `SyncService.get_status()` now derives the worker card from the latest persisted heartbeat row and marks it degraded once the heartbeat becomes stale
+- Mismatches:
+  - this packet removes the synthetic worker card but does not add scheduler timing or rate-limit telemetry
+
 ## T07 - Characters, Auth, And Multi-User Support
 
 - Status: `PARTIAL`

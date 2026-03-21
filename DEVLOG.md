@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T06D`
+- title: Persisted Worker Health Card
+- status: `PASS`
+- summary: replaced the synthetic worker card with a persisted heartbeat-backed card and covered fresh, stale, and missing-heartbeat cases in backend tests.
+
+## 2026-03-21
+
 - task id: `T06C`
 - title: Persisted Fallback Diagnostics
 - status: `PASS`

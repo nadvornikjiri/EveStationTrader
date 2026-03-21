@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +16,7 @@ from app.models.all_models import (
     SyncJobRun,
     System,
     TrackedStructure,
+    WorkerHeartbeat,
 )
 from app.services.sync.service import SyncService
 
@@ -306,6 +307,57 @@ def test_get_status_returns_stable_defaults_when_no_history_exists() -> None:
     assert cards["opportunity_rebuild"].last_successful_sync is None
     assert cards["opportunity_rebuild"].recent_error_count == 0
     assert cards["opportunity_rebuild"].status == "idle"
+
+
+def test_get_status_uses_persisted_worker_heartbeat_when_fresh() -> None:
+    session = build_session()
+    service = SyncService(session_factory=lambda: session)
+    heartbeat_at = datetime.now(UTC)
+    session.add(
+        WorkerHeartbeat(
+            source="worker",
+            recorded_at=heartbeat_at,
+            status="healthy",
+        )
+    )
+    session.commit()
+
+    cards = {card.key: card for card in service.get_status()}
+
+    assert cards["worker"].status == "healthy"
+    assert cards["worker"].last_successful_sync == heartbeat_at
+    assert cards["worker"].recent_error_count == 0
+
+
+def test_get_status_marks_worker_heartbeat_as_degraded_when_stale() -> None:
+    session = build_session()
+    service = SyncService(session_factory=lambda: session)
+    heartbeat_at = datetime.now(UTC) - timedelta(minutes=20)
+    session.add(
+        WorkerHeartbeat(
+            source="worker",
+            recorded_at=heartbeat_at,
+            status="healthy",
+        )
+    )
+    session.commit()
+
+    cards = {card.key: card for card in service.get_status()}
+
+    assert cards["worker"].status == "degraded"
+    assert cards["worker"].last_successful_sync == heartbeat_at
+    assert cards["worker"].recent_error_count == 0
+
+
+def test_get_status_returns_idle_worker_card_when_no_heartbeat_exists() -> None:
+    session = build_session()
+    service = SyncService(session_factory=lambda: session)
+
+    cards = {card.key: card for card in service.get_status()}
+
+    assert cards["worker"].status == "idle"
+    assert cards["worker"].last_successful_sync is None
+    assert cards["worker"].recent_error_count == 0
 
 
 def test_get_fallback_status_uses_persisted_structure_demand_rows() -> None:
