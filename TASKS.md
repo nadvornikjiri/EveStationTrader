@@ -1008,6 +1008,38 @@ Priority rationale:
 - Mismatches:
   - the background rebuild now runs the real persisted rebuild flow, but the underlying opportunity generation still uses placeholder liquidity inputs until live order ingestion exists
 
+### T10H - Live ESI Regional History Client
+
+- Status: `DONE`
+- Objective: replace the mocked ESI regional-history fetcher with a real live client while preserving the existing normalized ingestion contract.
+- Dependencies:
+  - T10B
+- Acceptance criteria:
+  - `EsiClient.fetch_regional_history(region_id, type_ids)` fetches live market-history payloads from ESI for the requested scope
+  - the client returns normalized `EsiRegionalHistoryRecord` rows that continue to work with the existing ingestion service unchanged
+  - deterministic tests cover request/parse behavior plus malformed or empty response handling
+  - the implementation does not require character auth or change the sync-service ingestion contract
+- Likely files/modules:
+  - `backend/app/services/esi/client.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/`
+- Out of scope:
+  - EVE SSO token exchange
+  - Adam4EVE demand fetching
+  - rate-limit/backoff orchestration beyond minimal client hygiene
+  - frontend changes
+  - scheduler changes
+- Test hints:
+  - keep request logic isolated so parsing can be tested deterministically with mocked HTTP responses
+  - preserve the current `EsiRegionalHistoryRecord` shape exactly
+  - fail clearly on malformed payload rows rather than silently returning partial data
+- Implementation mapping:
+  - `EsiClient.fetch_regional_history()` now calls public ESI market-history endpoints for each requested `type_id` and normalizes the payload into the existing ingestion record shape
+  - deterministic tests cover request formation, header propagation, empty responses, and malformed payload rejection
+  - the sync-service ingestion contract remains unchanged because the client still returns the same `EsiRegionalHistoryRecord` structure
+- Mismatches:
+  - live ESI availability and rate limiting remain external dependencies, but the client contract is now real and public-only
+
 ## T11 - Structure Snapshots And Demand Inference
 
 - Status: `MISSING`

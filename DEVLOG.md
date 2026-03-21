@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T10H`
+- title: Live ESI Regional History Client
+- status: `PASS`
+- summary: replaced the mocked regional-history fetcher with a public ESI client and added deterministic client tests for request, empty, and malformed payload handling.
+
+## 2026-03-21
+
 - task id: `T10G`
 - title: Scheduler-Driven Opportunity Rebuild
 - status: `PASS`
