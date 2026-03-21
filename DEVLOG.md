@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T10I`
+- title: Live Adam4EVE NPC Demand Client
+- status: `PASS`
+- summary: replaced the mocked Adam4EVE NPC-demand client with a public export fetcher and added deterministic client tests for request shape, aggregation, and malformed CSV handling.
+
+## 2026-03-21
+
 - task id: `T10H`
 - title: Live ESI Regional History Client
 - status: `PASS`

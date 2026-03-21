@@ -1040,6 +1040,38 @@ Priority rationale:
 - Mismatches:
   - live ESI availability and rate limiting remain external dependencies, but the client contract is now real and public-only
 
+### T10I - Live Adam4EVE NPC Demand Client
+
+- Status: `DONE`
+- Objective: replace the mocked Adam4EVE NPC-demand fetcher with a real public client while preserving the existing normalized ingestion contract.
+- Dependencies:
+  - T10C
+- Acceptance criteria:
+  - `Adam4EveClient.fetch_npc_demand(location_ids, type_ids)` fetches public NPC-demand payloads for the requested scope
+  - the client returns normalized `AdamNpcDemandRecord` rows that continue to work with the existing ingestion service unchanged
+  - deterministic tests cover request/parse behavior plus malformed or empty response handling
+  - the implementation does not require EVE SSO auth or change sync-service wiring
+- Likely files/modules:
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/`
+- Out of scope:
+  - character auth
+  - scheduler changes
+  - frontend changes
+  - resolved-demand logic
+  - broader rate-limit/backoff orchestration
+- Test hints:
+  - keep request logic isolated so parsing can be tested deterministically with mocked HTTP responses
+  - preserve the current `AdamNpcDemandRecord` shape exactly
+  - fail clearly on malformed payload rows rather than silently returning partial data
+- Implementation mapping:
+  - `Adam4EveClient.fetch_npc_demand()` now resolves the latest public MarketOrdersTrades export, filters it to the requested location/type scope, and normalizes matching rows into the existing demand record shape.
+  - deterministic tests cover the live-request shape, aggregation of matching rows, empty responses, and malformed CSV payload handling.
+  - the sync-service ingestion contract remains unchanged because the client still returns the same `AdamNpcDemandRecord` structure.
+- Mismatches:
+  - the client still depends on the availability of Adam4EVE's public static export pages, but it no longer uses the hardcoded placeholder demand rows.
+
 ## T11 - Structure Snapshots And Demand Inference
 
 - Status: `MISSING`
