@@ -135,7 +135,7 @@ Priority rationale:
 
 ## T05 - Trade Analysis API And Data Flow
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: serve target/source/opportunity data for the main trade workflow.
 - Dependencies: T02, T03, T04
 - Acceptance criteria:
@@ -155,10 +155,9 @@ Priority rationale:
   - API integration tests
   - frontend trade page render tests
 - Implementation mapping:
-  - API surface exists and the trade page renders data from it.
+  - API surface exists and the trade page renders targets, source summaries, item rows, and item detail from it.
 - Mismatches:
-  - source summaries, items, and detail are still demo/seeded responses instead of precomputed DB-backed opportunity data
-  - filter/sort/search behavior is mostly unimplemented
+  - item-detail order books remain placeholder-derived until live order ingestion is implemented
 
 ### T05A - Trade Repository Reads Computed Opportunity Tables
 
@@ -217,6 +216,42 @@ Priority rationale:
   - fallback detail construction is tied to the requested item rather than reusing the first placeholder row
 - Mismatches:
   - order-book panels remain placeholder-derived even when the metrics row is computed
+
+### T05C - Trade Page Controls And Client-Side Filtering
+
+- Status: `DONE`
+- Objective: wire the existing trade-page controls into the query flow and make the item table respond deterministically to user-entered search, threshold, and sort inputs.
+- Dependencies:
+  - T05A
+  - T05B
+- Acceptance criteria:
+  - target-market and analysis-period controls drive the source-summary and item queries
+  - item search filters rows by case-insensitive item-name substring
+  - min ROI and warning-threshold controls filter item rows deterministically from loaded query results
+  - item-table sorting is user-driven and deterministic for at least the exposed sortable columns
+  - frontend tests cover default filtering, control-driven requeries, source reset behavior, and sortable row rendering
+- Likely files/modules:
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/pages/TradePage.test.tsx`
+- Out of scope:
+  - backend-side opportunity filtering APIs
+  - source-type, security-band, and demand-source filters
+  - item-detail panel interactions
+- Test hints:
+  - mock hook results across multiple targets and periods
+  - verify default ROI/risk thresholds exclude weaker rows
+  - verify a target switch resets the selected source when the prior source is unavailable
+  - verify a sortable-column click changes rendered row order deterministically
+- Implementation mapping:
+  - the trade page now owns controlled target, period, search, ROI, warning-threshold, and sort state
+  - the source-summary and item queries now include the selected `period_days`
+  - client-side filtering/sorting is applied to the loaded item rows before rendering
+- Mismatches:
+  - server-side filtering and additional trade filters remain unimplemented
 
 ## T06 - Sync Operations Dashboard
 

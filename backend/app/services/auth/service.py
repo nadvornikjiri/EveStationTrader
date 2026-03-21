@@ -40,6 +40,7 @@ class AuthService:
                 select(EsiCharacter).where(EsiCharacter.character_id == identity["character_id"])
             )
             created_user = False
+            user: User | None
             if character is None:
                 user = User(primary_character_id=None)
                 session.add(user)
