@@ -29,7 +29,14 @@ def get_character(character_id: int) -> CharacterDetail:
 
 @router.post("/{character_id}/sync", response_model=MessageResponse)
 def sync_character(character_id: int) -> MessageResponse:
-    return MessageResponse(message=f"Queued sync for character {character_id}.")
+    try:
+        discovered_structures = CharacterService().sync_character(character_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return MessageResponse(
+        message=f"Synced {len(discovered_structures)} accessible structures for character {character_id}."
+    )
 
 
 @router.patch("/{character_id}", response_model=MessageResponse)

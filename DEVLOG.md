@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07G`
+- title: Character Sync Route Triggers Structure Discovery
+- status: `PASS`
+- summary: wired the character sync route into the mocked discovery path, updated sync-state timestamps/status, and validated the route with deterministic backend tests.
+
+## 2026-03-21
+
 - task id: `T07F`
 - title: Persist Accessible Structure Discovery From Character Sync Inputs
 - status: `PASS`

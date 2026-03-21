@@ -328,3 +328,51 @@ def test_discover_character_accessible_structures_raises_for_missing_character()
                 )
             ],
         )
+
+
+def test_sync_character_persists_discovery_and_updates_sync_state() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    assert character is not None
+
+    before = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
+    assert before is not None
+    before_last_successful_sync = before.last_successful_sync
+
+    discovered = service.sync_character(90000042)
+
+    assert len(discovered) == 3
+    rows = session.scalars(select(CharacterAccessibleStructure).order_by(CharacterAccessibleStructure.structure_id)).all()
+    assert [row.structure_id for row in rows] == [1022734985679, 1022734985680, 1022734985687]
+    assert rows[0].tracking_enabled is True
+    assert rows[-1].tracking_enabled is False
+
+    sync_state = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
+    assert sync_state is not None
+    assert sync_state.structures_sync_status == "ok"
+    assert sync_state.last_successful_sync is not None
+    assert sync_state.last_successful_sync != before_last_successful_sync
+
+
+def test_sync_character_is_idempotent_and_raises_for_missing_character() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    assert character is not None
+
+    first = service.sync_character(90000042)
+    second = service.sync_character(90000042)
+
+    assert len(first) == 3
+    assert len(second) == 3
+
+    rows = session.scalars(select(CharacterAccessibleStructure).order_by(CharacterAccessibleStructure.structure_id)).all()
+    assert [row.structure_id for row in rows] == [1022734985679, 1022734985680, 1022734985687]
+
+    with pytest.raises(LookupError, match="90000099"):
+        service.sync_character(90000099)

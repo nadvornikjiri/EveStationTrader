@@ -53,6 +53,7 @@ def test_get_characters(client) -> None:
         session.execute(delete(EsiCharacterSyncState))
         session.execute(delete(EsiCharacter))
         session.execute(delete(User))
+        session.commit()
 
         user = User(primary_character_id=None)
         session.add(user)
@@ -251,6 +252,84 @@ def test_track_character_structure_returns_404_for_missing_character_or_access(c
         session.close()
 
     response = client.post("/api/characters/90000042/structures/1022734985680/track")
+    assert response.status_code == 404
+
+
+def test_sync_character_triggers_structure_discovery_and_updates_sync_state(client) -> None:
+    session = SessionLocal()
+    try:
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+
+        user = User(primary_character_id=None)
+        session.add(user)
+        session.flush()
+        character = EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1",
+            sync_enabled=True,
+        )
+        session.add(character)
+        session.flush()
+        user.primary_character_id = character.id
+        session.add(
+            EsiCharacterSyncState(
+                character_id=character.id,
+                assets_sync_status="ok",
+                orders_sync_status="ok",
+                skills_sync_status="pending",
+                structures_sync_status="pending",
+            )
+        )
+        session.add(
+            CharacterAccessibleStructure(
+                character_id=character.id,
+                structure_id=1022734985679,
+                structure_name="Perimeter Market Keepstar",
+                system_name="Perimeter",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 11, 0, tzinfo=UTC),
+                tracking_enabled=True,
+                polling_tier="core",
+                last_snapshot_at=None,
+                confidence_score=0.88,
+            )
+        )
+        session.commit()
+        character_db_id = character.id
+    finally:
+        session.close()
+
+    response = client.post("/api/characters/90000042/sync")
+    assert response.status_code == 200
+    assert response.json()["message"] == "Synced 3 accessible structures for character 90000042."
+
+    detail = client.get("/api/characters/90000042/structures")
+    assert detail.status_code == 200
+    rows_by_id = {row["structure_id"]: row for row in detail.json()}
+    assert sorted(rows_by_id) == [1022734985679, 1022734985680, 1022734985687]
+    assert rows_by_id[1022734985679]["tracking_enabled"] is True
+    assert rows_by_id[1022734985687]["tracking_enabled"] is False
+
+    session = SessionLocal()
+    try:
+        sync_state = session.scalar(
+            select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character_db_id)
+        )
+        assert sync_state is not None
+        assert sync_state.last_successful_sync is not None
+        assert sync_state.structures_sync_status == "ok"
+    finally:
+        session.close()
+
+
+def test_sync_character_returns_404_for_missing_character(client) -> None:
+    response = client.post("/api/characters/99999999/sync")
     assert response.status_code == 404
 
 

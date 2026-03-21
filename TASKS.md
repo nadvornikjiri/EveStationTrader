@@ -554,6 +554,38 @@ Priority rationale:
 - Mismatches:
   - this packet persists discovered accessible structures but does not yet wire live ESI fetches or sync orchestration
 
+### T07G - Character Sync Route Triggers Structure Discovery
+
+- Status: `DONE`
+- Objective: make `POST /api/characters/{id}/sync` invoke a mocked character-sync path that persists discovered accessible structures and updates sync-state metadata.
+- Dependencies:
+  - T07F
+- Acceptance criteria:
+  - `POST /api/characters/{character_id}/sync` resolves the public EVE `character_id` and fails deterministically for missing characters
+  - the sync path calls the existing discovery persistence behavior with mocked/resolved structure inputs
+  - `esi_character_sync_state` is updated deterministically for the character, at minimum `last_successful_sync` and `structures_sync_status`
+  - repeated sync calls are deterministic and do not duplicate accessible-structure rows
+  - backend tests cover successful sync, missing-character handling, read-after-write on discovered structures, and sync-state updates
+- Likely files/modules:
+  - `backend/app/api/routes/characters.py`
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/services/test_character_service.py`
+- Out of scope:
+  - live ESI HTTP calls
+  - full asset/order/skills persistence
+  - worker/job orchestration
+  - shared `tracked_structures` updates
+  - frontend characters-page changes
+- Test hints:
+  - reuse the T07F discovery service instead of duplicating discovery logic in the route
+  - keep mocked structure inputs deterministic
+  - assert both sync-state updates and discovered-structure persistence
+- Implementation mapping:
+  - `POST /api/characters/{character_id}/sync` now runs the mocked discovery path, persists discovered structures, and updates sync-state metadata in place
+- Mismatches:
+  - this packet wires mocked sync behavior only; live ESI sync and broader character data ingestion remain future work
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`

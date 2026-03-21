@@ -51,6 +51,69 @@ class CharacterService:
         finally:
             session.close()
 
+    def sync_character(self, character_id: int) -> list[CharacterAccessibleStructure]:
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                raise LookupError(f"Character {character_id} was not found.")
+
+            discovered_structures = [
+                DiscoveredStructureInput(
+                    structure_id=1022734985679,
+                    structure_name="Perimeter Market Keepstar",
+                    system_name="Perimeter",
+                    region_name="The Forge",
+                    access_verified_at=datetime.now(UTC),
+                    tracking_enabled=False,
+                    polling_tier="core",
+                    last_snapshot_at=datetime.now(UTC),
+                    confidence_score=0.88,
+                ),
+                DiscoveredStructureInput(
+                    structure_id=1022734985687,
+                    structure_name="Jita Sync Relay",
+                    system_name="Jita",
+                    region_name="The Forge",
+                    access_verified_at=datetime.now(UTC),
+                    tracking_enabled=False,
+                    polling_tier="user",
+                    last_snapshot_at=datetime.now(UTC),
+                    confidence_score=0.64,
+                ),
+                DiscoveredStructureInput(
+                    structure_id=1022734985680,
+                    structure_name="Jita Freeport",
+                    system_name="Jita",
+                    region_name="The Forge",
+                    access_verified_at=datetime.now(UTC),
+                    tracking_enabled=False,
+                    polling_tier="user",
+                    last_snapshot_at=datetime.now(UTC),
+                    confidence_score=0.42,
+                ),
+            ]
+
+            persisted_structures = self.discover_character_accessible_structures(
+                character.character_id,
+                discovered_structures,
+            )
+
+            sync_state = session.scalar(
+                select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id)
+            )
+            if sync_state is None:
+                sync_state = EsiCharacterSyncState(character_id=character.id)
+                session.add(sync_state)
+
+            sync_state.last_successful_sync = datetime.now(UTC)
+            sync_state.structures_sync_status = "ok"
+            session.commit()
+            session.refresh(sync_state)
+            return persisted_structures
+        finally:
+            session.close()
+
     def discover_character_accessible_structures(
         self,
         character_id: int,
