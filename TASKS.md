@@ -976,6 +976,38 @@ Priority rationale:
   - rebuild scope selection is currently simple and based only on available computed tables
   - the underlying generated opportunity rows still use zero-default liquidity placeholders until live order data exists
 
+### T10G - Scheduler-Driven Opportunity Rebuild
+
+- Status: `DONE`
+- Objective: make the worker scheduler invoke the real persisted opportunity rebuild flow instead of leaving background rebuild orchestration as a placeholder.
+- Dependencies:
+  - T10F
+  - T06A
+- Acceptance criteria:
+  - the worker-facing opportunity rebuild task delegates to the existing persisted `opportunity_rebuild` sync path
+  - scheduler registration keeps the heartbeat task and registers the real opportunity rebuild task without changing the existing cadence contract
+  - deterministic backend tests cover task delegation and scheduler/job registration for the rebuild task
+  - the background entrypoint does not reintroduce placeholder opportunity generation behavior
+- Likely files/modules:
+  - `backend/app/workers/tasks/sync_tasks.py`
+  - `backend/app/workers/scheduler/runner.py`
+  - `backend/tests/`
+- Out of scope:
+  - scheduler persistence or distributed locking
+  - live order ingestion
+  - frontend changes
+  - changing the current rebuild selection logic
+- Test hints:
+  - assert the worker task calls the same sync-service path used by the manual API trigger
+  - keep scheduler tests focused on registered job IDs and callables rather than sleeping on real intervals
+  - preserve the existing heartbeat job registration
+- Implementation mapping:
+  - the worker rebuild task now delegates to the existing `SyncService().trigger_job("opportunity_rebuild")` path instead of logging a placeholder
+  - scheduler registration keeps the heartbeat and rebuild jobs on their existing 5-minute and 10-minute intervals
+  - deterministic worker tests cover rebuild delegation, scheduler registration, and the runner entrypoint wiring
+- Mismatches:
+  - the background rebuild now runs the real persisted rebuild flow, but the underlying opportunity generation still uses placeholder liquidity inputs until live order ingestion exists
+
 ## T11 - Structure Snapshots And Demand Inference
 
 - Status: `MISSING`

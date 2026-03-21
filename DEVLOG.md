@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T10G`
+- title: Scheduler-Driven Opportunity Rebuild
+- status: `PASS`
+- summary: replaced the worker rebuild placeholder with the real persisted rebuild path and added focused worker tests for delegation and scheduler registration.
+
+## 2026-03-21
+
 - task id: `T04B`
 - title: File-Backed Foundation Snapshot Source
 - status: `PASS`
