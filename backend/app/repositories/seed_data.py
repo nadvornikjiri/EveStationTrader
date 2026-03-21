@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 
@@ -32,8 +34,8 @@ class ItemSeed:
     type_id: int
     name: str
     volume_m3: float
-    group_name: str
-    category_name: str
+    group_name: str | None
+    category_name: str | None
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,258 @@ class FoundationSeedSource(Protocol):
     def tracked_structures(self) -> Sequence[TrackedStructureSeed]: ...
 
     def default_user_settings(self) -> Mapping[str, object]: ...
+
+
+class FoundationSnapshotError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class _FoundationSnapshot:
+    regions: tuple[RegionSeed, ...]
+    systems: tuple[SystemSeed, ...]
+    stations: tuple[StationSeed, ...]
+    items: tuple[ItemSeed, ...]
+    structure_locations: dict[int, StructureLocationSeed]
+    tracked_structures: tuple[TrackedStructureSeed, ...]
+    default_user_settings: dict[str, object]
+
+
+VALID_TRACKING_TIERS = {"core", "secondary"}
+
+
+def _require_mapping(snapshot: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = snapshot.get(key)
+    if not isinstance(value, Mapping):
+        raise FoundationSnapshotError(f"Foundation snapshot section '{key}' must be an object.")
+    return value
+
+
+def _require_sequence(snapshot: Mapping[str, object], key: str) -> Sequence[object]:
+    value = snapshot.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise FoundationSnapshotError(f"Foundation snapshot section '{key}' must be an array.")
+    return value
+
+
+def _load_int(entry: Mapping[str, object], key: str, section: str) -> int:
+    value = entry.get(key)
+    if not isinstance(value, int):
+        raise FoundationSnapshotError(f"Foundation snapshot '{section}' entry requires integer '{key}'.")
+    return value
+
+
+def _load_float(entry: Mapping[str, object], key: str, section: str) -> float:
+    value = entry.get(key)
+    if not isinstance(value, (int, float)):
+        raise FoundationSnapshotError(f"Foundation snapshot '{section}' entry requires numeric '{key}'.")
+    return float(value)
+
+
+def _load_str(entry: Mapping[str, object], key: str, section: str) -> str:
+    value = entry.get(key)
+    if not isinstance(value, str):
+        raise FoundationSnapshotError(f"Foundation snapshot '{section}' entry requires string '{key}'.")
+    return value
+
+
+def _load_optional_str(entry: Mapping[str, object], key: str) -> str | None:
+    value = entry.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise FoundationSnapshotError(f"Foundation snapshot entry field '{key}' must be a string or null.")
+    return value
+
+
+def _load_foundation_snapshot(snapshot_path: Path) -> _FoundationSnapshot:
+    try:
+        raw_document = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise FoundationSnapshotError(f"Foundation snapshot file not found: {snapshot_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise FoundationSnapshotError(f"Foundation snapshot file is not valid JSON: {snapshot_path}") from exc
+
+    if not isinstance(raw_document, Mapping):
+        raise FoundationSnapshotError("Foundation snapshot root must be a JSON object.")
+
+    snapshot = raw_document
+
+    regions = tuple(
+        RegionSeed(
+            region_id=_load_int(entry, "region_id", "regions"),
+            name=_load_str(entry, "name", "regions"),
+        )
+        for entry in _require_sequence(snapshot, "regions")
+        if isinstance(entry, Mapping)
+    )
+    _validate_entry_count(snapshot, "regions", regions)
+    _validate_unique_ids(regions, "region_id", "regions")
+
+    systems = tuple(
+        SystemSeed(
+            system_id=_load_int(entry, "system_id", "systems"),
+            region_id=_load_int(entry, "region_id", "systems"),
+            name=_load_str(entry, "name", "systems"),
+            security_status=_load_float(entry, "security_status", "systems"),
+        )
+        for entry in _require_sequence(snapshot, "systems")
+        if isinstance(entry, Mapping)
+    )
+    _validate_entry_count(snapshot, "systems", systems)
+    _validate_unique_ids(systems, "system_id", "systems")
+
+    stations = tuple(
+        StationSeed(
+            station_id=_load_int(entry, "station_id", "stations"),
+            system_id=_load_int(entry, "system_id", "stations"),
+            region_id=_load_int(entry, "region_id", "stations"),
+            name=_load_str(entry, "name", "stations"),
+        )
+        for entry in _require_sequence(snapshot, "stations")
+        if isinstance(entry, Mapping)
+    )
+    _validate_entry_count(snapshot, "stations", stations)
+    _validate_unique_ids(stations, "station_id", "stations")
+
+    items = tuple(
+        ItemSeed(
+            type_id=_load_int(entry, "type_id", "items"),
+            name=_load_str(entry, "name", "items"),
+            volume_m3=_load_float(entry, "volume_m3", "items"),
+            group_name=_load_optional_str(entry, "group_name"),
+            category_name=_load_optional_str(entry, "category_name"),
+        )
+        for entry in _require_sequence(snapshot, "items")
+        if isinstance(entry, Mapping)
+    )
+    _validate_entry_count(snapshot, "items", items)
+    _validate_unique_ids(items, "type_id", "items")
+
+    structure_locations: dict[int, StructureLocationSeed] = {}
+    for entry in _require_sequence(snapshot, "structure_locations"):
+        if not isinstance(entry, Mapping):
+            raise FoundationSnapshotError("Foundation snapshot 'structure_locations' entries must be objects.")
+        structure_id = _load_int(entry, "structure_id", "structure_locations")
+        if structure_id in structure_locations:
+            raise FoundationSnapshotError(f"Foundation snapshot contains duplicate structure_id {structure_id}.")
+        structure_locations[structure_id] = StructureLocationSeed(
+            system_id=_load_int(entry, "system_id", "structure_locations"),
+            region_id=_load_int(entry, "region_id", "structure_locations"),
+            name=_load_str(entry, "name", "structure_locations"),
+        )
+
+    tracked_structures = tuple(
+        TrackedStructureSeed(
+            structure_id=_load_int(entry, "structure_id", "tracked_structures"),
+            name=_load_str(entry, "name", "tracked_structures"),
+            tracking_tier=_load_str(entry, "tracking_tier", "tracked_structures"),
+        )
+        for entry in _require_sequence(snapshot, "tracked_structures")
+        if isinstance(entry, Mapping)
+    )
+    _validate_entry_count(snapshot, "tracked_structures", tracked_structures)
+    _validate_unique_ids(tracked_structures, "structure_id", "tracked_structures")
+
+    default_user_settings = _require_mapping(snapshot, "default_user_settings")
+
+    region_ids = {region.region_id for region in regions}
+    system_ids = {system.system_id for system in systems}
+
+    for system in systems:
+        if system.region_id not in region_ids:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot system {system.system_id} references unknown region_id {system.region_id}."
+            )
+
+    for station in stations:
+        if station.region_id not in region_ids:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot station {station.station_id} references unknown region_id {station.region_id}."
+            )
+        if station.system_id not in system_ids:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot station {station.station_id} references unknown system_id {station.system_id}."
+            )
+
+    for structure_id, metadata in structure_locations.items():
+        if metadata.region_id not in region_ids:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot structure {structure_id} references unknown region_id {metadata.region_id}."
+            )
+        if metadata.system_id not in system_ids:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot structure {structure_id} references unknown system_id {metadata.system_id}."
+            )
+
+    for tracked_structure in tracked_structures:
+        if tracked_structure.structure_id not in structure_locations:
+            raise FoundationSnapshotError(
+                f"Foundation snapshot tracked structure {tracked_structure.structure_id} has no matching structure location."
+            )
+        if tracked_structure.tracking_tier not in VALID_TRACKING_TIERS:
+            raise FoundationSnapshotError(
+                "Foundation snapshot tracked structure "
+                f"{tracked_structure.structure_id} uses unsupported tracking_tier '{tracked_structure.tracking_tier}'."
+            )
+
+    return _FoundationSnapshot(
+        regions=regions,
+        systems=systems,
+        stations=stations,
+        items=items,
+        structure_locations=structure_locations,
+        tracked_structures=tracked_structures,
+        default_user_settings=dict(default_user_settings),
+    )
+
+
+def _validate_entry_count(snapshot: Mapping[str, object], key: str, entries: Sequence[object]) -> None:
+    if len(entries) != len(_require_sequence(snapshot, key)):
+        raise FoundationSnapshotError(f"Foundation snapshot section '{key}' entries must be objects.")
+
+
+def _validate_unique_ids(entries: Sequence[object], key: str, section: str) -> None:
+    seen_ids: set[int] = set()
+    for entry in entries:
+        entry_id = getattr(entry, key)
+        if entry_id in seen_ids:
+            raise FoundationSnapshotError(f"Foundation snapshot contains duplicate {key} {entry_id} in '{section}'.")
+        seen_ids.add(entry_id)
+
+
+class FileFoundationSeedSource:
+    def __init__(self, snapshot_path: str | Path) -> None:
+        self.snapshot_path = Path(snapshot_path)
+        snapshot = _load_foundation_snapshot(self.snapshot_path)
+        self._regions = snapshot.regions
+        self._systems = snapshot.systems
+        self._stations = snapshot.stations
+        self._items = snapshot.items
+        self._structure_locations = snapshot.structure_locations
+        self._tracked_structures = snapshot.tracked_structures
+        self._default_user_settings = snapshot.default_user_settings
+
+    def regions(self) -> Sequence[RegionSeed]:
+        return self._regions
+
+    def systems(self) -> Sequence[SystemSeed]:
+        return self._systems
+
+    def stations(self) -> Sequence[StationSeed]:
+        return self._stations
+
+    def items(self) -> Sequence[ItemSeed]:
+        return self._items
+
+    def structure_locations(self) -> Mapping[int, StructureLocationSeed]:
+        return self._structure_locations
+
+    def tracked_structures(self) -> Sequence[TrackedStructureSeed]:
+        return self._tracked_structures
+
+    def default_user_settings(self) -> Mapping[str, object]:
+        return self._default_user_settings
 
 
 CURATED_REGIONS: tuple[RegionSeed, ...] = (

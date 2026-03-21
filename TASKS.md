@@ -163,6 +163,39 @@ Priority rationale:
 - Mismatches:
   - this packet improves the bootstrap architecture but does not yet add a live SDE or ESI-backed source
 
+### T04B - File-Backed Foundation Snapshot Source
+
+- Status: `DONE`
+- Objective: add a file-backed foundation seed source that loads normalized snapshot data without changing bootstrap persistence behavior.
+- Dependencies:
+  - T04A
+- Acceptance criteria:
+  - a file-backed `FoundationSeedSource` exists and supplies regions, systems, stations, items, structure locations, tracked structures, and default settings in the normalized shape consumed by `FoundationDataService`
+  - `FoundationDataService.bootstrap()` works unchanged against the file-backed source
+  - bootstrap remains idempotent when run repeatedly against the file-backed source
+  - deterministic backend tests cover loading a minimal valid snapshot, successful bootstrap through the file-backed source, idempotent rerun behavior, and malformed or incomplete snapshot failures
+  - the curated in-code source remains available as the safe default unless a file-backed source is explicitly selected
+- Likely files/modules:
+  - `backend/app/repositories/seed_data.py`
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- Out of scope:
+  - live CCP SDE download
+  - live ESI universe refresh
+  - market group import
+  - schema changes
+  - frontend changes
+- Test hints:
+  - keep the snapshot format minimal and normalized so it mirrors the seed dataclasses closely
+  - fail deterministically when referenced dependencies like region/system ids are missing
+  - preserve the current curated source as the default bootstrap path
+- Implementation mapping:
+  - `FileFoundationSeedSource` now loads a normalized JSON snapshot into the existing foundation seed dataclasses and validates duplicate IDs, missing references, and unsupported tracking tiers before bootstrap runs.
+  - `FoundationDataService` works unchanged against the file-backed source because the persistence path still consumes the shared seed interface.
+  - deterministic backend tests cover minimal snapshot loading, file-backed bootstrap/idempotence, malformed snapshots, invalid tracking tiers, duplicate IDs, and the curated default-source behavior.
+- Mismatches:
+  - this packet adds a checked-in snapshot source for deterministic bootstrap input, but it does not yet fetch or refresh live CCP SDE/ESI foundation data
+
 ## T05 - Trade Analysis API And Data Flow
 
 - Status: `DONE`

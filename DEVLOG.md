@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T04B`
+- title: File-Backed Foundation Snapshot Source
+- status: `PASS`
+- summary: added a validated file-backed foundation seed source plus snapshot fixture coverage, while keeping the curated in-code provider as the default bootstrap path.
+
+## 2026-03-21
+
 - task id: `T06D`
 - title: Persisted Worker Health Card
 - status: `PASS`

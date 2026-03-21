@@ -1,0 +1,53 @@
+{
+  "regions": [
+    {
+      "region_id": 91000001,
+      "name": "Snapshot Region"
+    }
+  ],
+  "systems": [
+    {
+      "system_id": 92000001,
+      "region_id": 91000001,
+      "name": "Snapshot System",
+      "security_status": 0.4
+    }
+  ],
+  "stations": [
+    {
+      "station_id": 93000001,
+      "system_id": 92000001,
+      "region_id": 91000001,
+      "name": "Snapshot Station"
+    }
+  ],
+  "items": [
+    {
+      "type_id": 94000001,
+      "name": "Snapshot Item",
+      "volume_m3": 1.25,
+      "group_name": "Snapshot Group",
+      "category_name": "Snapshot Category"
+    }
+  ],
+  "structure_locations": [
+    {
+      "structure_id": 95000001,
+      "system_id": 92000001,
+      "region_id": 91000001,
+      "name": "Snapshot Structure"
+    }
+  ],
+  "tracked_structures": [
+    {
+      "structure_id": 95000001,
+      "name": "Snapshot Structure",
+      "tracking_tier": "secondary"
+    }
+  ],
+  "default_user_settings": {
+    "default_analysis_period_days": 21,
+    "warning_threshold_pct": 0.25,
+    "warning_enabled": true
+  }
+}
