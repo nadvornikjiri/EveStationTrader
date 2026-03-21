@@ -564,6 +564,21 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - open follow-ups:
   - implement real SDE import and market group refresh
 
+- task id: `T04A`
+- title: Foundation Data Source Abstraction
+- status: `DONE`
+- spec refs: `TASKS.md` task packet `T04A`
+- acceptance criteria covered:
+  - foundation bootstrap reads seed data through a provider abstraction
+  - default curated source preserves the existing persisted bootstrap shape
+  - bootstrap remains idempotent
+  - a small mock source proves the abstraction boundary
+- files changed:
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- short implementation summary: Swapped the bootstrap over to a seed-source interface and added tests for the default and mock sources.
+
 - task id: `T05`
 - title: Trade Analysis API And Data Flow
 - status: `IMPORTED_PARTIAL`

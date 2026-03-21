@@ -133,6 +133,36 @@ Priority rationale:
 - Mismatches:
   - uses hardcoded seed data instead of real SDE import or ESI refresh behavior
 
+### T04A - Foundation Data Source Abstraction
+
+- Status: `DONE`
+- Objective: make foundation bootstrap read seed inputs through a provider abstraction instead of directly from hardcoded module constants, while preserving current behavior.
+- Dependencies:
+  - T02
+- Acceptance criteria:
+  - `FoundationDataService.bootstrap()` reads regions, systems, stations, items, tracked-structure metadata, and defaults through a single source interface
+  - the default source still produces the current curated seed set without behavioral regression
+  - bootstrap remains idempotent
+  - the source boundary is shaped so a later SDE-backed implementation can plug in without rewriting bootstrap persistence logic
+  - deterministic backend tests cover bootstrap via the default source, idempotence, and a small alternate/mock source proving the abstraction works
+- Likely files/modules:
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- Out of scope:
+  - full CCP SDE import
+  - ESI-backed foundation refresh
+  - market group refresh
+  - frontend changes
+- Test hints:
+  - keep the provider responsible only for normalized seed data, not persistence behavior
+  - preserve the existing persisted shape exactly
+  - use a tiny mock source to prove the abstraction boundary is real
+- Implementation mapping:
+  - `FoundationDataService` now reads all seed inputs from a provider abstraction, the curated default source preserves the existing bootstrap data set, and deterministic tests cover idempotence plus an alternate mock source.
+- Mismatches:
+  - this packet improves the bootstrap architecture but does not yet add a live SDE or ESI-backed source
+
 ## T05 - Trade Analysis API And Data Flow
 
 - Status: `DONE`
