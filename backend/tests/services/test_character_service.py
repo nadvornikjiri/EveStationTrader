@@ -1,12 +1,12 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState, User
-from app.services.characters.service import CharacterService
+from app.services.characters.service import CharacterService, DiscoveredStructureInput
 
 
 def build_session() -> Session:
@@ -202,3 +202,129 @@ def test_enable_character_structure_tracking_raises_for_missing_character_or_str
 
     with pytest.raises(LookupError, match="1022734985799"):
         service.enable_character_structure_tracking(90000042, 1022734985799)
+
+
+def test_discover_character_accessible_structures_inserts_asset_only_rows() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    discovered = service.discover_character_accessible_structures(
+        90000042,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985683,
+                structure_name="Amarr Logistics Hub",
+                system_name="Amarr",
+                region_name="Domain",
+                access_verified_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                tracking_enabled=False,
+                polling_tier="user",
+                last_snapshot_at=datetime(2026, 3, 21, 11, 30, tzinfo=UTC),
+                confidence_score=0.55,
+            )
+        ],
+    )
+
+    assert len(discovered) == 1
+    assert discovered[0].structure_id == 1022734985683
+    assert discovered[0].structure_name == "Amarr Logistics Hub"
+
+    rows = session.scalars(select(CharacterAccessibleStructure).order_by(CharacterAccessibleStructure.structure_id)).all()
+    assert [row.structure_id for row in rows] == [1022734985679, 1022734985680, 1022734985683]
+    assert rows[-1].tracking_enabled is False
+    assert rows[-1].confidence_score == 0.55
+
+
+def test_discover_character_accessible_structures_deduplicates_combined_inputs() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    discovered = service.discover_character_accessible_structures(
+        90000042,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985684,
+                structure_name="Duplicate Alpha",
+                system_name="Jita",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                polling_tier="core",
+                confidence_score=0.2,
+            ),
+            DiscoveredStructureInput(
+                structure_id=1022734985684,
+                structure_name="Duplicate Beta",
+                system_name="Perimeter",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 13, 0, tzinfo=UTC),
+                polling_tier="user",
+                confidence_score=0.7,
+            ),
+        ],
+    )
+
+    assert len(discovered) == 1
+    assert discovered[0].structure_name == "Duplicate Beta"
+    assert discovered[0].system_name == "Perimeter"
+
+    rows = session.scalars(select(CharacterAccessibleStructure).where(CharacterAccessibleStructure.structure_id == 1022734985684)).all()
+    assert len(rows) == 1
+    assert rows[0].structure_name == "Duplicate Beta"
+    assert rows[0].system_name == "Perimeter"
+    assert rows[0].confidence_score == 0.7
+
+
+def test_discover_character_accessible_structures_updates_existing_rows_without_clearing_tracking() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    discovered = service.discover_character_accessible_structures(
+        90000042,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985679,
+                structure_name="Perimeter Market Keepstar Updated",
+                system_name="Perimeter",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 14, 0, tzinfo=UTC),
+                tracking_enabled=False,
+                polling_tier="secondary",
+                last_snapshot_at=datetime(2026, 3, 21, 13, 45, tzinfo=UTC),
+                confidence_score=0.91,
+            )
+        ],
+    )
+
+    assert len(discovered) == 1
+    assert discovered[0].structure_name == "Perimeter Market Keepstar Updated"
+    assert discovered[0].tracking_enabled is True
+
+    row = session.scalar(
+        select(CharacterAccessibleStructure).where(CharacterAccessibleStructure.structure_id == 1022734985679)
+    )
+    assert row is not None
+    assert row.structure_name == "Perimeter Market Keepstar Updated"
+    assert row.tracking_enabled is True
+    assert row.confidence_score == 0.91
+    assert row.access_verified_at == datetime(2026, 3, 21, 14, 0, tzinfo=UTC).replace(tzinfo=None)
+
+
+def test_discover_character_accessible_structures_raises_for_missing_character() -> None:
+    session = build_session()
+    service = CharacterService(session_factory=lambda: session)
+
+    with pytest.raises(LookupError, match="90000042"):
+        service.discover_character_accessible_structures(
+            90000042,
+            [
+                DiscoveredStructureInput(
+                    structure_id=1022734985685,
+                    structure_name="Missing Character Hub",
+                    system_name="Jita",
+                    region_name="The Forge",
+                )
+            ],
+        )

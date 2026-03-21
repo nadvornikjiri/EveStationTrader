@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07F`
+- title: Persist Accessible Structure Discovery From Character Sync Inputs
+- status: `PASS`
+- summary: added a character-service discovery upsert that deduplicates resolved structures, preserves existing tracking flags, and refreshes accessible-structure metadata in place.
+
+## 2026-03-21
+
 - task id: `T07E`
 - title: Character Connect Entry Point
 - status: `PASS`

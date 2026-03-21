@@ -1,4 +1,6 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -6,6 +8,19 @@ from sqlalchemy.orm import Session
 from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail, CharacterListItem
 from app.db.session import SessionLocal
 from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState
+
+
+@dataclass(frozen=True)
+class DiscoveredStructureInput:
+    structure_id: int
+    structure_name: str
+    system_name: str | None
+    region_name: str | None
+    access_verified_at: datetime | None = None
+    tracking_enabled: bool = False
+    polling_tier: str = "user"
+    last_snapshot_at: datetime | None = None
+    confidence_score: float = 0.0
 
 
 class CharacterService:
@@ -33,6 +48,70 @@ class CharacterService:
             session.commit()
             session.refresh(structure)
             return structure
+        finally:
+            session.close()
+
+    def discover_character_accessible_structures(
+        self,
+        character_id: int,
+        discovered_structures: Iterable[DiscoveredStructureInput],
+    ) -> list[CharacterAccessibleStructure]:
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                raise LookupError(f"Character {character_id} was not found.")
+
+            discovered_by_structure_id: dict[int, DiscoveredStructureInput] = {}
+            for discovered_structure in discovered_structures:
+                discovered_by_structure_id[discovered_structure.structure_id] = discovered_structure
+
+            persisted_structures: list[CharacterAccessibleStructure] = []
+            for structure_id in sorted(discovered_by_structure_id):
+                discovered_structure = discovered_by_structure_id[structure_id]
+                persisted_structure = session.scalar(
+                    select(CharacterAccessibleStructure).where(
+                        CharacterAccessibleStructure.character_id == character.id,
+                        CharacterAccessibleStructure.structure_id == structure_id,
+                    )
+                )
+                if persisted_structure is None:
+                    persisted_structure = CharacterAccessibleStructure(
+                        character_id=character.id,
+                        structure_id=structure_id,
+                        structure_name=discovered_structure.structure_name,
+                        system_name=discovered_structure.system_name,
+                        region_name=discovered_structure.region_name,
+                        access_verified_at=(
+                            discovered_structure.access_verified_at
+                            if discovered_structure.access_verified_at is not None
+                            else datetime.now(UTC)
+                        ),
+                        tracking_enabled=discovered_structure.tracking_enabled,
+                        polling_tier=discovered_structure.polling_tier,
+                        last_snapshot_at=discovered_structure.last_snapshot_at,
+                        confidence_score=discovered_structure.confidence_score,
+                    )
+                    session.add(persisted_structure)
+                else:
+                    persisted_structure.structure_name = discovered_structure.structure_name
+                    persisted_structure.system_name = discovered_structure.system_name
+                    persisted_structure.region_name = discovered_structure.region_name
+                    if discovered_structure.access_verified_at is not None:
+                        persisted_structure.access_verified_at = discovered_structure.access_verified_at
+                    persisted_structure.tracking_enabled = (
+                        persisted_structure.tracking_enabled or discovered_structure.tracking_enabled
+                    )
+                    persisted_structure.polling_tier = discovered_structure.polling_tier
+                    persisted_structure.last_snapshot_at = discovered_structure.last_snapshot_at
+                    persisted_structure.confidence_score = discovered_structure.confidence_score
+
+                persisted_structures.append(persisted_structure)
+
+            session.commit()
+            for persisted_structure in persisted_structures:
+                session.refresh(persisted_structure)
+            return persisted_structures
         finally:
             session.close()
 

@@ -519,10 +519,40 @@ Priority rationale:
   - assert the response contains `authorize_url` and `scopes`
   - keep `/api/auth/login` as the source of truth rather than duplicating query construction
 - Implementation mapping:
-  - `/api/characters/connect` now returns the same login payload helper as `/api/auth/login`
-  - the redirect payload is built in one place so the two entry points stay aligned
+  - `/api/characters/connect` now returns the shared auth-login redirect payload instead of a stub message
 - Mismatches:
   - this packet improves the connect entry point but does not add real session ownership or browser redirect handling
+
+### T07F - Persist Accessible Structure Discovery From Character Sync Inputs
+
+- Status: `DONE`
+- Objective: persist discovered accessible structures for a character from mocked asset/order-derived structure inputs.
+- Dependencies:
+  - T07A
+  - T07C
+- Acceptance criteria:
+  - a backend service accepts a target public `character_id` plus resolved discovered-structure inputs
+  - unique structure ids from combined inputs are deduplicated before persistence
+  - the service upserts `character_accessible_structures` rows for that character and preserves `tracking_enabled=True` on existing rows
+  - existing discovered structures are updated in place when metadata changes instead of duplicated
+  - deterministic backend tests cover asset-only discovery, combined duplicate inputs, update-in-place behavior, and missing-character handling
+- Likely files/modules:
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/services/test_character_service.py`
+- Out of scope:
+  - live ESI HTTP calls
+  - wiring `/api/characters/{id}/sync` end to end
+  - shared `tracked_structures` updates
+  - frontend characters-page work
+- Test hints:
+  - pass resolved structure metadata objects rather than raw asset/order payloads
+  - verify rediscovery does not reset `tracking_enabled`
+  - assert one row per `(character, structure_id)` after duplicate inputs
+- Implementation mapping:
+  - `CharacterService.discover_character_accessible_structures()` now deduplicates resolved inputs by `structure_id`, upserts rows in place, and preserves existing `tracking_enabled=True` values
+  - deterministic service tests cover asset-only discovery, duplicate inputs, metadata refresh, and missing-character handling
+- Mismatches:
+  - this packet persists discovered accessible structures but does not yet wire live ESI fetches or sync orchestration
 
 ## T08 - Frontend Shells And Routing
 
