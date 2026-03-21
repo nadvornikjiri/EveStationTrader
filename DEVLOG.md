@@ -1,3 +1,38 @@
+## 2026-03-21
+
+- task id: `T05C`
+- title: Trade Page Controls And Client-Side Filtering
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 1, 14, 15, 17.2
+- acceptance criteria covered:
+  - target-market and analysis-period controls now drive the source-summary and item queries
+  - item search applies a case-insensitive substring filter before rendering item rows
+  - min ROI and warning-threshold controls filter weaker rows deterministically from loaded query results
+  - sortable item-table columns now change rendered order deterministically
+  - frontend tests cover default filtering, control-driven requeries, source reset behavior, and sortable row rendering
+- files changed:
+  - `frontend/package.json`
+  - `frontend/package-lock.json`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+  - `frontend/src/vite-env.d.ts`
+  - `backend/app/services/auth/service.py`
+  - `TASKS.md`
+- short implementation summary: Wired the trade-page controls into the active query state and added deterministic client-side item filtering and sorting so the main trade workflow is more interactive without changing the backend contract.
+- important decisions:
+  - `period_days` is now part of the frontend trade-query contract for source summaries and item rows
+  - warning-threshold filtering currently uses `risk_pct` as a client-side max-risk gate rather than recomputing backend warning flags
+  - source selection resets automatically when a target or period change removes the previously selected source from the result set
+- open follow-ups:
+  - move the remaining trade filters to typed backend query parameters when the API surface is expanded
+  - wire item-row selection into the detail panel so the lower-right pane reflects the chosen opportunity
+  - add source-level filtering for security, demand source, and source type
+
 # DEVLOG.md
 
 Imported baseline entries for work completed before `AGENTS.md` adoption. These entries reflect the current repository state and validation evidence, not historical certainty about when the original implementation happened.
