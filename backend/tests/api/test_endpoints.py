@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
+from app.core.security import build_esi_scopes
 from app.db.session import SessionLocal
 from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState, User
 
@@ -273,3 +274,20 @@ def test_get_auth_me(client) -> None:
     response = client.get("/api/auth/me")
     assert response.status_code == 200
     assert response.json()["character_name"] == "Demo Trader"
+
+
+def test_get_auth_login_returns_actionable_redirect_payload(client) -> None:
+    response = client.get("/api/auth/login")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorize_url"].startswith("https://login.eveonline.com/v2/oauth/authorize/?")
+    assert payload["scopes"] == build_esi_scopes()
+
+
+def test_get_character_connect_matches_auth_login_payload(client) -> None:
+    login_response = client.get("/api/auth/login")
+    connect_response = client.post("/api/characters/connect")
+
+    assert connect_response.status_code == 200
+    assert connect_response.json() == login_response.json()

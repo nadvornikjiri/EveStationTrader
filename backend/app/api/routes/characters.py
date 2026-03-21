@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
+from app.api.routes.auth import build_login_redirect_response
+from app.api.schemas.auth import AuthRedirectResponse
 from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail, CharacterListItem, CharacterPatchRequest
 from app.api.schemas.common import MessageResponse
 from app.services.characters.service import CharacterService
@@ -12,9 +14,9 @@ def get_characters() -> list[CharacterListItem]:
     return CharacterService().list_characters()
 
 
-@router.post("/connect", response_model=MessageResponse)
-def connect_character() -> MessageResponse:
-    return MessageResponse(message="Use /api/auth/login to start the EVE SSO flow.")
+@router.post("/connect", response_model=AuthRedirectResponse)
+def connect_character() -> AuthRedirectResponse:
+    return build_login_redirect_response()
 
 
 @router.get("/{character_id}", response_model=CharacterDetail)

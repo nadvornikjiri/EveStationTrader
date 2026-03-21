@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T07E`
+- title: Character Connect Entry Point
+- status: `PASS`
+- summary: routed `/api/characters/connect` through the shared EVE SSO login payload helper and added API tests that keep it aligned with `/api/auth/login`.
+
+## 2026-03-21
+
 - task id: `T07D`
 - title: Link Additional EVE SSO Characters To Existing User
 - status: `PASS`

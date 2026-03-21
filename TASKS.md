@@ -497,6 +497,33 @@ Priority rationale:
 - Mismatches:
   - linking still relies on the current single-user app assumption rather than real session ownership
 
+### T07E - Character Connect Entry Point
+
+- Status: `DONE`
+- Objective: make `/api/characters/connect` return the actionable EVE SSO login payload instead of a stub message.
+- Dependencies:
+  - T07 auth route scaffold
+- Acceptance criteria:
+  - `/api/characters/connect` returns the same redirect payload shape as `/api/auth/login`
+  - the login redirect remains defined in one place so the two entry points stay aligned
+  - backend tests cover the connect route and guard the shared login payload shape
+- Likely files/modules:
+  - `backend/app/api/routes/auth.py`
+  - `backend/app/api/routes/characters.py`
+  - `backend/tests/api/test_endpoints.py`
+- Out of scope:
+  - callback persistence changes
+  - real browser/session redirects
+  - frontend characters-page wiring
+- Test hints:
+  - assert the response contains `authorize_url` and `scopes`
+  - keep `/api/auth/login` as the source of truth rather than duplicating query construction
+- Implementation mapping:
+  - `/api/characters/connect` now returns the same login payload helper as `/api/auth/login`
+  - the redirect payload is built in one place so the two entry points stay aligned
+- Mismatches:
+  - this packet improves the connect entry point but does not add real session ownership or browser redirect handling
+
 ## T08 - Frontend Shells And Routing
 
 - Status: `DONE`

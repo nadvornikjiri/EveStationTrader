@@ -11,11 +11,15 @@ from app.services.auth.service import AuthService
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/login", response_model=AuthRedirectResponse)
-def login() -> AuthRedirectResponse:
+def build_login_redirect_response() -> AuthRedirectResponse:
     params = get_auth_redirect_config()
     authorize_url = f"https://login.eveonline.com/v2/oauth/authorize/?{urlencode({'response_type': 'code', **params})}"
     return AuthRedirectResponse(authorize_url=authorize_url, scopes=build_esi_scopes())
+
+
+@router.get("/login", response_model=AuthRedirectResponse)
+def login() -> AuthRedirectResponse:
+    return build_login_redirect_response()
 
 
 @router.get("/callback", response_model=CurrentUser | MessageResponse)
