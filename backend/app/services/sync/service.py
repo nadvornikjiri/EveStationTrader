@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Callable, Protocol
 
@@ -14,6 +15,8 @@ from app.models.all_models import (
     MarketDemandResolved,
     MarketPricePeriod,
     Region,
+    StructureOrderDelta,
+    StructureSnapshot,
     StructureDemandPeriod,
     SyncJobRun,
     TrackedStructure,
@@ -25,6 +28,8 @@ from app.services.esi.history_ingestion import (
     EsiRegionalHistoryRecord,
 )
 from app.services.opportunities.generation import OpportunityGenerationService
+from app.services.structures.demand_periods import StructureDemandPeriodService
+from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
 from app.services.sync.foundation_data import FoundationDataService
 
 
@@ -34,6 +39,17 @@ class HistoryCapableEsiClient(Protocol):
 
 class AdamDemandCapableClient(Protocol):
     def fetch_npc_demand(self, location_ids: list[int], type_ids: list[int]) -> list[AdamNpcDemandRecord]: ...
+
+
+@dataclass(frozen=True)
+class StructureSnapshotBatch:
+    structure_id: int
+    snapshot_time: datetime
+    orders: list[StructureOrderInput]
+
+
+class StructureSnapshotCapableClient(Protocol):
+    def fetch_structure_snapshot(self, structure_id: int) -> StructureSnapshotBatch | None: ...
 
 
 class SyncService:
@@ -50,10 +66,12 @@ class SyncService:
         session_factory: Callable[[], Session] = SessionLocal,
         adam_client: AdamDemandCapableClient | None = None,
         esi_client: HistoryCapableEsiClient | None = None,
+        structure_snapshot_client: StructureSnapshotCapableClient | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.adam_client = adam_client or Adam4EveClient()
         self.esi_client = esi_client or EsiClient()
+        self.structure_snapshot_client = structure_snapshot_client
 
     @staticmethod
     def _ensure_utc(timestamp: datetime) -> datetime:
@@ -274,6 +292,17 @@ class SyncService:
                         "Rebuilt opportunities "
                         f"({generated_count} item rows across {scope_count} target scopes)."
                     )
+            elif job_type == "structure_snapshot_sync":
+                structure_sync_result = self._sync_structure_snapshots(session)
+                records_processed = structure_sync_result.records_processed
+                target_type = "structures"
+                target_id = str(structure_sync_result.structure_count)
+                message = (
+                    "Synced structure snapshots "
+                    f"({structure_sync_result.snapshot_count} snapshots, "
+                    f"{structure_sync_result.delta_count} deltas, "
+                    f"{structure_sync_result.demand_period_count} demand periods)."
+                )
 
             finished_at = datetime.now(UTC)
             duration_ms = max(int((finished_at - now).total_seconds() * 1000), 0)
@@ -301,6 +330,101 @@ class SyncService:
             )
         finally:
             session.close()
+
+    def _sync_structure_snapshots(self, session: Session) -> "StructureSnapshotSyncResult":
+        if self.structure_snapshot_client is None:
+            return StructureSnapshotSyncResult(0, 0, 0, 0, 0)
+
+        tracked_structures = session.scalars(
+            select(TrackedStructure)
+            .join(Location, Location.location_id == TrackedStructure.structure_id)
+            .where(TrackedStructure.is_enabled.is_(True), Location.location_type == "structure")
+            .order_by(TrackedStructure.structure_id.asc())
+        ).all()
+        if not tracked_structures:
+            return StructureSnapshotSyncResult(0, 0, 0, 0, 0)
+
+        snapshot_service = StructureSnapshotService()
+        demand_service = StructureDemandPeriodService()
+        snapshot_count = 0
+        delta_count = 0
+        demand_period_count = 0
+        structure_count = 0
+
+        for tracked_structure in tracked_structures:
+            batch = self.structure_snapshot_client.fetch_structure_snapshot(tracked_structure.structure_id)
+            if batch is None or not batch.orders:
+                continue
+            if batch.structure_id != tracked_structure.structure_id:
+                raise ValueError("structure snapshot batch structure_id did not match tracked structure")
+
+            normalized_snapshot_time = self._ensure_utc(batch.snapshot_time)
+            existing_snapshot = session.scalar(
+                select(StructureSnapshot).where(
+                    StructureSnapshot.structure_id == tracked_structure.structure_id,
+                    StructureSnapshot.snapshot_time == normalized_snapshot_time,
+                )
+            )
+            if existing_snapshot is not None:
+                continue
+
+            structure_count += 1
+            snapshot_result = snapshot_service.persist_snapshot(
+                session,
+                structure_id=tracked_structure.structure_id,
+                snapshot_time=normalized_snapshot_time,
+                orders=batch.orders,
+            )
+            snapshot_count += 1
+
+            current_snapshot = session.get(StructureSnapshot, snapshot_result.snapshot_id)
+            previous_snapshot = session.scalar(
+                select(StructureSnapshot)
+                .where(
+                    StructureSnapshot.structure_id == tracked_structure.structure_id,
+                    StructureSnapshot.snapshot_time < normalized_snapshot_time,
+                )
+                .order_by(StructureSnapshot.snapshot_time.desc(), StructureSnapshot.id.desc())
+            )
+            if current_snapshot is None or previous_snapshot is None:
+                continue
+
+            delta_result = snapshot_service.persist_deltas_for_snapshots(
+                session,
+                structure_id=tracked_structure.structure_id,
+                previous_snapshot_id=previous_snapshot.id,
+                current_snapshot_id=current_snapshot.id,
+            )
+            delta_count += delta_result.delta_count
+            if delta_result.delta_count == 0:
+                continue
+
+            type_ids = session.scalars(
+                select(StructureOrderDelta.type_id)
+                .where(
+                    StructureOrderDelta.structure_id == tracked_structure.structure_id,
+                    StructureOrderDelta.to_snapshot_time == normalized_snapshot_time,
+                )
+                .distinct()
+            ).all()
+            for type_id in type_ids:
+                demand_service.upsert_period(
+                    session,
+                    structure_id=tracked_structure.structure_id,
+                    type_id=type_id,
+                    period_days=14,
+                    as_of=normalized_snapshot_time,
+                )
+                demand_period_count += 1
+
+        return StructureSnapshotSyncResult(
+            structure_count=structure_count,
+            snapshot_count=snapshot_count,
+            delta_count=delta_count,
+            demand_period_count=demand_period_count,
+            records_processed=snapshot_count + delta_count + demand_period_count,
+        )
+
 
     def get_fallback_status(self) -> list[FallbackDiagnostic]:
         session = self.session_factory()
@@ -370,3 +494,12 @@ class SyncService:
             return diagnostics
         finally:
             session.close()
+
+
+@dataclass(frozen=True)
+class StructureSnapshotSyncResult:
+    structure_count: int
+    snapshot_count: int
+    delta_count: int
+    demand_period_count: int
+    records_processed: int

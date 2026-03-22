@@ -1185,3 +1185,38 @@ Priority rationale:
   - structure-local demand is gated by explicit coverage/confidence thresholds in the service layer
 - Mismatches:
   - fallback for structures still uses the temporary zero-demand regional fallback placeholder rather than real CCP-derived fallback demand
+
+### T11D - Structure Snapshot Sync Orchestration
+
+- Status: `DONE`
+- Objective: add a sync entrypoint that runs the existing structure snapshot, delta, and demand-period pipeline for tracked structures.
+- Dependencies:
+  - T11A
+  - T11B
+  - T06A
+- Acceptance criteria:
+  - `SyncService` or the worker task layer exposes a structure snapshot sync job for tracked structures
+  - the job runs the existing snapshot persistence, delta computation, and structure demand-period refresh pipeline end to end
+  - reruns are deterministic for the same input and do not duplicate persisted work unexpectedly
+  - deterministic backend tests cover orchestration plus persisted snapshot/delta/demand updates
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/workers/tasks/sync_tasks.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_structure_snapshots.py`
+  - `backend/tests/services/test_structure_demand_periods.py`
+- Out of scope:
+  - live structure HTTP polling
+  - EVE SSO/auth changes
+  - frontend changes
+  - broader confidence heuristic changes
+- Test hints:
+  - reuse the existing structure snapshot and demand-period services instead of reimplementing the pipeline in the sync layer
+  - keep orchestration tests deterministic with mocked structure-order inputs
+  - verify reruns update the expected derived rows without uncontrolled duplication
+- Implementation mapping:
+  - `SyncService` now exposes `structure_snapshot_sync` and reuses the existing snapshot and demand-period services to persist snapshots, compute deltas, and refresh affected structure demand periods.
+  - the sync path is orchestration-only and uses an injectable snapshot batch source, so reruns with the same snapshot input safely no-op instead of duplicating rows.
+  - deterministic sync-service coverage verifies the persisted snapshot, delta, and demand-period updates plus rerun stability.
+- Mismatches:
+  - the orchestration path exists now, but without an injected/live structure snapshot client it skips rather than polling CCP structure data directly

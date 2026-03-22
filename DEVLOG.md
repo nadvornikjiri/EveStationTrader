@@ -1,5 +1,12 @@
 ## 2026-03-21
 
+- task id: `T11D`
+- title: Structure Snapshot Sync Orchestration
+- status: `PASS`
+- summary: added a structure snapshot sync job that reuses the existing snapshot, delta, and demand-period services and stays deterministic on reruns.
+
+## 2026-03-21
+
 - task id: `T10I`
 - title: Live Adam4EVE NPC Demand Client
 - status: `PASS`
