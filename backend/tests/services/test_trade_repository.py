@@ -96,6 +96,51 @@ def test_list_source_summaries_reads_computed_rows_when_present() -> None:
     assert rows[0].roi_now_weighted == 0.12
 
 
+def test_list_sources_reads_computed_source_locations_when_present() -> None:
+    session = build_session()
+    target_location_id, source_location_id, _item_id = seed_trade_entities(session)
+    session.add(
+        OpportunitySourceSummary(
+            target_location_id=target_location_id,
+            source_location_id=source_location_id,
+            source_security_status=1.0,
+            period_days=14,
+            purchase_units_total=20.0,
+            source_units_available_total=40.0,
+            target_demand_day_total=15.0,
+            target_supply_units_total=30.0,
+            target_dos_weighted=2.0,
+            in_transit_units=1.0,
+            assets_units=2.0,
+            active_sell_orders_units=3.0,
+            source_avg_price_weighted=100.0,
+            target_now_price_weighted=120.0,
+            target_period_avg_price_weighted=125.0,
+            risk_pct_weighted=0.04,
+            warning_count=0,
+            target_now_profit_weighted=12.0,
+            target_period_profit_weighted=15.0,
+            capital_required_total=1500.0,
+            roi_now_weighted=0.12,
+            roi_period_weighted=0.15,
+            total_item_volume_m3=5.0,
+            shipping_cost_total=20.0,
+            demand_source_summary="adam4eve",
+            confidence_score_summary=1.0,
+            computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+    rows = repo.list_sources(target_location_id, 14)
+
+    assert len(rows) == 1
+    assert rows[0].location_id == 60008494
+    assert rows[0].name == "Amarr VIII (Oris) - Emperor Family Academy"
+    assert rows[0].location_type == "npc_station"
+
+
 def test_list_items_reads_computed_rows_when_present() -> None:
     session = build_session()
     target_location_id, source_location_id, item_id = seed_trade_entities(session)
@@ -142,18 +187,18 @@ def test_list_items_reads_computed_rows_when_present() -> None:
     assert rows[0].demand_source == "adam4eve"
 
 
-def test_repository_returns_placeholder_data_when_no_computed_rows_exist() -> None:
+def test_repository_returns_empty_lists_when_no_computed_rows_exist() -> None:
     session = build_session()
     target_location_id, source_location_id, _item_id = seed_trade_entities(session)
     repo = TradeRepository(session_factory=lambda: session)
 
+    source_locations = repo.list_sources(target_location_id, 14)
     source_rows = repo.list_source_summaries(target_location_id, 14)
     item_rows = repo.list_items(target_location_id, source_location_id, 14)
 
-    assert len(source_rows) == 1
-    assert source_rows[0].source_market_name == "Amarr VIII (Oris) - Emperor Family Academy"
-    assert len(item_rows) == 1
-    assert item_rows[0].item_name == "Tritanium"
+    assert source_locations == []
+    assert source_rows == []
+    assert item_rows == []
 
 
 def test_get_last_refresh_uses_latest_computed_timestamp() -> None:
@@ -296,3 +341,8 @@ def test_get_item_detail_fallback_uses_requested_type_id() -> None:
     assert detail.item_name == "Mexallon"
     assert detail.metrics.type_id == mexallon.type_id
     assert detail.metrics.item_name == "Mexallon"
+    assert detail.metrics.demand_source == "unavailable"
+    assert detail.metrics.source_station_sell_price == 0.0
+    assert detail.target_market_sell_orders == []
+    assert detail.source_market_sell_orders == []
+    assert detail.source_market_buy_orders == []

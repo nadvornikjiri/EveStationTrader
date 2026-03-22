@@ -63,21 +63,27 @@ export function ItemOpportunityTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr
-              key={row.type_id}
-              className={selectedTypeId === row.type_id ? "selected-row" : undefined}
-              onClick={() => onSelectItem(row.type_id)}
-            >
-              <td>{row.item_name}</td>
-              <td>{row.purchase_units}</td>
-              <td>{(row.roi_now * 100).toFixed(1)}%</td>
-              <td>{(row.confidence_score * 100).toFixed(0)}%</td>
-              <td>{row.source_station_sell_price.toLocaleString()}</td>
-              <td>{row.target_station_sell_price.toLocaleString()}</td>
-              <td>{row.demand_source}</td>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={7}>No computed item opportunities available for this source yet.</td>
             </tr>
-          ))}
+          ) : (
+            rows.map((row) => (
+              <tr
+                key={row.type_id}
+                className={selectedTypeId === row.type_id ? "selected-row" : undefined}
+                onClick={() => onSelectItem(row.type_id)}
+              >
+                <td>{row.item_name}</td>
+                <td>{row.purchase_units}</td>
+                <td>{(row.roi_now * 100).toFixed(1)}%</td>
+                <td>{(row.confidence_score * 100).toFixed(0)}%</td>
+                <td>{row.source_station_sell_price.toLocaleString()}</td>
+                <td>{row.target_station_sell_price.toLocaleString()}</td>
+                <td>{row.demand_source}</td>
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
     </section>

@@ -4,7 +4,107 @@ from sqlalchemy import delete, select
 
 from app.core.security import build_esi_scopes
 from app.db.session import SessionLocal
-from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState, User
+from app.models.all_models import (
+    CharacterAccessibleStructure,
+    EsiCharacter,
+    EsiCharacterSyncState,
+    Item,
+    Location,
+    OpportunityItem,
+    OpportunitySourceSummary,
+    User,
+)
+
+
+def seed_trade_opportunity_rows() -> None:
+    session = SessionLocal()
+    try:
+        target_location = session.scalar(select(Location).where(Location.location_id == 60003760))
+        source_location = session.scalar(select(Location).where(Location.location_id == 60008494))
+        item = session.scalar(select(Item).where(Item.type_id == 34))
+        if target_location is None or source_location is None or item is None:
+            raise AssertionError("Expected seeded trade entities to exist in the test database.")
+
+        session.execute(
+            delete(OpportunityItem).where(
+                OpportunityItem.target_location_id == target_location.id,
+                OpportunityItem.source_location_id == source_location.id,
+                OpportunityItem.period_days == 14,
+            )
+        )
+        session.execute(
+            delete(OpportunitySourceSummary).where(
+                OpportunitySourceSummary.target_location_id == target_location.id,
+                OpportunitySourceSummary.source_location_id == source_location.id,
+                OpportunitySourceSummary.period_days == 14,
+            )
+        )
+        session.add(
+            OpportunitySourceSummary(
+                target_location_id=target_location.id,
+                source_location_id=source_location.id,
+                source_security_status=1.0,
+                period_days=14,
+                purchase_units_total=20.0,
+                source_units_available_total=40.0,
+                target_demand_day_total=15.0,
+                target_supply_units_total=30.0,
+                target_dos_weighted=2.0,
+                in_transit_units=1.0,
+                assets_units=2.0,
+                active_sell_orders_units=3.0,
+                source_avg_price_weighted=100.0,
+                target_now_price_weighted=120.0,
+                target_period_avg_price_weighted=125.0,
+                risk_pct_weighted=0.04,
+                warning_count=0,
+                target_now_profit_weighted=12.0,
+                target_period_profit_weighted=15.0,
+                capital_required_total=1500.0,
+                roi_now_weighted=0.12,
+                roi_period_weighted=0.15,
+                total_item_volume_m3=5.0,
+                shipping_cost_total=20.0,
+                demand_source_summary="adam4eve",
+                confidence_score_summary=1.0,
+                computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+            )
+        )
+        session.add(
+            OpportunityItem(
+                target_location_id=target_location.id,
+                source_location_id=source_location.id,
+                type_id=item.id,
+                period_days=14,
+                purchase_units=10.0,
+                source_units_available=25.0,
+                target_demand_day=12.0,
+                target_supply_units=24.0,
+                target_dos=2.0,
+                in_transit_units=1.0,
+                assets_units=2.0,
+                active_sell_orders_units=3.0,
+                source_station_sell_price=100.0,
+                target_station_sell_price=125.0,
+                target_period_avg_price=130.0,
+                risk_pct=0.04,
+                warning_flag=False,
+                target_now_profit=16.75,
+                target_period_profit=21.4,
+                capital_required=1200.0,
+                roi_now=0.1675,
+                roi_period=0.214,
+                source_security_status=1.0,
+                item_volume_m3=0.01,
+                shipping_cost=15.0,
+                demand_source="adam4eve",
+                confidence_score=1.0,
+                computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
 
 
 def test_get_targets(client) -> None:
@@ -14,24 +114,58 @@ def test_get_targets(client) -> None:
 
 
 def test_get_sources(client) -> None:
+    seed_trade_opportunity_rows()
     response = client.get("/api/sources", params={"target_location_id": 60003760})
     assert response.status_code == 200
-    assert response.json()[0]["location_type"] == "npc_station"
+    assert response.json() == [
+        {
+            "location_id": 60008494,
+            "location_type": "npc_station",
+            "name": "Amarr VIII (Oris) - Emperor Family Academy",
+            "region_name": "Domain",
+            "system_name": "Amarr",
+        }
+    ]
 
 
 def test_get_source_summaries(client) -> None:
+    seed_trade_opportunity_rows()
     response = client.get("/api/opportunities/source-summaries", params={"target_location_id": 60003760})
     assert response.status_code == 200
     assert response.json()[0]["source_market_name"]
 
 
 def test_get_items(client) -> None:
+    seed_trade_opportunity_rows()
     response = client.get(
         "/api/opportunities/items",
         params={"target_location_id": 60003760, "source_location_id": 60008494},
     )
     assert response.status_code == 200
     assert response.json()[0]["item_name"] == "Tritanium"
+
+
+def test_get_opportunity_lists_return_empty_when_no_computed_rows_exist(client) -> None:
+    sources_response = client.get(
+        "/api/sources",
+        params={"target_location_id": 60003760, "period_days": 999},
+    )
+    assert sources_response.status_code == 200
+    assert sources_response.json() == []
+
+    summary_response = client.get(
+        "/api/opportunities/source-summaries",
+        params={"target_location_id": 60003760, "period_days": 999},
+    )
+    assert summary_response.status_code == 200
+    assert summary_response.json() == []
+
+    item_response = client.get(
+        "/api/opportunities/items",
+        params={"target_location_id": 60003760, "source_location_id": 60008494, "period_days": 999},
+    )
+    assert item_response.status_code == 200
+    assert item_response.json() == []
 
 
 def test_get_sync_status(client) -> None:
