@@ -1,3 +1,59 @@
+## 2026-03-22
+
+- task id: `T05F`
+- title: Computed Source Endpoint Resolution
+- status: `PASS`
+- summary: rewired the source endpoint to resolve only persisted computed source markets for the selected target/period and added repository/API coverage for both populated and empty scopes.
+
+## 2026-03-22
+
+- task id: `T05E`
+- title: Remove Placeholder Opportunity List Fallbacks
+- status: `PASS`
+- summary: removed placeholder trade-list rows now that the computed opportunity pipeline exists, and added deterministic backend/frontend empty-state coverage for targets with no computed opportunities.
+
+## 2026-03-22
+
+- task id: `T11`
+- title: Structure Snapshots And Demand Inference closeout
+- status: `PASS`
+- summary: reconciled the parent structure-demand packet now that snapshot persistence, delta aggregation, confidence-gated local demand resolution, and sync orchestration are all implemented and tested.
+
+## 2026-03-22
+
+- task id: `T10`
+- title: Live Ingestion And Opportunity Computation closeout
+- status: `PASS`
+- summary: reconciled the parent live-ingestion packet now that the public Adam4EVE/ESI clients, persisted compute pipelines, and sync-driven opportunity rebuild flow are all complete and tested.
+
+## 2026-03-22
+
+- task id: `T07`
+- title: Characters, Auth, And Multi-User Support closeout
+- status: `PASS`
+- summary: reconciled the parent auth/characters packet now that persisted character flows, linking behavior, connect/login entrypoints, and mocked structure discovery sync are all implemented and tested.
+
+## 2026-03-22
+
+- task id: `T06`
+- title: Sync Operations Dashboard closeout
+- status: `PASS`
+- summary: reconciled the parent sync-dashboard packet now that manual jobs, persisted history, fallback diagnostics, and worker heartbeat reporting are grounded in real stored state.
+
+## 2026-03-22
+
+- task id: `T04`
+- title: Foundation Data Bootstrap closeout
+- status: `PASS`
+- summary: reconciled the parent foundation-bootstrap packet now that the seeded persistence path, operational sync entrypoint, idempotence coverage, and source abstractions are all complete.
+
+## 2026-03-22
+
+- task id: `T09`
+- title: Testing Baseline quality-gate completion
+- status: `PASS`
+- summary: made the backend `uv sync` workflow install the repo quality gates by default and aligned the task/docs so the baseline test packet is operationally complete.
+
 ## 2026-03-21
 
 - task id: `T11D`

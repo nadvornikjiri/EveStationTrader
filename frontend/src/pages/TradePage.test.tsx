@@ -269,3 +269,29 @@ test("requeries summaries and items when target or period changes and resets sou
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, 4, 34, 30);
   expect(screen.getByText("Dodixie")).toBeInTheDocument();
 });
+
+test("renders stable empty states when no computed opportunities exist for the selected target", async () => {
+  const user = userEvent.setup();
+  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null) => ({
+    data: targetLocationId === 3 ? [] : targetLocationId === null ? [] : summaryRowsByTarget[targetLocationId] ?? [],
+    refetch: vi.fn(),
+  }));
+  mockUseOpportunityItems.mockImplementation((targetLocationId: number | null, sourceLocationId: number | null) => ({
+    data: targetLocationId === 3 || sourceLocationId === null ? [] : itemRows,
+    refetch: vi.fn(),
+  }));
+  mockUseOpportunityItemDetail.mockImplementation(() => ({
+    data: undefined,
+    isLoading: false,
+    refetch: vi.fn(),
+  }));
+
+  renderPage();
+
+  await user.selectOptions(screen.getByLabelText("Target Market"), "3");
+
+  expect(screen.getByText("No computed source markets available for this target yet.")).toBeInTheDocument();
+  expect(screen.getByText("No computed item opportunities available for this source yet.")).toBeInTheDocument();
+  expect(screen.getByText("Select an item to inspect its detail.")).toBeInTheDocument();
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, null, null, 14);
+});

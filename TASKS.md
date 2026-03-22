@@ -110,7 +110,7 @@ Priority rationale:
 
 ## T04 - Foundation Data Bootstrap
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: load or seed the core reference data required to bootstrap the app.
 - Dependencies: T02
 - Acceptance criteria:
@@ -129,9 +129,11 @@ Priority rationale:
   - idempotence test
   - route test for manual foundation sync
 - Implementation mapping:
-  - Small reference seed set is persisted and tested.
+  - the foundation bootstrap persists the seeded regions, systems, stations, locations, tracked structures, items, and default settings required by the app
+  - bootstrap remains idempotent and is exposed through the operational sync flow
+  - the provider abstraction plus file-backed snapshot source now align the persistence path with future SDE/ESI-backed refresh implementations without rewriting the bootstrap service
 - Mismatches:
-  - uses hardcoded seed data instead of real SDE import or ESI refresh behavior
+  - live CCP-backed reference-data refresh remains intentionally out of scope for this bootstrap packet
 
 ### T04A - Foundation Data Source Abstraction
 
@@ -218,7 +220,7 @@ Priority rationale:
   - API integration tests
   - frontend trade page render tests
 - Implementation mapping:
-  - API surface exists and the trade page renders targets, source summaries, item rows, and item detail from it.
+  - API surface exists and the trade page renders targets, computed source summaries, item rows, and item detail from it.
 - Mismatches:
   - item-detail order books remain placeholder-derived until live order ingestion is implemented
 
@@ -351,9 +353,76 @@ Priority rationale:
 - Mismatches:
   - the item-detail endpoint still returns placeholder order stacks rather than live CCP order-book data
 
+### T05E - Remove Placeholder Opportunity List Fallbacks
+
+- Status: `DONE`
+- Objective: stop serving placeholder source-summary and item-list rows once the computed opportunity pipeline is available, while keeping empty trade states deterministic in the UI.
+- Dependencies:
+  - T05A
+  - T05D
+  - T10
+- Acceptance criteria:
+  - source-summary reads return persisted `opportunity_source_summaries` rows only and do not synthesize demo rows when none exist
+  - item-list reads return persisted `opportunity_items` rows only and do not synthesize demo rows when none exist
+  - item detail remains stable for direct lookups without computed rows, using explicit zero/empty-state fallback values instead of misleading market metrics
+  - the trade page renders deterministic empty states when a target/source has no computed opportunities
+  - deterministic backend and frontend tests cover the empty-list behavior and empty-state rendering
+- Likely files/modules:
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/tests/services/test_trade_repository.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- Out of scope:
+  - live market-order ingestion
+  - source discovery endpoint redesign
+  - richer empty-state UX polish
+- Test hints:
+  - verify unmatched `period_days` scopes return empty arrays rather than demo rows
+  - keep direct item-detail fallback deterministic for unknown/uncomputed rows
+  - assert the UI clears selection and shows explicit empty-state copy when no summaries/items exist
+- Implementation mapping:
+  - trade repository summary/item list reads now return only persisted computed rows and otherwise return empty arrays
+  - fallback item detail now uses explicit zero/empty values and empty order lists instead of fake market metrics
+  - frontend trade tables render explicit empty-state rows so the page remains stable when no computed opportunities are available
+- Mismatches:
+  - the detail panel still lacks live order-book data until market-order ingestion exists
+
+### T05F - Computed Source Endpoint Resolution
+
+- Status: `DONE`
+- Objective: make `/api/sources` reflect the computed opportunity graph for the selected target/period instead of returning every NPC station.
+- Dependencies:
+  - T05E
+  - T10
+- Acceptance criteria:
+  - `TradeRepository.list_sources(target_location_id, period_days)` resolves the selected target by its public `location_id`
+  - source reads are derived from persisted `opportunity_source_summaries` rows for the selected target/period
+  - the endpoint returns public location metadata for only the computed source markets in scope
+  - when no computed source summaries exist, the endpoint returns an empty list deterministically
+  - deterministic backend tests cover both computed-source and empty-source behavior
+- Likely files/modules:
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/tests/services/test_trade_repository.py`
+  - `backend/tests/api/test_endpoints.py`
+- Out of scope:
+  - frontend trade-page wiring changes
+  - source ranking/filtering beyond the persisted summary table
+  - live order-book ingestion
+- Test hints:
+  - seed a persisted `OpportunitySourceSummary` row and assert the endpoint returns the matching public source location
+  - verify unmatched `period_days` scopes return `[]`
+  - keep repository methods tolerant of public API ids at the boundary
+- Implementation mapping:
+  - the source endpoint now resolves the selected target by public `location_id` and reads only persisted computed source markets from `opportunity_source_summaries`
+  - API and repository tests cover both populated and empty computed-source scopes
+- Mismatches:
+  - the endpoint still depends on computed opportunity summaries and therefore remains empty until rebuilds have populated those rows
+
 ## T06 - Sync Operations Dashboard
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: provide operational visibility and manual sync actions on `/sync`.
 - Dependencies: T02, T04
 - Acceptance criteria:
@@ -373,10 +442,11 @@ Priority rationale:
   - sync route tests
   - frontend sync page render tests
 - Implementation mapping:
-  - Sync page is API-backed and supports a real foundation seed action.
+  - the sync dashboard is API-backed with persisted job history, history-derived status cards, real fallback diagnostics, and a persisted worker-heartbeat card
+  - manual sync actions exist for the implemented operations and route through the same persisted sync-service workflow
+  - backend sync route tests and frontend sync page render tests cover the operational dashboard baseline
 - Mismatches:
-  - most status cards and job history rows are synthetic
-  - no persistent `sync_job_runs` workflow or ESI rate-limit telemetry yet
+  - richer scheduler timing and ESI rate-limit telemetry remain future operational polish beyond this packet
 
 ### T06A - Persisted Sync Job History
 
@@ -501,7 +571,7 @@ Priority rationale:
 
 ## T07 - Characters, Auth, And Multi-User Support
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: support EVE SSO users, linked characters, and per-user data overlays.
 - Dependencies: T02
 - Acceptance criteria:
@@ -521,9 +591,11 @@ Priority rationale:
   - mocked auth callback tests
   - mocked character discovery tests
 - Implementation mapping:
-  - route shapes and models exist, but the behavior is still mostly stubbed.
+  - auth and character routes are backed by persisted users, characters, tokens, sync state, and accessible-structure rows
+  - first-character creation, additional-character linking, connect/login entrypoints, and mocked character sync/discovery flows are implemented end to end for the single-user MVP
+  - backend service and API tests cover persisted reads, updates, user linking, structure discovery, and sync-state updates
 - Mismatches:
-  - token exchange, persistence, user linking, and structure discovery are not implemented end to end
+  - advanced multi-user session ownership and live ESI ingestion remain future scope beyond this packet
 
 ### T07A - Persisted Character Reads
 
@@ -733,7 +805,7 @@ Priority rationale:
 
 ## T09 - Testing Baseline
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: establish meaningful backend and frontend test coverage from the start.
 - Dependencies: T02, T03
 - Acceptance criteria:
@@ -753,13 +825,14 @@ Priority rationale:
   - backend `pytest`
   - frontend `docker compose run --rm frontend npm test`
 - Implementation mapping:
-  - backend and frontend baseline tests exist and currently pass.
+  - backend formula, API, and service tests exist; frontend render tests exist for the routed shells and core trade/sync pages.
+  - backend `uv sync` now installs the `ruff`, `mypy`, and `pytest` quality gates by default so the documented repository checks are directly runnable.
 - Mismatches:
-  - ingestion tests, ESI auth/setup tests, and deeper UI behavior tests are still missing
+  - broader end-to-end coverage is still intentionally out of scope for this baseline packet
 
 ## T10 - Live Ingestion And Opportunity Computation
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: ingest Adam4EVE and ESI market data, compute periods/demand, and populate query-ready opportunity tables.
 - Dependencies: T03, T04
 - Acceptance criteria:
@@ -780,10 +853,11 @@ Priority rationale:
   - ingestion mapping tests
   - aggregation tests against persisted fixtures
 - Implementation mapping:
-  - derived-data slices now exist for persisted regional history, Adam4EVE NPC demand, resolved demand, and opportunity generation
-  - live clients are still placeholders and the sync-driven bulk rebuild path is still incomplete
+  - live public ESI regional-history and Adam4EVE NPC-demand clients now persist normalized raw data into the internal history tables
+  - period pricing, resolved demand, opportunity items, and opportunity source summaries are computed from stored data through deterministic service pipelines
+  - manual and scheduler-driven rebuild paths now populate the query-ready opportunity tables consumed by the trade API instead of demo rows
 - Mismatches:
-  - current trade outputs still rely on fallback rows unless opportunity rebuilds are run
+  - live order-book liquidity inputs and richer regional fallback demand remain future enhancements beyond this packet
 
 ### T10A - Market Price Period Computation
 
@@ -1074,7 +1148,7 @@ Priority rationale:
 
 ## T11 - Structure Snapshots And Demand Inference
 
-- Status: `MISSING`
+- Status: `DONE`
 - Objective: persist periodic structure snapshots, compute deltas, infer local demand, and apply fallback logic.
 - Dependencies: T04, T07, T10
 - Acceptance criteria:
@@ -1093,9 +1167,11 @@ Priority rationale:
   - snapshot ingestion tests
   - confidence threshold tests
 - Implementation mapping:
-  - only a delta helper exists; the full snapshot/inference pipeline is not present.
+  - tracked-structure snapshot batches, persisted order deltas, and demand-period aggregations are implemented through dedicated structure services
+  - confidence-gated local structure demand now feeds market-demand resolution, with deterministic fallback to regional placeholder demand when coverage is insufficient
+  - the sync layer exposes a structure snapshot orchestration path so tracked structures can participate in downstream opportunity computation
 - Mismatches:
-  - no periodic snapshot job or persisted local demand inference exists
+  - live authenticated structure polling and richer CCP-derived fallback demand remain future work beyond this packet
 
 ### T11A - Structure Snapshot Persistence And Deltas
 

@@ -37,9 +37,8 @@ Services:
 
 ```bash
 cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
+uv sync
+source .venv/bin/activate
 alembic upgrade head
 uvicorn main:app --reload
 ```
@@ -81,6 +80,8 @@ alembic upgrade head
 
 ```bash
 cd backend
+ruff check . --fix
+mypy .
 pytest
 ```
 
