@@ -39,12 +39,14 @@ class AuthService:
             character = session.scalar(
                 select(EsiCharacter).where(EsiCharacter.character_id == identity["character_id"])
             )
-            created_user = False
             user: User | None
             if character is None:
-                user = User(primary_character_id=None)
-                session.add(user)
-                session.flush()
+                # Single-user MVP assumption: any additional EVE SSO character links to the first user row.
+                user = session.scalar(select(User).order_by(User.id.asc()))
+                if user is None:
+                    user = User(primary_character_id=None)
+                    session.add(user)
+                    session.flush()
                 character = EsiCharacter(
                     user_id=user.id,
                     character_id=identity["character_id"],
@@ -54,8 +56,6 @@ class AuthService:
                 )
                 session.add(character)
                 session.flush()
-                user.primary_character_id = character.id
-                created_user = True
             else:
                 user = session.get(User, character.user_id)
                 if user is None:
@@ -86,13 +86,19 @@ class AuthService:
             if sync_state is None:
                 session.add(EsiCharacterSyncState(character_id=character.id))
 
-            if created_user and user.primary_character_id is None:
+            if user.primary_character_id is None:
                 user.primary_character_id = character.id
+
+            primary_character_id = character.character_id
+            if user.primary_character_id is not None:
+                primary_character = session.get(EsiCharacter, user.primary_character_id)
+                if primary_character is not None:
+                    primary_character_id = primary_character.character_id
 
             session.commit()
             return CurrentUser(
                 id=user.id,
-                primary_character_id=character.character_id,
+                primary_character_id=primary_character_id,
                 character_name=character.character_name,
                 is_authenticated=True,
             )

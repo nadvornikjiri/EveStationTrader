@@ -354,6 +354,15 @@ class SyncJobRun(Base):
     error_details: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), default="worker", index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="healthy")
+
+
 class UserSetting(Base):
     __tablename__ = "user_settings"
     __table_args__ = (UniqueConstraint("user_id", "key"),)

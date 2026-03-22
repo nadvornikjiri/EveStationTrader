@@ -61,3 +61,19 @@ export type OpportunityItem = {
   demand_source: string;
   confidence_score: number;
 };
+
+export type ItemOrderRow = {
+  price: number;
+  volume: number;
+  order_value: number;
+  cumulative_volume?: number | null;
+};
+
+export type OpportunityItemDetail = {
+  type_id: number;
+  item_name: string;
+  target_market_sell_orders: ItemOrderRow[];
+  source_market_sell_orders: ItemOrderRow[];
+  source_market_buy_orders: ItemOrderRow[];
+  metrics: OpportunityItem;
+};

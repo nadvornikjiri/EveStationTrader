@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 
 from apscheduler.schedulers.base import BaseScheduler  # type: ignore[import-untyped]
 
+from app.services.sync.service import SyncService
+
 logger = logging.getLogger(__name__)
 
 
@@ -11,7 +13,13 @@ def heartbeat_job() -> None:
 
 
 def rebuild_opportunities_job() -> None:
-    logger.info("opportunity rebuild placeholder executed")
+    result = SyncService().trigger_job("opportunity_rebuild")
+    logger.info(
+        "opportunity rebuild completed: job_id=%s status=%s records=%s",
+        result.id,
+        result.status,
+        result.records_processed,
+    )
 
 
 def register_jobs(scheduler: BaseScheduler) -> None:

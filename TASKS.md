@@ -133,9 +133,72 @@ Priority rationale:
 - Mismatches:
   - uses hardcoded seed data instead of real SDE import or ESI refresh behavior
 
+### T04A - Foundation Data Source Abstraction
+
+- Status: `DONE`
+- Objective: make foundation bootstrap read seed inputs through a provider abstraction instead of directly from hardcoded module constants, while preserving current behavior.
+- Dependencies:
+  - T02
+- Acceptance criteria:
+  - `FoundationDataService.bootstrap()` reads regions, systems, stations, items, tracked-structure metadata, and defaults through a single source interface
+  - the default source still produces the current curated seed set without behavioral regression
+  - bootstrap remains idempotent
+  - the source boundary is shaped so a later SDE-backed implementation can plug in without rewriting bootstrap persistence logic
+  - deterministic backend tests cover bootstrap via the default source, idempotence, and a small alternate/mock source proving the abstraction works
+- Likely files/modules:
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- Out of scope:
+  - full CCP SDE import
+  - ESI-backed foundation refresh
+  - market group refresh
+  - frontend changes
+- Test hints:
+  - keep the provider responsible only for normalized seed data, not persistence behavior
+  - preserve the existing persisted shape exactly
+  - use a tiny mock source to prove the abstraction boundary is real
+- Implementation mapping:
+  - `FoundationDataService` now reads all seed inputs from a provider abstraction, the curated default source preserves the existing bootstrap data set, and deterministic tests cover idempotence plus an alternate mock source.
+- Mismatches:
+  - this packet improves the bootstrap architecture but does not yet add a live SDE or ESI-backed source
+
+### T04B - File-Backed Foundation Snapshot Source
+
+- Status: `DONE`
+- Objective: add a file-backed foundation seed source that loads normalized snapshot data without changing bootstrap persistence behavior.
+- Dependencies:
+  - T04A
+- Acceptance criteria:
+  - a file-backed `FoundationSeedSource` exists and supplies regions, systems, stations, items, structure locations, tracked structures, and default settings in the normalized shape consumed by `FoundationDataService`
+  - `FoundationDataService.bootstrap()` works unchanged against the file-backed source
+  - bootstrap remains idempotent when run repeatedly against the file-backed source
+  - deterministic backend tests cover loading a minimal valid snapshot, successful bootstrap through the file-backed source, idempotent rerun behavior, and malformed or incomplete snapshot failures
+  - the curated in-code source remains available as the safe default unless a file-backed source is explicitly selected
+- Likely files/modules:
+  - `backend/app/repositories/seed_data.py`
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- Out of scope:
+  - live CCP SDE download
+  - live ESI universe refresh
+  - market group import
+  - schema changes
+  - frontend changes
+- Test hints:
+  - keep the snapshot format minimal and normalized so it mirrors the seed dataclasses closely
+  - fail deterministically when referenced dependencies like region/system ids are missing
+  - preserve the current curated source as the default bootstrap path
+- Implementation mapping:
+  - `FileFoundationSeedSource` now loads a normalized JSON snapshot into the existing foundation seed dataclasses and validates duplicate IDs, missing references, and unsupported tracking tiers before bootstrap runs.
+  - `FoundationDataService` works unchanged against the file-backed source because the persistence path still consumes the shared seed interface.
+  - deterministic backend tests cover minimal snapshot loading, file-backed bootstrap/idempotence, malformed snapshots, invalid tracking tiers, duplicate IDs, and the curated default-source behavior.
+- Mismatches:
+  - this packet adds a checked-in snapshot source for deterministic bootstrap input, but it does not yet fetch or refresh live CCP SDE/ESI foundation data
+
 ## T05 - Trade Analysis API And Data Flow
 
-- Status: `PARTIAL`
+- Status: `DONE`
 - Objective: serve target/source/opportunity data for the main trade workflow.
 - Dependencies: T02, T03, T04
 - Acceptance criteria:
@@ -155,10 +218,9 @@ Priority rationale:
   - API integration tests
   - frontend trade page render tests
 - Implementation mapping:
-  - API surface exists and the trade page renders data from it.
+  - API surface exists and the trade page renders targets, source summaries, item rows, and item detail from it.
 - Mismatches:
-  - source summaries, items, and detail are still demo/seeded responses instead of precomputed DB-backed opportunity data
-  - filter/sort/search behavior is mostly unimplemented
+  - item-detail order books remain placeholder-derived until live order ingestion is implemented
 
 ### T05A - Trade Repository Reads Computed Opportunity Tables
 
@@ -253,7 +315,41 @@ Priority rationale:
   - client-side filtering/sorting is applied to the loaded item rows before rendering
 - Mismatches:
   - server-side filtering and additional trade filters remain unimplemented
-  - the item-detail panel is still not driven from row selection
+
+### T05D - Trade Page Item Detail Selection
+
+- Status: `DONE`
+- Objective: connect the existing item-detail API to the trade page so the lower-right execution context panel reflects the currently selected opportunity row.
+- Dependencies:
+  - T05B
+  - T05C
+- Acceptance criteria:
+  - the trade page selects a deterministic default item row from the filtered/sorted result set
+  - changing the selected item row requeries item detail for the selected `(target, source, type, period)` scope
+  - the detail panel renders API-backed order rows and key metrics for the selected item
+  - selection resets safely when target/source/filter changes remove the previously selected item
+  - frontend tests cover default detail loading, row-driven detail changes, and selection reset behavior
+- Likely files/modules:
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/components/trade/ItemDetailPanel.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- Out of scope:
+  - live order-book realism beyond the existing detail endpoint payload
+  - backend-side item-detail analytics changes
+  - keyboard-navigation polish for row selection
+- Test hints:
+  - mock item-detail responses for multiple items
+  - verify the default selected row loads detail on first render
+  - verify selecting a different row updates the rendered detail panel
+  - verify target/source changes reset detail selection to an available item
+- Implementation mapping:
+  - the trade page now tracks selected item state and queries the item-detail endpoint for the active row
+  - the item table exposes deterministic row selection and the detail panel renders API-backed order rows plus summary metrics
+- Mismatches:
+  - the item-detail endpoint still returns placeholder order stacks rather than live CCP order-book data
 
 ## T06 - Sync Operations Dashboard
 
@@ -343,6 +439,66 @@ Priority rationale:
   - worker health and fallback diagnostics are still synthetic
   - next scheduled sync is still not derived from a real scheduler state
 
+### T06C - Persisted Fallback Diagnostics
+
+- Status: `DONE`
+- Objective: replace synthetic fallback diagnostics with rows derived from persisted structure demand-resolution data.
+- Dependencies:
+  - T06B
+  - T11C
+- Acceptance criteria:
+  - `SyncService.get_fallback_status()` reads persisted structure-target rows instead of returning hardcoded examples
+  - diagnostics are derived from real structure locations and persisted resolved-demand fields for implemented sources like `local_structure` and `regional_fallback`
+  - NPC locations are excluded
+  - empty-data behavior is stable and deterministic
+  - deterministic backend tests cover structure rows using local demand, structure rows using fallback, and no persisted structure-demand rows
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_sync_service.py`
+- Out of scope:
+  - worker health telemetry
+  - ESI rate-limit telemetry
+  - frontend sync page redesign
+  - new sync orchestration
+- Test hints:
+  - seed tracked-structure and resolved-demand rows directly
+  - use persisted structure/location names rather than synthetic labels
+  - keep repeated calls deterministic in ordering and values
+- Implementation mapping:
+  - `SyncService.get_fallback_status()` now derives diagnostics from persisted tracked-structure and structure-demand rows instead of hardcoded samples
+- Mismatches:
+  - this packet grounds fallback diagnostics in persisted data but does not add worker or rate-limit telemetry
+
+### T06D - Persisted Worker Health Card
+
+- Status: `DONE`
+- Objective: replace the synthetic worker health card with a value derived from a real persisted heartbeat source.
+- Dependencies:
+  - T06B
+- Acceptance criteria:
+  - `SyncService.get_status()` derives the `worker` card from persisted worker-health data instead of hardcoding it
+  - worker health exposes at least `status`, `last_successful_sync` or equivalent heartbeat timestamp, and deterministic default behavior
+  - the card remains stable when no worker heartbeat exists yet
+  - deterministic backend tests cover fresh heartbeat, stale heartbeat, and no heartbeat data
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/models/all_models.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/alembic/versions/*` if a new persisted heartbeat field or table is required
+- Out of scope:
+  - scheduler-derived `next_scheduled_sync`
+  - ESI rate-limit telemetry
+  - frontend redesign
+  - broader sync-job orchestration
+- Test hints:
+  - keep the heartbeat freshness rule explicit and deterministic
+  - do not reuse manual `sync_job_runs` as a fake worker heartbeat
+  - verify stable defaults when no heartbeat has been recorded yet
+- Implementation mapping:
+  - `SyncService.get_status()` now derives the worker card from the latest persisted heartbeat row and marks it degraded once the heartbeat becomes stale
+- Mismatches:
+  - this packet removes the synthetic worker card but does not add scheduler timing or rate-limit telemetry
+
 ## T07 - Characters, Auth, And Multi-User Support
 
 - Status: `PARTIAL`
@@ -368,6 +524,190 @@ Priority rationale:
   - route shapes and models exist, but the behavior is still mostly stubbed.
 - Mismatches:
   - token exchange, persistence, user linking, and structure discovery are not implemented end to end
+
+### T07A - Persisted Character Reads
+
+- Status: `DONE`
+- Objective: replace the demo-backed character list/detail reads with persisted character, sync-state, and accessible-structure data.
+- Dependencies:
+  - T02
+  - T07 auth callback persistence
+- Acceptance criteria:
+  - `CharacterService.list_characters()` reads persisted `esi_characters` rows and joins available sync-state data
+  - accessible structure counts come from persisted `character_accessible_structures`
+  - `CharacterService.get_character(character_id)` returns persisted character detail and structures for the requested public EVE character id
+  - missing characters fail deterministically instead of returning demo data
+  - deterministic backend tests cover list, detail, structure mapping, and missing-character behavior
+- Likely files/modules:
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/services/test_character_service.py`
+  - `backend/tests/api/test_endpoints.py`
+- Out of scope:
+  - live EVE SSO token exchange changes
+  - per-toggle sync preferences persistence
+  - structure discovery from ESI assets/orders
+- Test hints:
+  - seed `EsiCharacter`, `EsiCharacterSyncState`, and `CharacterAccessibleStructure` rows directly in SQLite fixtures
+  - verify public `character_id` values are preserved at the service/API boundary
+  - verify empty-structure characters still return stable defaults
+- Implementation mapping:
+  - the character service now reads persisted character, sync-state, and accessible-structure rows instead of serving hardcoded demo payloads
+  - missing characters now raise a deterministic not-found error for the API layer
+- Mismatches:
+  - character sync toggles are still a simple shared `sync_enabled` projection rather than per-domain persisted settings
+  - skills remain placeholder empty data until a real character sync pipeline exists
+
+### T07B - Persisted Character Sync Toggle Updates
+
+- Status: `DONE`
+- Objective: make `PATCH /api/characters/{id}` update persisted character sync enablement instead of returning a stub message.
+- Dependencies:
+  - T07A
+- Acceptance criteria:
+  - patching a public EVE `character_id` with `sync_enabled` persists the new value to `esi_characters`
+  - list/detail reads reflect the updated `sync_enabled` state after the patch
+  - missing characters fail deterministically instead of returning a success stub
+  - deterministic backend tests cover update, no-op payload behavior, and missing-character behavior
+- Implementation mapping:
+  - `PATCH /api/characters/{id}` now persists the shared `sync_enabled` flag and the existing list/detail reads reflect the updated value
+- Mismatches:
+  - only the shared `sync_enabled` flag is persisted; granular sync toggles remain future work
+
+### T07C - Persisted Character Structure Tracking Flag
+
+- Status: `DONE`
+- Objective: make `POST /api/characters/{id}/structures/{structure_id}/track` persist the character-scoped tracking flag instead of returning a stub message.
+- Dependencies:
+  - T07A
+- Acceptance criteria:
+  - the route resolves the target by public EVE `character_id`
+  - tracking an accessible structure persists `tracking_enabled=True` on `character_accessible_structures`
+  - repeated track requests are deterministic and idempotent
+  - missing characters or inaccessible structures fail deterministically instead of returning a success stub
+  - deterministic backend tests cover first-time tracking, idempotent re-track behavior, and missing-character or missing-structure behavior
+- Implementation mapping:
+  - the structure-track route now persists `tracking_enabled=True` on the matching accessible-structure row and reuses the same value on repeat calls
+- Mismatches:
+  - this packet only persists the character-scoped tracking flag; shared tracked-structure pool updates remain future work
+
+### T07D - Link Additional EVE SSO Characters To Existing User
+
+- Status: `DONE`
+- Objective: make a second distinct EVE SSO callback attach the new character to the existing user instead of creating a second user row.
+- Dependencies:
+  - T07 auth callback persistence
+- Acceptance criteria:
+  - first callback for a new installation still creates the initial user, character, token, and sync-state rows
+  - a callback for a different public `character_id` links that character to the existing user instead of creating a second user
+  - existing-character callbacks still update the same character/token records without duplication
+  - the existing user's `primary_character_id` remains stable unless it is currently unset
+  - deterministic backend tests cover first-character creation, second-character linking, repeat callbacks, and duplicate prevention
+- Likely files/modules:
+  - `backend/app/services/auth/service.py`
+  - `backend/tests/services/test_auth_service.py`
+- Out of scope:
+  - real authenticated session ownership
+  - `/api/characters/connect` route redesign
+  - queueing initial sync jobs
+  - structure discovery from assets/orders
+- Test hints:
+  - reuse the mocked ESI callback client with two distinct `character_id` values
+  - assert one `users` row with two linked `esi_characters`
+  - keep the single-user assumption explicit in test naming and assertions
+- Implementation mapping:
+  - `AuthService.handle_callback()` now links a second distinct character to the first existing user row under the current single-user MVP assumption
+  - existing-character callbacks still update in place without duplicating token or sync-state rows
+- Mismatches:
+  - linking still relies on the current single-user app assumption rather than real session ownership
+
+### T07E - Character Connect Entry Point
+
+- Status: `DONE`
+- Objective: make `/api/characters/connect` return the actionable EVE SSO login payload instead of a stub message.
+- Dependencies:
+  - T07 auth route scaffold
+- Acceptance criteria:
+  - `/api/characters/connect` returns the same redirect payload shape as `/api/auth/login`
+  - the login redirect remains defined in one place so the two entry points stay aligned
+  - backend tests cover the connect route and guard the shared login payload shape
+- Likely files/modules:
+  - `backend/app/api/routes/auth.py`
+  - `backend/app/api/routes/characters.py`
+  - `backend/tests/api/test_endpoints.py`
+- Out of scope:
+  - callback persistence changes
+  - real browser/session redirects
+  - frontend characters-page wiring
+- Test hints:
+  - assert the response contains `authorize_url` and `scopes`
+  - keep `/api/auth/login` as the source of truth rather than duplicating query construction
+- Implementation mapping:
+  - `/api/characters/connect` now returns the shared auth-login redirect payload instead of a stub message
+- Mismatches:
+  - this packet improves the connect entry point but does not add real session ownership or browser redirect handling
+
+### T07F - Persist Accessible Structure Discovery From Character Sync Inputs
+
+- Status: `DONE`
+- Objective: persist discovered accessible structures for a character from mocked asset/order-derived structure inputs.
+- Dependencies:
+  - T07A
+  - T07C
+- Acceptance criteria:
+  - a backend service accepts a target public `character_id` plus resolved discovered-structure inputs
+  - unique structure ids from combined inputs are deduplicated before persistence
+  - the service upserts `character_accessible_structures` rows for that character and preserves `tracking_enabled=True` on existing rows
+  - existing discovered structures are updated in place when metadata changes instead of duplicated
+  - deterministic backend tests cover asset-only discovery, combined duplicate inputs, update-in-place behavior, and missing-character handling
+- Likely files/modules:
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/services/test_character_service.py`
+- Out of scope:
+  - live ESI HTTP calls
+  - wiring `/api/characters/{id}/sync` end to end
+  - shared `tracked_structures` updates
+  - frontend characters-page work
+- Test hints:
+  - pass resolved structure metadata objects rather than raw asset/order payloads
+  - verify rediscovery does not reset `tracking_enabled`
+  - assert one row per `(character, structure_id)` after duplicate inputs
+- Implementation mapping:
+  - `CharacterService.discover_character_accessible_structures()` now deduplicates resolved inputs by `structure_id`, upserts rows in place, and preserves existing `tracking_enabled=True` values
+  - deterministic service tests cover asset-only discovery, duplicate inputs, metadata refresh, and missing-character handling
+- Mismatches:
+  - this packet persists discovered accessible structures but does not yet wire live ESI fetches or sync orchestration
+
+### T07G - Character Sync Route Triggers Structure Discovery
+
+- Status: `DONE`
+- Objective: make `POST /api/characters/{id}/sync` invoke a mocked character-sync path that persists discovered accessible structures and updates sync-state metadata.
+- Dependencies:
+  - T07F
+- Acceptance criteria:
+  - `POST /api/characters/{character_id}/sync` resolves the public EVE `character_id` and fails deterministically for missing characters
+  - the sync path calls the existing discovery persistence behavior with mocked/resolved structure inputs
+  - `esi_character_sync_state` is updated deterministically for the character, at minimum `last_successful_sync` and `structures_sync_status`
+  - repeated sync calls are deterministic and do not duplicate accessible-structure rows
+  - backend tests cover successful sync, missing-character handling, read-after-write on discovered structures, and sync-state updates
+- Likely files/modules:
+  - `backend/app/api/routes/characters.py`
+  - `backend/app/services/characters/service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/services/test_character_service.py`
+- Out of scope:
+  - live ESI HTTP calls
+  - full asset/order/skills persistence
+  - worker/job orchestration
+  - shared `tracked_structures` updates
+  - frontend characters-page changes
+- Test hints:
+  - reuse the T07F discovery service instead of duplicating discovery logic in the route
+  - keep mocked structure inputs deterministic
+  - assert both sync-state updates and discovered-structure persistence
+- Implementation mapping:
+  - `POST /api/characters/{character_id}/sync` now runs the mocked discovery path, persists discovered structures, and updates sync-state metadata in place
+- Mismatches:
+  - this packet wires mocked sync behavior only; live ESI sync and broader character data ingestion remain future work
 
 ## T08 - Frontend Shells And Routing
 
@@ -636,6 +976,102 @@ Priority rationale:
   - rebuild scope selection is currently simple and based only on available computed tables
   - the underlying generated opportunity rows still use zero-default liquidity placeholders until live order data exists
 
+### T10G - Scheduler-Driven Opportunity Rebuild
+
+- Status: `DONE`
+- Objective: make the worker scheduler invoke the real persisted opportunity rebuild flow instead of leaving background rebuild orchestration as a placeholder.
+- Dependencies:
+  - T10F
+  - T06A
+- Acceptance criteria:
+  - the worker-facing opportunity rebuild task delegates to the existing persisted `opportunity_rebuild` sync path
+  - scheduler registration keeps the heartbeat task and registers the real opportunity rebuild task without changing the existing cadence contract
+  - deterministic backend tests cover task delegation and scheduler/job registration for the rebuild task
+  - the background entrypoint does not reintroduce placeholder opportunity generation behavior
+- Likely files/modules:
+  - `backend/app/workers/tasks/sync_tasks.py`
+  - `backend/app/workers/scheduler/runner.py`
+  - `backend/tests/`
+- Out of scope:
+  - scheduler persistence or distributed locking
+  - live order ingestion
+  - frontend changes
+  - changing the current rebuild selection logic
+- Test hints:
+  - assert the worker task calls the same sync-service path used by the manual API trigger
+  - keep scheduler tests focused on registered job IDs and callables rather than sleeping on real intervals
+  - preserve the existing heartbeat job registration
+- Implementation mapping:
+  - the worker rebuild task now delegates to the existing `SyncService().trigger_job("opportunity_rebuild")` path instead of logging a placeholder
+  - scheduler registration keeps the heartbeat and rebuild jobs on their existing 5-minute and 10-minute intervals
+  - deterministic worker tests cover rebuild delegation, scheduler registration, and the runner entrypoint wiring
+- Mismatches:
+  - the background rebuild now runs the real persisted rebuild flow, but the underlying opportunity generation still uses placeholder liquidity inputs until live order ingestion exists
+
+### T10H - Live ESI Regional History Client
+
+- Status: `DONE`
+- Objective: replace the mocked ESI regional-history fetcher with a real live client while preserving the existing normalized ingestion contract.
+- Dependencies:
+  - T10B
+- Acceptance criteria:
+  - `EsiClient.fetch_regional_history(region_id, type_ids)` fetches live market-history payloads from ESI for the requested scope
+  - the client returns normalized `EsiRegionalHistoryRecord` rows that continue to work with the existing ingestion service unchanged
+  - deterministic tests cover request/parse behavior plus malformed or empty response handling
+  - the implementation does not require character auth or change the sync-service ingestion contract
+- Likely files/modules:
+  - `backend/app/services/esi/client.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/`
+- Out of scope:
+  - EVE SSO token exchange
+  - Adam4EVE demand fetching
+  - rate-limit/backoff orchestration beyond minimal client hygiene
+  - frontend changes
+  - scheduler changes
+- Test hints:
+  - keep request logic isolated so parsing can be tested deterministically with mocked HTTP responses
+  - preserve the current `EsiRegionalHistoryRecord` shape exactly
+  - fail clearly on malformed payload rows rather than silently returning partial data
+- Implementation mapping:
+  - `EsiClient.fetch_regional_history()` now calls public ESI market-history endpoints for each requested `type_id` and normalizes the payload into the existing ingestion record shape
+  - deterministic tests cover request formation, header propagation, empty responses, and malformed payload rejection
+  - the sync-service ingestion contract remains unchanged because the client still returns the same `EsiRegionalHistoryRecord` structure
+- Mismatches:
+  - live ESI availability and rate limiting remain external dependencies, but the client contract is now real and public-only
+
+### T10I - Live Adam4EVE NPC Demand Client
+
+- Status: `DONE`
+- Objective: replace the mocked Adam4EVE NPC-demand fetcher with a real public client while preserving the existing normalized ingestion contract.
+- Dependencies:
+  - T10C
+- Acceptance criteria:
+  - `Adam4EveClient.fetch_npc_demand(location_ids, type_ids)` fetches public NPC-demand payloads for the requested scope
+  - the client returns normalized `AdamNpcDemandRecord` rows that continue to work with the existing ingestion service unchanged
+  - deterministic tests cover request/parse behavior plus malformed or empty response handling
+  - the implementation does not require EVE SSO auth or change sync-service wiring
+- Likely files/modules:
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/`
+- Out of scope:
+  - character auth
+  - scheduler changes
+  - frontend changes
+  - resolved-demand logic
+  - broader rate-limit/backoff orchestration
+- Test hints:
+  - keep request logic isolated so parsing can be tested deterministically with mocked HTTP responses
+  - preserve the current `AdamNpcDemandRecord` shape exactly
+  - fail clearly on malformed payload rows rather than silently returning partial data
+- Implementation mapping:
+  - `Adam4EveClient.fetch_npc_demand()` now resolves the latest public MarketOrdersTrades export, filters it to the requested location/type scope, and normalizes matching rows into the existing demand record shape.
+  - deterministic tests cover the live-request shape, aggregation of matching rows, empty responses, and malformed CSV payload handling.
+  - the sync-service ingestion contract remains unchanged because the client still returns the same `AdamNpcDemandRecord` structure.
+- Mismatches:
+  - the client still depends on the availability of Adam4EVE's public static export pages, but it no longer uses the hardcoded placeholder demand rows.
+
 ## T11 - Structure Snapshots And Demand Inference
 
 - Status: `MISSING`
@@ -749,3 +1185,38 @@ Priority rationale:
   - structure-local demand is gated by explicit coverage/confidence thresholds in the service layer
 - Mismatches:
   - fallback for structures still uses the temporary zero-demand regional fallback placeholder rather than real CCP-derived fallback demand
+
+### T11D - Structure Snapshot Sync Orchestration
+
+- Status: `DONE`
+- Objective: add a sync entrypoint that runs the existing structure snapshot, delta, and demand-period pipeline for tracked structures.
+- Dependencies:
+  - T11A
+  - T11B
+  - T06A
+- Acceptance criteria:
+  - `SyncService` or the worker task layer exposes a structure snapshot sync job for tracked structures
+  - the job runs the existing snapshot persistence, delta computation, and structure demand-period refresh pipeline end to end
+  - reruns are deterministic for the same input and do not duplicate persisted work unexpectedly
+  - deterministic backend tests cover orchestration plus persisted snapshot/delta/demand updates
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/workers/tasks/sync_tasks.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_structure_snapshots.py`
+  - `backend/tests/services/test_structure_demand_periods.py`
+- Out of scope:
+  - live structure HTTP polling
+  - EVE SSO/auth changes
+  - frontend changes
+  - broader confidence heuristic changes
+- Test hints:
+  - reuse the existing structure snapshot and demand-period services instead of reimplementing the pipeline in the sync layer
+  - keep orchestration tests deterministic with mocked structure-order inputs
+  - verify reruns update the expected derived rows without uncontrolled duplication
+- Implementation mapping:
+  - `SyncService` now exposes `structure_snapshot_sync` and reuses the existing snapshot and demand-period services to persist snapshots, compute deltas, and refresh affected structure demand periods.
+  - the sync path is orchestration-only and uses an injectable snapshot batch source, so reruns with the same snapshot input safely no-op instead of duplicating rows.
+  - deterministic sync-service coverage verifies the persisted snapshot, delta, and demand-period updates plus rerun stability.
+- Mismatches:
+  - the orchestration path exists now, but without an injected/live structure snapshot client it skips rather than polling CCP structure data directly

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { useOpportunityItems, useSourceSummaries, useTargets } from "../hooks/useTradeData";
+import {
+  useOpportunityItemDetail,
+  useOpportunityItems,
+  useSourceSummaries,
+  useTargets,
+} from "../hooks/useTradeData";
 import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
 import { ItemOpportunityTable } from "../components/trade/ItemOpportunityTable";
 import { SourceSummaryTable } from "../components/trade/SourceSummaryTable";
@@ -37,6 +42,7 @@ export function TradePage() {
   const [warningThreshold, setWarningThreshold] = useState("50");
   const [sortKey, setSortKey] = useState<SortKey>("roi_now");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
 
   useEffect(() => {
     if (targetId === null && targets.length > 0) {
@@ -80,6 +86,22 @@ export function TradePage() {
     () => sortItems(filteredItems, sortKey, sortDirection),
     [filteredItems, sortDirection, sortKey],
   );
+
+  useEffect(() => {
+    if (sortedItems.length === 0) {
+      if (selectedTypeId !== null) {
+        setSelectedTypeId(null);
+      }
+      return;
+    }
+
+    const hasSelectedItem = sortedItems.some((row) => row.type_id === selectedTypeId);
+    if (!hasSelectedItem) {
+      setSelectedTypeId(sortedItems[0].type_id);
+    }
+  }, [selectedTypeId, sortedItems]);
+
+  const itemDetail = useOpportunityItemDetail(targetId, sourceId, selectedTypeId, periodDays);
 
   const handleSortChange = (nextSortKey: SortKey) => {
     if (nextSortKey === sortKey) {
@@ -131,9 +153,11 @@ export function TradePage() {
           rows={sortedItems}
           sortKey={sortKey}
           sortDirection={sortDirection}
+          selectedTypeId={selectedTypeId}
           onSortChange={handleSortChange}
+          onSelectItem={setSelectedTypeId}
         />
-        <ItemDetailPanel />
+        <ItemDetailPanel detail={itemDetail.data} isLoading={itemDetail.isLoading} />
       </div>
     </div>
   );

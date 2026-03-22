@@ -1,5 +1,156 @@
 ## 2026-03-21
 
+- task id: `T11D`
+- title: Structure Snapshot Sync Orchestration
+- status: `PASS`
+- summary: added a structure snapshot sync job that reuses the existing snapshot, delta, and demand-period services and stays deterministic on reruns.
+
+## 2026-03-21
+
+- task id: `T10I`
+- title: Live Adam4EVE NPC Demand Client
+- status: `PASS`
+- summary: replaced the mocked Adam4EVE NPC-demand client with a public export fetcher and added deterministic client tests for request shape, aggregation, and malformed CSV handling.
+
+## 2026-03-21
+
+- task id: `T10H`
+- title: Live ESI Regional History Client
+- status: `PASS`
+- summary: replaced the mocked regional-history fetcher with a public ESI client and added deterministic client tests for request, empty, and malformed payload handling.
+
+## 2026-03-21
+
+- task id: `T10G`
+- title: Scheduler-Driven Opportunity Rebuild
+- status: `PASS`
+- summary: replaced the worker rebuild placeholder with the real persisted rebuild path and added focused worker tests for delegation and scheduler registration.
+
+## 2026-03-21
+
+- task id: `T04B`
+- title: File-Backed Foundation Snapshot Source
+- status: `PASS`
+- summary: added a validated file-backed foundation seed source plus snapshot fixture coverage, while keeping the curated in-code provider as the default bootstrap path.
+
+## 2026-03-21
+
+- task id: `T06D`
+- title: Persisted Worker Health Card
+- status: `PASS`
+- summary: replaced the synthetic worker card with a persisted heartbeat-backed card and covered fresh, stale, and missing-heartbeat cases in backend tests.
+
+## 2026-03-21
+
+- task id: `T06C`
+- title: Persisted Fallback Diagnostics
+- status: `PASS`
+- summary: replaced synthetic fallback diagnostics with persisted tracked-structure and structure-demand rows, while keeping empty and NPC-excluded cases deterministic.
+
+## 2026-03-21
+
+- task id: `T07G`
+- title: Character Sync Route Triggers Structure Discovery
+- status: `PASS`
+- summary: wired the character sync route into the mocked discovery path, updated sync-state timestamps/status, and validated the route with deterministic backend tests.
+
+## 2026-03-21
+
+- task id: `T07F`
+- title: Persist Accessible Structure Discovery From Character Sync Inputs
+- status: `PASS`
+- summary: added a character-service discovery upsert that deduplicates resolved structures, preserves existing tracking flags, and refreshes accessible-structure metadata in place.
+
+## 2026-03-21
+
+- task id: `T07E`
+- title: Character Connect Entry Point
+- status: `PASS`
+- summary: routed `/api/characters/connect` through the shared EVE SSO login payload helper and added API tests that keep it aligned with `/api/auth/login`.
+
+## 2026-03-21
+
+- task id: `T07D`
+- title: Link Additional EVE SSO Characters To Existing User
+- status: `PASS`
+- summary: linked second-character SSO callbacks to the existing user under the current single-user MVP assumption, while preserving repeat-callback update behavior and duplicate prevention.
+
+## 2026-03-21
+
+- task id: `T07C`
+- title: Persisted Character Structure Tracking Flag
+- status: `PASS`
+- summary: persisted `tracking_enabled=True` for accessible structures, added idempotent re-track behavior, and covered missing-character and missing-access cases in backend tests.
+
+## 2026-03-21
+
+- task id: `T07B`
+- title: Persisted Character Sync Toggle Updates
+- status: `PASS`
+- summary: persisted `sync_enabled` updates on `esi_characters`, added no-op and missing-character handling, and covered the patch/read-after-write path with backend tests.
+
+## 2026-03-21
+
+- task id: `T07A`
+- title: Persisted Character Reads
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 11, 12B, 14
+- acceptance criteria covered:
+  - `CharacterService.list_characters()` now reads persisted `esi_characters` rows and joins sync-state data
+  - accessible structure counts now come from persisted `character_accessible_structures`
+  - `CharacterService.get_character(character_id)` now returns persisted detail and structures for the requested public EVE character id
+  - missing characters now fail deterministically with a not-found path instead of returning demo data
+  - deterministic backend tests cover list, detail, structure mapping, and missing-character behavior
+- files changed:
+  - `backend/app/services/characters/service.py`
+  - `backend/app/api/routes/characters.py`
+  - `backend/tests/services/test_character_service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `TASKS.md`
+- short implementation summary: Replaced the demo-backed character read path with persisted character, sync-state, and accessible-structure queries so the characters API now reflects stored auth data.
+- important decisions:
+  - character list/detail IDs are exposed as public EVE `character_id` values rather than internal database row ids
+  - missing-character reads raise a deterministic 404 path through the API layer
+  - sync toggles are still projected from the shared `sync_enabled` flag until per-domain preference persistence exists
+- open follow-ups:
+  - persist per-domain sync toggle settings instead of mirroring a single `sync_enabled` flag
+  - populate character skills from real sync data rather than an empty placeholder list
+  - add structure discovery and tracking flows that write `character_accessible_structures` end to end
+
+## 2026-03-21
+
+- task id: `T05D`
+- title: Trade Page Item Detail Selection
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 1, 14, 15, 17.2
+- acceptance criteria covered:
+  - the trade page now selects a deterministic default item from the filtered item-result set
+  - selecting a different item row requeries item detail for the active target, source, type, and period scope
+  - the execution-context panel now renders API-backed order rows and key metrics for the selected item
+  - item selection resets safely when control changes remove the currently selected row
+  - frontend tests cover default detail loading, row-driven detail changes, and selection reset behavior
+- files changed:
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/types/trade.ts`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/components/trade/ItemDetailPanel.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+  - `TASKS.md`
+- short implementation summary: Connected the trade-page item table to the existing item-detail API so the execution-context panel now follows the selected opportunity instead of remaining static scaffold text.
+- important decisions:
+  - the selected item defaults to the first row in the current filtered-and-sorted item list
+  - selection resets automatically whenever filters or source/target changes remove the currently selected row
+  - the detail panel intentionally renders the backend-provided placeholder order stacks without changing the backend contract
+- open follow-ups:
+  - add keyboard and screen-reader friendly row-selection controls beyond pointer-based row clicks
+  - replace placeholder order rows with live order-book-derived detail when ingestion exists
+  - add item-detail loading and empty-state polish beyond the current lightweight panel states
+
+## 2026-03-21
+
 - task id: `T05C`
 - title: Trade Page Controls And Client-Side Filtering
 - status: `PASS`
@@ -8,7 +159,7 @@
   - target-market and analysis-period controls now drive the source-summary and item queries
   - item search applies a case-insensitive substring filter before rendering item rows
   - min ROI and warning-threshold controls filter weaker rows deterministically from loaded query results
-  - sortable item-table columns now change rendered order deterministically
+  - sortable item-table columns now change rendered row order deterministically
   - frontend tests cover default filtering, control-driven requeries, source reset behavior, and sortable row rendering
 - files changed:
   - `frontend/package.json`
@@ -447,6 +598,21 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - used curated seed data instead of live SDE import for the baseline scaffold
 - open follow-ups:
   - implement real SDE import and market group refresh
+
+- task id: `T04A`
+- title: Foundation Data Source Abstraction
+- status: `DONE`
+- spec refs: `TASKS.md` task packet `T04A`
+- acceptance criteria covered:
+  - foundation bootstrap reads seed data through a provider abstraction
+  - default curated source preserves the existing persisted bootstrap shape
+  - bootstrap remains idempotent
+  - a small mock source proves the abstraction boundary
+- files changed:
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/tests/services/test_foundation_data.py`
+- short implementation summary: Swapped the bootstrap over to a seed-source interface and added tests for the default and mock sources.
 
 - task id: `T05`
 - title: Trade Analysis API And Data Flow

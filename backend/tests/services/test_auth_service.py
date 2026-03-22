@@ -59,6 +59,43 @@ def test_handle_callback_creates_initial_user_character_token_and_sync_state() -
     assert tokens[0].access_token == "access-1"
 
 
+def test_handle_callback_links_second_character_to_existing_user() -> None:
+    session = build_session()
+    client = MockEsiClient()
+    service = AuthService(session_factory=lambda: session, esi_client=client)
+    first = service.handle_callback("first-code")
+
+    client.token_payload = {
+        "access_token": "access-2",
+        "refresh_token": "refresh-2",
+        "expires_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+        "scopes": ["esi-wallet.read_character_wallet.v1"],
+    }
+    client.identity_payload = {
+        "character_id": 90000077,
+        "character_name": "Audit Trader Alt",
+        "corporation_name": "Brave Collective",
+    }
+
+    second = service.handle_callback("second-code")
+
+    users = session.scalars(select(User)).all()
+    characters = session.scalars(select(EsiCharacter)).all()
+    tokens = session.scalars(select(EsiCharacterToken)).all()
+    sync_states = session.scalars(select(EsiCharacterSyncState)).all()
+
+    assert first.id == second.id
+    assert second.primary_character_id == first.primary_character_id
+    assert len(users) == 1
+    assert len(characters) == 2
+    assert len(tokens) == 2
+    assert len(sync_states) == 2
+    assert {character.user_id for character in characters} == {users[0].id}
+    assert users[0].primary_character_id == first.id
+    assert {character.character_id for character in characters} == {90000042, 90000077}
+    assert {token.access_token for token in tokens} == {"access-1", "access-2"}
+
+
 def test_handle_callback_updates_existing_character_and_token_without_duplicates() -> None:
     session = build_session()
     client = MockEsiClient()

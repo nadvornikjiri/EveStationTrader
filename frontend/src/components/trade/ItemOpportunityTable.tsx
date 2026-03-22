@@ -7,7 +7,9 @@ type Props = {
   rows: OpportunityItem[];
   sortKey: SortKey;
   sortDirection: SortDirection;
+  selectedTypeId: number | null;
   onSortChange: (sortKey: SortKey) => void;
+  onSelectItem: (typeId: number) => void;
 };
 
 const SORTABLE_COLUMNS: Array<{ key: SortKey; label: string }> = [
@@ -25,7 +27,14 @@ function getSortIndicator(columnKey: SortKey, activeKey: SortKey, direction: Sor
   return direction === "asc" ? " ↑" : " ↓";
 }
 
-export function ItemOpportunityTable({ rows, sortKey, sortDirection, onSortChange }: Props) {
+export function ItemOpportunityTable({
+  rows,
+  sortKey,
+  sortDirection,
+  selectedTypeId,
+  onSortChange,
+  onSelectItem,
+}: Props) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -55,7 +64,11 @@ export function ItemOpportunityTable({ rows, sortKey, sortDirection, onSortChang
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.type_id}>
+            <tr
+              key={row.type_id}
+              className={selectedTypeId === row.type_id ? "selected-row" : undefined}
+              onClick={() => onSelectItem(row.type_id)}
+            >
               <td>{row.item_name}</td>
               <td>{row.purchase_units}</td>
               <td>{(row.roi_now * 100).toFixed(1)}%</td>
