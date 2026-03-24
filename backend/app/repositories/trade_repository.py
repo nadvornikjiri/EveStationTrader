@@ -4,15 +4,13 @@ from typing import Callable
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas.trade import (
-    ItemOrderRow,
-    OpportunityItemDetail,
-    OpportunityItemRow,
-    SourceSummary,
-    TargetLocation,
-)
+from app.api.schemas.trade import OpportunityItemDetail, OpportunityItemRow, SourceSummary, TargetLocation
 from app.db.session import SessionLocal
 from app.domain.enums import LocationType
+from app.repositories.seed_data import CURATED_STATIONS
+
+
+CURATED_TARGET_LOCATION_IDS = tuple(station.station_id for station in CURATED_STATIONS)
 
 
 class TradeRepository:
@@ -40,8 +38,11 @@ class TradeRepository:
                 )
                 .join(Region, Region.id == Location.region_id)
                 .join(System, System.id == Location.system_id)
-                .where(Location.location_type.in_([LocationType.NPC_STATION.value, LocationType.STRUCTURE.value]))
-                .order_by(Location.location_type, Location.name)
+                .where(
+                    Location.location_type == LocationType.NPC_STATION.value,
+                    Location.location_id.in_(CURATED_TARGET_LOCATION_IDS),
+                )
+                .order_by(Location.name)
             ).all()
             return [
                 TargetLocation(
@@ -149,10 +150,9 @@ class TradeRepository:
                     )
                     for summary, location_name in rows
                 ]
+            return []
         finally:
             session.close()
-
-        return []
 
     def list_items(self, target_location_id: int, source_location_id: int, period_days: int) -> list[OpportunityItemRow]:
         from app.models.all_models import Item, OpportunityItem
@@ -208,10 +208,9 @@ class TradeRepository:
                     )
                     for item, item_name in rows
                 ]
+            return []
         finally:
             session.close()
-
-        return []
 
     def get_item_detail(
         self,
@@ -236,119 +235,48 @@ class TradeRepository:
                     OpportunityItem.period_days == period_days,
                 )
             ).first()
-            has_computed_metrics = row is not None
-            if has_computed_metrics:
-                assert row is not None
-                item, item_name = row
-                metrics = OpportunityItemRow(
-                    type_id=type_id,
-                    item_name=item_name,
-                    source_security_status=item.source_security_status,
-                    purchase_units=item.purchase_units,
-                    source_units_available=item.source_units_available,
-                    target_demand_day=item.target_demand_day,
-                    target_supply_units=item.target_supply_units,
-                    target_dos=item.target_dos,
-                    in_transit_units_item=item.in_transit_units,
-                    assets_units_item=item.assets_units,
-                    active_sell_orders_units_item=item.active_sell_orders_units,
-                    source_station_sell_price=item.source_station_sell_price,
-                    target_station_sell_price=item.target_station_sell_price,
-                    target_period_avg_price=item.target_period_avg_price,
-                    risk_pct=item.risk_pct,
-                    warning_flag=item.warning_flag,
-                    target_now_profit=item.target_now_profit,
-                    target_period_profit=item.target_period_profit,
-                    capital_required=item.capital_required,
-                    roi_now=item.roi_now,
-                    roi_period=item.roi_period,
-                    item_volume_m3=item.item_volume_m3,
-                    shipping_cost=item.shipping_cost,
-                    demand_source=item.demand_source,
-                    confidence_score=item.confidence_score,
+            if row is None:
+                raise LookupError(
+                    "Opportunity item detail was requested before derived opportunity rows were available."
                 )
-            else:
-                item = session.scalar(select(Item).where(Item.type_id == type_id))
-                item_name = item.name if item is not None else f"Item {type_id}"
-                metrics = OpportunityItemRow(
-                    type_id=type_id,
-                    item_name=item_name,
-                    source_security_status=0.0,
-                    purchase_units=0.0,
-                    source_units_available=0.0,
-                    target_demand_day=0.0,
-                    target_supply_units=0.0,
-                    target_dos=0.0,
-                    in_transit_units_item=0.0,
-                    assets_units_item=0.0,
-                    active_sell_orders_units_item=0.0,
-                    source_station_sell_price=0.0,
-                    target_station_sell_price=0.0,
-                    target_period_avg_price=0.0,
-                    risk_pct=0.0,
-                    warning_flag=False,
-                    target_now_profit=0.0,
-                    target_period_profit=0.0,
-                    capital_required=0.0,
-                    roi_now=0.0,
-                    roi_period=0.0,
-                    item_volume_m3=item.volume_m3 if item is not None else 0.0,
-                    shipping_cost=0.0,
-                    demand_source="unavailable",
-                    confidence_score=0.0,
-                )
+
+            item, item_name = row
+            metrics = OpportunityItemRow(
+                type_id=type_id,
+                item_name=item_name,
+                source_security_status=item.source_security_status,
+                purchase_units=item.purchase_units,
+                source_units_available=item.source_units_available,
+                target_demand_day=item.target_demand_day,
+                target_supply_units=item.target_supply_units,
+                target_dos=item.target_dos,
+                in_transit_units_item=item.in_transit_units,
+                assets_units_item=item.assets_units,
+                active_sell_orders_units_item=item.active_sell_orders_units,
+                source_station_sell_price=item.source_station_sell_price,
+                target_station_sell_price=item.target_station_sell_price,
+                target_period_avg_price=item.target_period_avg_price,
+                risk_pct=item.risk_pct,
+                warning_flag=item.warning_flag,
+                target_now_profit=item.target_now_profit,
+                target_period_profit=item.target_period_profit,
+                capital_required=item.capital_required,
+                roi_now=item.roi_now,
+                roi_period=item.roi_period,
+                item_volume_m3=item.item_volume_m3,
+                shipping_cost=item.shipping_cost,
+                demand_source=item.demand_source,
+                confidence_score=item.confidence_score,
+            )
         finally:
             session.close()
-
-        target_market_sell_orders: list[ItemOrderRow]
-        source_market_sell_orders: list[ItemOrderRow]
-        source_market_buy_orders: list[ItemOrderRow]
-        if has_computed_metrics:
-            target_market_sell_orders = [
-                ItemOrderRow(
-                    price=metrics.target_station_sell_price,
-                    volume=12,
-                    order_value=metrics.target_station_sell_price * 12,
-                    cumulative_volume=12,
-                ),
-                ItemOrderRow(
-                    price=metrics.target_station_sell_price + 150_000.0,
-                    volume=22,
-                    order_value=(metrics.target_station_sell_price + 150_000.0) * 22,
-                    cumulative_volume=34,
-                ),
-            ]
-            source_market_sell_orders = [
-                ItemOrderRow(price=metrics.source_station_sell_price, volume=10, order_value=metrics.source_station_sell_price * 10),
-                ItemOrderRow(
-                    price=metrics.source_station_sell_price + 100_000.0,
-                    volume=30,
-                    order_value=(metrics.source_station_sell_price + 100_000.0) * 30,
-                ),
-            ]
-            source_market_buy_orders = [
-                ItemOrderRow(
-                    price=max(metrics.source_station_sell_price - 600_000.0, 0.0),
-                    volume=18,
-                    order_value=max(metrics.source_station_sell_price - 600_000.0, 0.0) * 18,
-                ),
-                ItemOrderRow(
-                    price=max(metrics.source_station_sell_price - 750_000.0, 0.0),
-                    volume=25,
-                    order_value=max(metrics.source_station_sell_price - 750_000.0, 0.0) * 25,
-                ),
-            ]
-        else:
-            target_market_sell_orders = []
-            source_market_sell_orders = []
-            source_market_buy_orders = []
 
         return OpportunityItemDetail(
             type_id=type_id,
             item_name=metrics.item_name,
-            target_market_sell_orders=target_market_sell_orders,
-            source_market_sell_orders=source_market_sell_orders,
-            source_market_buy_orders=source_market_buy_orders,
+            target_market_sell_orders=[],
+            source_market_sell_orders=[],
+            source_market_buy_orders=[],
             metrics=metrics,
         )
 

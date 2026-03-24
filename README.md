@@ -65,6 +65,12 @@ Backend uses the following environment variables:
 - `ESI_COMPATIBILITY_DATE`
 - `A4E_USER_AGENT`
 
+If `DATABASE_URL` is not set, the backend now defaults to local PostgreSQL:
+
+```bash
+postgresql+psycopg://eve_trader:eve_trader@localhost:5432/eve_trader
+```
+
 Real EVE SSO is scaffolded, but external clients stay mock-friendly for local development and tests until the live integration phase is filled out.
 
 ## Migrations

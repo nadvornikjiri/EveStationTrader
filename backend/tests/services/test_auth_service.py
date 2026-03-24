@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, User
 from app.services.auth.service import AuthService
+from tests.db_test_utils import build_test_session
 
 
 class MockEsiClient:
@@ -32,9 +32,7 @@ class MockEsiClient:
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def test_handle_callback_creates_initial_user_character_token_and_sync_state() -> None:

@@ -1,19 +1,16 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
-from app.models.all_models import EsiHistoryDaily, Item, Location, Region, System
+from app.models.all_models import EsiHistoryDaily, EsiMarketOrder, Item, Location, MarketPricePeriod, Region, System
 from app.services.esi.history_ingestion import EsiRegionalHistoryRecord, EsiRegionalHistoryIngestionService
-from app.services.pricing.market_price_periods import MarketPricePeriodService
 from app.services.sync.service import SyncService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_region_location_and_items(session: Session) -> tuple[int, list[int], int]:
@@ -164,6 +161,26 @@ class StubEsiClient:
 def test_sync_service_esi_history_sync_feeds_market_price_period_computation() -> None:
     session = build_session()
     location_id, item_ids, _region_id = seed_region_location_and_items(session)
+    location = session.scalar(select(Location).where(Location.id == location_id))
+    assert location is not None
+    session.add(
+        EsiMarketOrder(
+            order_id=9001,
+            region_id=location.region_id,
+            location_id=location.id,
+            type_id=item_ids[0],
+            system_id=location.system_id,
+            is_buy_order=False,
+            price=4.12,
+            volume_total=1000,
+            volume_remain=400,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.commit()
 
     service = SyncService(
         session_factory=lambda: session,
@@ -171,22 +188,22 @@ def test_sync_service_esi_history_sync_feeds_market_price_period_computation() -
     )
 
     response = service.trigger_job("esi_history_sync")
-    result = MarketPricePeriodService().upsert_from_history(
-        session,
-        location_id=location_id,
-        type_id=item_ids[0],
-        period_days=2,
-        warning_threshold=0.05,
+    result = session.scalar(
+        select(MarketPricePeriod).where(
+            MarketPricePeriod.location_id == location_id,
+            MarketPricePeriod.type_id == item_ids[0],
+            MarketPricePeriod.period_days == 3,
+        )
     )
 
-    assert response.records_processed == 2
-    assert response.target_type == "region"
-    assert response.target_id == "10000002"
+    assert response.records_processed == 6
+    assert response.target_type == "regions"
+    assert response.target_id == "1"
     assert "Synced ESI history" in (response.message or "")
-    assert result.row is not None
-    assert result.history_points_used == 2
-    assert result.row.current_price == 100.0
-    assert result.row.period_avg_price == 105.0
-    assert result.row.price_min == 90.0
-    assert result.row.price_max == 130.0
-    assert result.row.warning_flag is False
+    assert "price periods" in (response.message or "")
+    assert result is not None
+    assert result.current_price == 100.0
+    assert result.period_avg_price == 105.0
+    assert result.price_min == 90.0
+    assert result.price_max == 130.0
+    assert result.warning_flag is False

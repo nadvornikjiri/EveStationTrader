@@ -1,8 +1,7 @@
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import (
     Item,
     Location,
@@ -14,12 +13,11 @@ from app.models.all_models import (
     System,
 )
 from app.services.opportunities.generation import OpportunityGenerationService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_trade_inputs(session: Session) -> dict[str, int]:

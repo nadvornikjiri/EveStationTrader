@@ -19,3 +19,6 @@ frontend/coverage/
 frontend/.vite/
 postgres-data/
 redis-data/
+*.db
+*.sqlite3
+backend/*.log

@@ -99,10 +99,55 @@ select {
   gap: 14px;
 }
 
+.trade-controls-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+}
+
+.database-controls-grid {
+  grid-template-columns: minmax(260px, 360px) 1fr;
+}
+
+.trade-controls-grid label,
+.trade-controls-grid input,
+.trade-controls-grid select {
+  min-width: 0;
+}
+
+.trade-controls-grid label > span {
+  display: block;
+}
+
 label {
   display: grid;
   gap: 8px;
   color: var(--muted);
+}
+
+.settings-toggle {
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-toggle > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-toggle p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.settings-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
 }
 
 input,
@@ -113,6 +158,12 @@ select,
   background: rgba(255, 255, 255, 0.04);
   color: #eef5ff;
   padding: 10px 12px;
+}
+
+select option,
+select optgroup {
+  color: #0d1728;
+  background: #eef5ff;
 }
 
 .refresh-button {
@@ -126,9 +177,29 @@ select,
   margin-bottom: 12px;
 }
 
+.sync-alert {
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.sync-alert-error {
+  border: 1px solid rgba(255, 126, 126, 0.45);
+  background: rgba(120, 26, 26, 0.28);
+  color: #ffd7d7;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.database-table td {
+  vertical-align: top;
+  white-space: nowrap;
 }
 
 .data-table th,
@@ -217,6 +288,40 @@ select,
   border-radius: 14px;
   padding: 14px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.sync-progress-block {
+  display: grid;
+  gap: 6px;
+}
+
+.sync-progress-label,
+.sync-progress-meta {
+  margin: 0;
+}
+
+.sync-progress-label {
+  color: #d8e7fb;
+  font-size: 0.92rem;
+}
+
+.sync-progress-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.sync-progress {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sync-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-soft), var(--accent));
 }
 
 @media (max-width: 960px) {

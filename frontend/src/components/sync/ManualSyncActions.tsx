@@ -6,8 +6,10 @@ type Props = {
 
 const actions = [
   { key: "foundation_seed_sync", label: "Seed Foundation Data" },
+  { key: "foundation_import_sync", label: "Import SDE Data Now" },
   { key: "adam4eve_sync", label: "Sync Adam4EVE Now" },
   { key: "esi_history_sync", label: "Sync ESI History Now" },
+  { key: "esi_market_orders_sync", label: "Sync NPC Orders Now" },
   { key: "structure_snapshot_sync", label: "Sync Tracked Structures Now" },
   { key: "character_sync", label: "Sync All Characters Now" },
   { key: "opportunity_rebuild", label: "Rebuild Opportunities Now" },

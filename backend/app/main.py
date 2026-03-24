@@ -29,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/health")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}

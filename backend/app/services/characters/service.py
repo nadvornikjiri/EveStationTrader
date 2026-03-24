@@ -7,7 +7,15 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail, CharacterListItem
 from app.db.session import SessionLocal
-from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState
+from app.models.all_models import (
+    CharacterAccessibleStructure,
+    EsiCharacter,
+    EsiCharacterSyncState,
+    Location,
+    Region,
+    System,
+    TrackedStructure,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,7 @@ class CharacterService:
 
             if not structure.tracking_enabled:
                 structure.tracking_enabled = True
+            self._upsert_tracked_structure(session, character.id, structure)
             session.commit()
             session.refresh(structure)
             return structure
@@ -170,6 +179,10 @@ class CharacterService:
                     persisted_structure.confidence_score = discovered_structure.confidence_score
 
                 persisted_structures.append(persisted_structure)
+
+            for persisted_structure in persisted_structures:
+                if persisted_structure.tracking_enabled:
+                    self._upsert_tracked_structure(session, character.id, persisted_structure)
 
             session.commit()
             for persisted_structure in persisted_structures:
@@ -301,3 +314,75 @@ class CharacterService:
 
     def _split_scopes(self, granted_scopes: str) -> list[str]:
         return granted_scopes.split() if granted_scopes else []
+
+    def _upsert_tracked_structure(
+        self,
+        session: Session,
+        character_db_id: int,
+        structure: CharacterAccessibleStructure,
+    ) -> None:
+        system = self._resolve_system(session, structure.system_name, structure.region_name)
+        if system is None:
+            return
+
+        location = session.scalar(select(Location).where(Location.location_id == structure.structure_id))
+        if location is None:
+            location = Location(
+                location_id=structure.structure_id,
+                location_type="structure",
+                system_id=system.id,
+                region_id=system.region_id,
+                name=structure.structure_name,
+            )
+            session.add(location)
+        else:
+            location.location_type = "structure"
+            location.system_id = system.id
+            location.region_id = system.region_id
+            location.name = structure.structure_name
+
+        tracked_structure = session.scalar(
+            select(TrackedStructure).where(TrackedStructure.structure_id == structure.structure_id)
+        )
+        if tracked_structure is None:
+            tracked_structure = TrackedStructure(
+                structure_id=structure.structure_id,
+                name=structure.structure_name,
+                system_id=system.id,
+                region_id=system.region_id,
+                tracking_tier=structure.polling_tier,
+                poll_interval_minutes=self._poll_interval_minutes(structure.polling_tier),
+                is_enabled=True,
+                confidence_score=structure.confidence_score,
+                discovered_by_character_id=character_db_id,
+            )
+            session.add(tracked_structure)
+            return
+
+        tracked_structure.name = structure.structure_name
+        tracked_structure.system_id = system.id
+        tracked_structure.region_id = system.region_id
+        tracked_structure.tracking_tier = structure.polling_tier
+        tracked_structure.poll_interval_minutes = self._poll_interval_minutes(structure.polling_tier)
+        tracked_structure.is_enabled = True
+        tracked_structure.confidence_score = structure.confidence_score
+        tracked_structure.discovered_by_character_id = character_db_id
+
+    def _resolve_system(
+        self,
+        session: Session,
+        system_name: str | None,
+        region_name: str | None,
+    ) -> System | None:
+        if system_name is None:
+            return None
+
+        statement = select(System).where(System.name == system_name)
+        if region_name is not None:
+            statement = statement.join(Region, Region.id == System.region_id).where(Region.name == region_name)
+
+        return session.scalar(statement.order_by(System.id.asc()))
+
+    @staticmethod
+    def _poll_interval_minutes(polling_tier: str) -> int:
+        return 10 if polling_tier == "core" else 30

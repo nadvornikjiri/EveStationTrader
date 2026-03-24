@@ -34,7 +34,7 @@ export function TradeControls({
   onWarningThresholdChange,
 }: Props) {
   return (
-    <section className="panel controls-grid">
+    <section className="panel controls-grid trade-controls-grid">
       <label>
         <span>Target Market</span>
         <select

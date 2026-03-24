@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -318,6 +318,38 @@ class FileFoundationSeedSource:
 
     def default_user_settings(self) -> Mapping[str, object]:
         return self._default_user_settings
+
+
+@dataclass(frozen=True)
+class StaticFoundationSeedSource:
+    regions_data: Sequence[RegionSeed]
+    systems_data: Sequence[SystemSeed]
+    stations_data: Sequence[StationSeed] = field(default_factory=tuple)
+    items_data: Sequence[ItemSeed] = field(default_factory=tuple)
+    structure_locations_data: Mapping[int, StructureLocationSeed] = field(default_factory=dict)
+    tracked_structures_data: Sequence[TrackedStructureSeed] = field(default_factory=tuple)
+    default_user_settings_data: Mapping[str, object] = field(default_factory=dict)
+
+    def regions(self) -> Sequence[RegionSeed]:
+        return self.regions_data
+
+    def systems(self) -> Sequence[SystemSeed]:
+        return self.systems_data
+
+    def stations(self) -> Sequence[StationSeed]:
+        return self.stations_data
+
+    def items(self) -> Sequence[ItemSeed]:
+        return self.items_data
+
+    def structure_locations(self) -> Mapping[int, StructureLocationSeed]:
+        return self.structure_locations_data
+
+    def tracked_structures(self) -> Sequence[TrackedStructureSeed]:
+        return self.tracked_structures_data
+
+    def default_user_settings(self) -> Mapping[str, object]:
+        return self.default_user_settings_data
 
 
 CURATED_REGIONS: tuple[RegionSeed, ...] = (

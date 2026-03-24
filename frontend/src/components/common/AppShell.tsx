@@ -4,6 +4,7 @@ const links = [
   { to: "/trade", label: "Trade" },
   { to: "/sync", label: "Sync" },
   { to: "/characters", label: "Characters" },
+  { to: "/database", label: "Database" },
   { to: "/settings", label: "Settings" },
 ];
 

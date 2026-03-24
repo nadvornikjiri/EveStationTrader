@@ -1,30 +1,32 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
-from app.models.all_models import StructureOrderDelta, StructureSnapshot, StructureSnapshotOrder
+from app.models.all_models import Item, StructureOrderDelta, StructureSnapshot, StructureSnapshotOrder
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def test_persist_snapshot_stores_snapshot_and_orders() -> None:
     session = build_session()
     service = StructureSnapshotService()
+    first_item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    second_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([first_item, second_item])
+    session.flush()
 
     result = service.persist_snapshot(
         session,
         structure_id=1022734985679,
         snapshot_time=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
         orders=[
-            StructureOrderInput(order_id=1, type_id=34, is_buy_order=False, price=100.0, volume_remain=50),
-            StructureOrderInput(order_id=2, type_id=35, is_buy_order=True, price=90.0, volume_remain=20),
+            StructureOrderInput(order_id=1, type_id=first_item.id, is_buy_order=False, price=100.0, volume_remain=50),
+            StructureOrderInput(order_id=2, type_id=second_item.id, is_buy_order=True, price=90.0, volume_remain=20),
         ],
     )
 
@@ -44,14 +46,19 @@ def test_persist_deltas_stores_volume_reductions_and_disappeared_orders() -> Non
     session = build_session()
     service = StructureSnapshotService()
     structure_id = 1022734985679
+    first_item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    second_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    third_item = Item(type_id=36, name="Mexallon", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([first_item, second_item, third_item])
+    session.flush()
     previous = service.persist_snapshot(
         session,
         structure_id=structure_id,
         snapshot_time=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
         orders=[
-            StructureOrderInput(order_id=1, type_id=34, is_buy_order=False, price=100.0, volume_remain=50),
-            StructureOrderInput(order_id=2, type_id=35, is_buy_order=True, price=90.0, volume_remain=40),
-            StructureOrderInput(order_id=3, type_id=36, is_buy_order=False, price=80.0, volume_remain=10),
+            StructureOrderInput(order_id=1, type_id=first_item.id, is_buy_order=False, price=100.0, volume_remain=50),
+            StructureOrderInput(order_id=2, type_id=second_item.id, is_buy_order=True, price=90.0, volume_remain=40),
+            StructureOrderInput(order_id=3, type_id=third_item.id, is_buy_order=False, price=80.0, volume_remain=10),
         ],
     )
     current = service.persist_snapshot(
@@ -59,8 +66,8 @@ def test_persist_deltas_stores_volume_reductions_and_disappeared_orders() -> Non
         structure_id=structure_id,
         snapshot_time=datetime(2026, 3, 20, 10, 10, tzinfo=UTC),
         orders=[
-            StructureOrderInput(order_id=1, type_id=34, is_buy_order=False, price=100.0, volume_remain=20),
-            StructureOrderInput(order_id=2, type_id=35, is_buy_order=True, price=90.0, volume_remain=15),
+            StructureOrderInput(order_id=1, type_id=first_item.id, is_buy_order=False, price=100.0, volume_remain=20),
+            StructureOrderInput(order_id=2, type_id=second_item.id, is_buy_order=True, price=90.0, volume_remain=15),
         ],
     )
 

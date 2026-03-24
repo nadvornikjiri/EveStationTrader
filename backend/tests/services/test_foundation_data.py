@@ -2,10 +2,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import Item, Location, Region, Station, System, TrackedStructure, UserSetting
 from app.repositories.seed_data import (
     CuratedFoundationSeedSource,
@@ -20,6 +19,7 @@ from app.repositories.seed_data import (
     SystemSeed,
 )
 from app.services.sync.foundation_data import FoundationDataService
+from tests.db_test_utils import build_test_session
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FOUNDATION_SNAPSHOT_PATH = FIXTURES_DIR / "foundation_snapshot.json"
@@ -58,9 +58,7 @@ class MockFoundationSeedSource:
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def test_foundation_data_bootstrap_is_idempotent() -> None:

@@ -1,21 +1,40 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
-from app.models.all_models import CharacterAccessibleStructure, EsiCharacter, EsiCharacterSyncState, User
+from app.models.all_models import (
+    CharacterAccessibleStructure,
+    EsiCharacter,
+    EsiCharacterSyncState,
+    Location,
+    Region,
+    System,
+    TrackedStructure,
+    User,
+)
 from app.services.characters.service import CharacterService, DiscoveredStructureInput
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_character_data(session: Session) -> None:
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    session.add_all(
+        [
+            System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9),
+            System(system_id=30000144, region_id=region.id, name="Perimeter", security_status=0.9),
+        ]
+    )
+    session.flush()
+
     user = User(primary_character_id=None)
     session.add(user)
     session.flush()
@@ -191,6 +210,20 @@ def test_enable_character_structure_tracking_sets_flag_and_is_idempotent() -> No
     detail = service.get_character(90000042)
     assert detail.structures[0].tracking_enabled is True
 
+    tracked_location = session.scalar(select(Location).where(Location.location_id == 1022734985680))
+    assert tracked_location is not None
+    assert tracked_location.location_type == "structure"
+    assert tracked_location.name == "Jita Freeport"
+
+    tracked_structure_row = session.scalar(
+        select(TrackedStructure).where(TrackedStructure.structure_id == 1022734985680)
+    )
+    assert tracked_structure_row is not None
+    assert tracked_structure_row.is_enabled is True
+    assert tracked_structure_row.tracking_tier == "user"
+    assert tracked_structure_row.poll_interval_minutes == 30
+    assert tracked_structure_row.discovered_by_character_id is not None
+
 
 def test_enable_character_structure_tracking_raises_for_missing_character_or_structure() -> None:
     session = build_session()
@@ -309,7 +342,19 @@ def test_discover_character_accessible_structures_updates_existing_rows_without_
     assert row.structure_name == "Perimeter Market Keepstar Updated"
     assert row.tracking_enabled is True
     assert row.confidence_score == 0.91
-    assert row.access_verified_at == datetime(2026, 3, 21, 14, 0, tzinfo=UTC).replace(tzinfo=None)
+    assert row.access_verified_at == datetime(2026, 3, 21, 14, 0, tzinfo=UTC)
+
+    tracked_structure = session.scalar(
+        select(TrackedStructure).where(TrackedStructure.structure_id == 1022734985679)
+    )
+    assert tracked_structure is not None
+    assert tracked_structure.name == "Perimeter Market Keepstar Updated"
+    assert tracked_structure.tracking_tier == "secondary"
+    assert tracked_structure.poll_interval_minutes == 30
+
+    tracked_location = session.scalar(select(Location).where(Location.location_id == 1022734985679))
+    assert tracked_location is not None
+    assert tracked_location.name == "Perimeter Market Keepstar Updated"
 
 
 def test_discover_character_accessible_structures_raises_for_missing_character() -> None:

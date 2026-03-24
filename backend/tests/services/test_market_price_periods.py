@@ -1,17 +1,14 @@
 from datetime import date
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import EsiHistoryDaily, Item, Location, MarketPricePeriod, Region, System
 from app.services.pricing.market_price_periods import MarketPricePeriodService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_location_and_item(session: Session) -> tuple[int, int, int]:

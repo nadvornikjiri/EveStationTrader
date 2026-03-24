@@ -167,6 +167,27 @@ class EsiHistoryDaily(Base):
     volume: Mapped[int] = mapped_column(Integer)
 
 
+class EsiMarketOrder(Base):
+    __tablename__ = "esi_market_orders"
+    __table_args__ = (UniqueConstraint("order_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), index=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"), index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    system_id: Mapped[int] = mapped_column(ForeignKey("systems.id"))
+    is_buy_order: Mapped[bool] = mapped_column(Boolean)
+    price: Mapped[float] = mapped_column(Float)
+    volume_total: Mapped[int] = mapped_column(Integer)
+    volume_remain: Mapped[int] = mapped_column(Integer)
+    min_volume: Mapped[int] = mapped_column(Integer, default=1)
+    order_range: Mapped[str] = mapped_column(String(32), default="region")
+    issued: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    duration: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class AdamNpcDemandDaily(Base):
     __tablename__ = "adam_npc_demand_daily"
     __table_args__ = (UniqueConstraint("location_id", "type_id", "date"),)
@@ -350,6 +371,10 @@ class SyncJobRun(Base):
     records_processed: Mapped[int] = mapped_column(Integer, default=0)
     target_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    progress_phase: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_details: Mapped[str | None] = mapped_column(Text, nullable=True)
 

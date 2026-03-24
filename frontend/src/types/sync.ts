@@ -5,6 +5,11 @@ export type SyncStatusCard = {
   last_successful_sync: string | null;
   next_scheduled_sync: string | null;
   recent_error_count: number;
+  active_message: string | null;
+  progress_phase: string | null;
+  progress_current: number | null;
+  progress_total: number | null;
+  progress_unit: string | null;
 };
 
 export type SyncJobRun = {
@@ -17,6 +22,10 @@ export type SyncJobRun = {
   records_processed: number;
   target_type: string | null;
   target_id: string | null;
+  progress_phase: string | null;
+  progress_current: number | null;
+  progress_total: number | null;
+  progress_unit: string | null;
   message: string | null;
   error_details: string | null;
 };

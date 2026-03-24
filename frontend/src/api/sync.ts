@@ -16,3 +16,7 @@ export function getFallbackDiagnostics() {
 export function runSyncJob(jobType: string) {
   return apiPost<SyncJobRun>(`/sync/run/${jobType}`);
 }
+
+export function cancelSyncJob(jobId: number) {
+  return apiPost<SyncJobRun>(`/sync/cancel/${jobId}`);
+}

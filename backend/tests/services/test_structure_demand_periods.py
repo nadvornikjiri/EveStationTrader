@@ -1,26 +1,27 @@
 import pytest
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
-from app.models.all_models import StructureDemandPeriod, StructureOrderDelta
+from app.models.all_models import Item, StructureDemandPeriod, StructureOrderDelta
 from app.services.structures.demand_periods import StructureDemandPeriodService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_deltas(session: Session) -> None:
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(item)
+    session.flush()
     session.add_all(
         [
             StructureOrderDelta(
                 structure_id=1022734985679,
-                type_id=34,
+                type_id=item.id,
                 order_id=1,
                 from_snapshot_time=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
                 to_snapshot_time=datetime(2026, 3, 18, 10, 10, tzinfo=UTC),
@@ -34,7 +35,7 @@ def seed_deltas(session: Session) -> None:
             ),
             StructureOrderDelta(
                 structure_id=1022734985679,
-                type_id=34,
+                type_id=item.id,
                 order_id=2,
                 from_snapshot_time=datetime(2026, 3, 19, 10, 0, tzinfo=UTC),
                 to_snapshot_time=datetime(2026, 3, 19, 10, 10, tzinfo=UTC),
@@ -48,7 +49,7 @@ def seed_deltas(session: Session) -> None:
             ),
             StructureOrderDelta(
                 structure_id=1022734985679,
-                type_id=34,
+                type_id=item.id,
                 order_id=3,
                 from_snapshot_time=datetime(2026, 3, 20, 8, 0, tzinfo=UTC),
                 to_snapshot_time=datetime(2026, 3, 20, 8, 10, tzinfo=UTC),
@@ -68,11 +69,13 @@ def seed_deltas(session: Session) -> None:
 def test_upsert_period_aggregates_deltas_into_structure_demand_period() -> None:
     session = build_session()
     seed_deltas(session)
+    item = session.scalar(select(Item).where(Item.type_id == 34))
+    assert item is not None
 
     result = StructureDemandPeriodService().upsert_period(
         session,
         structure_id=1022734985679,
-        type_id=34,
+        type_id=item.id,
         period_days=3,
         as_of=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
     )
@@ -91,11 +94,13 @@ def test_upsert_period_updates_existing_row_on_rerun() -> None:
     session = build_session()
     seed_deltas(session)
     service = StructureDemandPeriodService()
+    item = session.scalar(select(Item).where(Item.type_id == 34))
+    assert item is not None
 
     first = service.upsert_period(
         session,
         structure_id=1022734985679,
-        type_id=34,
+        type_id=item.id,
         period_days=7,
         as_of=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
     )
@@ -103,7 +108,7 @@ def test_upsert_period_updates_existing_row_on_rerun() -> None:
     session.add(
         StructureOrderDelta(
             structure_id=1022734985679,
-            type_id=34,
+            type_id=item.id,
             order_id=4,
             from_snapshot_time=datetime(2026, 3, 20, 9, 0, tzinfo=UTC),
             to_snapshot_time=datetime(2026, 3, 20, 9, 10, tzinfo=UTC),
@@ -121,7 +126,7 @@ def test_upsert_period_updates_existing_row_on_rerun() -> None:
     second = service.upsert_period(
         session,
         structure_id=1022734985679,
-        type_id=34,
+        type_id=item.id,
         period_days=7,
         as_of=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
     )

@@ -1296,3 +1296,35 @@ Priority rationale:
   - deterministic sync-service coverage verifies the persisted snapshot, delta, and demand-period updates plus rerun stability.
 - Mismatches:
   - the orchestration path exists now, but without an injected/live structure snapshot client it skips rather than polling CCP structure data directly
+
+### T12A - Bulk Rebuild Market Price Periods
+
+- Status: `TODO`
+- Objective: replace the per-location, per-item, per-period market price refresh loop with a set-based rebuild that uses regional ESI history once and writes `market_price_period` rows in bulk.
+- Dependencies:
+  - existing Postgres-backed `esi_history_daily`
+  - existing raw ESI COPY ingestion path
+- Acceptance criteria:
+  - `esi_history_sync` no longer calls `MarketPricePeriodService.upsert_from_history` once per `(period, location, item)` combination
+  - market price stats for `3/7/14/30` day periods are derived from `esi_history_daily` in a set-based way and persisted in bulk
+  - refreshed `market_price_period` rows remain identical in business meaning for `current_price`, `period_avg_price`, `price_min`, `price_max`, `risk_pct`, and `warning_flag`
+  - deterministic backend tests cover both first-build and rerun/update behavior
+  - benchmark evidence shows the market-price refresh phase is materially faster than the current ~49-55s region refresh on the debug dataset
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/services/pricing/market_price_periods.py`
+  - `backend/tests/services/test_market_price_periods.py`
+  - `backend/tests/services/test_sync_service.py`
+- Out of scope:
+  - changing demand resolution semantics
+  - changing opportunity-generation formulas
+  - widening debug mode beyond the current single-region cap
+- Test hints:
+  - compare first-build vs rerun results for the same region/location/item set
+  - assert bulk output matches the existing single-row service semantics on a fixed seeded dataset
+  - include a timing-oriented benchmark script or reproducible measurement notes in the devlog
+- Implementation mapping:
+  - compute period aggregates once per `(region, type, period_days)` and fan them out to the region's locations
+  - bulk replace affected `market_price_period` rows instead of issuing thousands of per-row commits
+- Mismatches:
+  - current implementation still recomputes identical regional history per location and commits one row at a time

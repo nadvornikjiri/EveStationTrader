@@ -1,19 +1,40 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
 
+from sqlalchemy import delete, select, update
+
+from app.api.schemas.sync import SyncJobRunResponse
 from app.core.security import build_esi_scopes
 from app.db.session import SessionLocal
 from app.models.all_models import (
     CharacterAccessibleStructure,
     EsiCharacter,
     EsiCharacterSyncState,
+    EsiCharacterToken,
     Item,
     Location,
     OpportunityItem,
     OpportunitySourceSummary,
+    SyncJobRun,
+    TrackedStructure,
+    UserSetting,
     User,
 )
+
+
+def reset_character_tables() -> None:
+    session = SessionLocal()
+    try:
+        session.execute(update(User).values(primary_character_id=None))
+        session.execute(delete(CharacterAccessibleStructure))
+        session.execute(delete(EsiCharacterSyncState))
+        session.execute(delete(EsiCharacterToken))
+        session.execute(delete(TrackedStructure))
+        session.execute(delete(EsiCharacter))
+        session.execute(delete(User))
+        session.commit()
+    finally:
+        session.close()
 
 
 def seed_trade_opportunity_rows() -> None:
@@ -174,21 +195,91 @@ def test_get_sync_status(client) -> None:
     assert response.json()[0]["label"]
 
 
+def test_get_sync_jobs_includes_progress_fields(client) -> None:
+    session = SessionLocal()
+    try:
+        session.execute(delete(SyncJobRun))
+        session.add(
+            SyncJobRun(
+                job_type="esi_market_orders_sync",
+                status="running",
+                records_processed=60,
+                progress_phase="Processing downloaded ESI market orders",
+                progress_current=60,
+                progress_total=100,
+                progress_unit="downloaded records",
+                message="Processed 60 / 100 downloaded ESI market orders.",
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get("/api/sync/jobs")
+    assert response.status_code == 200
+    assert response.json()[0]["progress_phase"] == "Processing downloaded ESI market orders"
+    assert response.json()[0]["progress_current"] == 60
+    assert response.json()[0]["progress_total"] == 100
+    assert response.json()[0]["progress_unit"] == "downloaded records"
+
+
+def test_get_database_tables(client) -> None:
+    response = client.get("/api/database/tables")
+    assert response.status_code == 200
+    assert any(row["name"] == "items" for row in response.json())
+
+
+def test_get_database_table_rows(client) -> None:
+    response = client.get("/api/database/tables/items")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["table_name"] == "items"
+    assert "name" in payload["columns"]
+    assert isinstance(payload["rows"], list)
+
+
 def test_run_foundation_seed_sync(client) -> None:
     response = client.post("/api/sync/run/foundation_seed_sync")
     assert response.status_code == 200
     assert "Seeded foundation data" in response.json()["message"]
 
 
+def test_run_sync_returns_failed_job_payload_when_job_fails_immediately(client, monkeypatch) -> None:
+    from app.services.sync.service import SyncService
+
+    def fail_job(self, job_type: str) -> SyncJobRunResponse:
+        return SyncJobRunResponse(
+            id=999,
+            started_at=datetime(2026, 3, 23, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 3, 23, 12, 0, 1, tzinfo=UTC),
+            job_type=job_type,
+            status="failed",
+            duration_ms=1000,
+            records_processed=0,
+            target_type="manual",
+            target_id=None,
+            message=f"Failed {job_type}.",
+            error_details="Synthetic immediate failure for API coverage.",
+        )
+
+    monkeypatch.setattr(SyncService, "trigger_job", fail_job)
+
+    response = client.post("/api/sync/run/foundation_import_sync")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_details"] == "Synthetic immediate failure for API coverage."
+
+
+def test_cancel_unknown_sync_job_returns_404(client) -> None:
+    response = client.post("/api/sync/cancel/999999")
+    assert response.status_code == 404
+
+
 def test_get_characters(client) -> None:
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-        session.commit()
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -227,13 +318,9 @@ def test_get_character_returns_404_for_unknown_character(client) -> None:
 
 
 def test_patch_character_updates_sync_enabled(client) -> None:
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -272,13 +359,9 @@ def test_patch_character_updates_sync_enabled(client) -> None:
 
 
 def test_patch_character_noop_payload_is_stable(client) -> None:
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -308,13 +391,9 @@ def test_patch_character_returns_404_for_unknown_character(client) -> None:
 
 
 def test_track_character_structure_updates_accessible_structure(client) -> None:
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -360,13 +439,9 @@ def test_track_character_structure_returns_404_for_missing_character_or_access(c
     response = client.post("/api/characters/99999999/structures/1022734985680/track")
     assert response.status_code == 404
 
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -390,13 +465,9 @@ def test_track_character_structure_returns_404_for_missing_character_or_access(c
 
 
 def test_sync_character_triggers_structure_discovery_and_updates_sync_state(client) -> None:
+    reset_character_tables()
     session = SessionLocal()
     try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-
         user = User(primary_character_id=None)
         session.add(user)
         session.flush()
@@ -471,18 +542,47 @@ def test_get_settings(client) -> None:
     response = client.get("/api/settings")
     assert response.status_code == 200
     assert response.json()["default_analysis_period_days"] == 14
+    assert response.json()["debug_enabled"] is False
+
+
+def test_put_settings_persists_debug_flag(client) -> None:
+    response = client.put(
+        "/api/settings",
+        json={
+            "default_analysis_period_days": 14,
+            "warning_threshold_pct": 0.5,
+            "warning_enabled": True,
+            "debug_enabled": True,
+            "sales_tax_rate": 0.036,
+            "broker_fee_rate": 0.03,
+            "min_confidence_for_local_structure_demand": 0.75,
+            "default_user_structure_poll_interval_minutes": 30,
+            "snapshot_retention_days": 30,
+            "fallback_policy": "regional_fallback",
+            "shipping_cost_per_m3": 350.0,
+            "default_filters": {
+                "min_item_profit": 15_000_000,
+                "min_order_margin_pct": 0.20,
+                "roi_now": 0.05,
+                "target_demand_day": 1,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["debug_enabled"] is True
+
+    session = SessionLocal()
+    try:
+        row = session.scalar(select(UserSetting).where(UserSetting.user_id.is_(None), UserSetting.key == "defaults"))
+        assert row is not None
+        assert row.value["debug_enabled"] is True
+    finally:
+        session.close()
 
 
 def test_get_auth_me(client) -> None:
-    session = SessionLocal()
-    try:
-        session.execute(delete(CharacterAccessibleStructure))
-        session.execute(delete(EsiCharacterSyncState))
-        session.execute(delete(EsiCharacter))
-        session.execute(delete(User))
-        session.commit()
-    finally:
-        session.close()
+    reset_character_tables()
 
     response = client.get("/api/auth/me")
     assert response.status_code == 200

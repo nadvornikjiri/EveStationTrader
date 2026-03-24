@@ -1,9 +1,8 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import (
     Item,
     Location,
@@ -13,12 +12,11 @@ from app.models.all_models import (
     System,
 )
 from app.repositories.trade_repository import TradeRepository
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_trade_entities(session: Session) -> tuple[int, int, int]:
@@ -49,6 +47,32 @@ def seed_trade_entities(session: Session) -> tuple[int, int, int]:
     session.add_all([target_location, source_location, item])
     session.commit()
     return target_location.id, source_location.id, item.id
+
+
+def test_list_targets_returns_only_curated_seed_station_targets() -> None:
+    session = build_session()
+    seed_trade_entities(session)
+
+    region = session.scalar(select(Region).where(Region.region_id == 10000002))
+    assert region is not None
+    imported_system = System(system_id=30009999, region_id=region.id, name="Imported", security_status=0.9)
+    session.add(imported_system)
+    session.flush()
+    session.add(
+        Location(
+            location_id=60099999,
+            location_type="npc_station",
+            system_id=imported_system.id,
+            region_id=region.id,
+            name="Imported NPC Station",
+        )
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+    targets = repo.list_targets()
+
+    assert [target.location_id for target in targets] == [60008494, 60003760]
 
 
 def test_list_source_summaries_reads_computed_rows_when_present() -> None:
@@ -187,7 +211,7 @@ def test_list_items_reads_computed_rows_when_present() -> None:
     assert rows[0].demand_source == "adam4eve"
 
 
-def test_repository_returns_empty_lists_when_no_computed_rows_exist() -> None:
+def test_repository_returns_empty_data_when_no_computed_rows_exist() -> None:
     session = build_session()
     target_location_id, source_location_id, _item_id = seed_trade_entities(session)
     repo = TradeRepository(session_factory=lambda: session)
@@ -324,10 +348,12 @@ def test_get_item_detail_reads_requested_computed_row() -> None:
     assert detail.metrics.type_id == pyerite.type_id
     assert detail.metrics.item_name == "Pyerite"
     assert detail.metrics.source_station_sell_price == 88.0
-    assert detail.target_market_sell_orders[0].price == 120.0
+    assert detail.target_market_sell_orders == []
+    assert detail.source_market_sell_orders == []
+    assert detail.source_market_buy_orders == []
 
 
-def test_get_item_detail_fallback_uses_requested_type_id() -> None:
+def test_get_item_detail_raises_when_requested_row_is_missing() -> None:
     session = build_session()
     target_location_id, source_location_id, _item_id = seed_trade_entities(session)
     mexallon = Item(type_id=36, name="Mexallon", volume_m3=0.01, group_name="Mineral", category_name="Material")
@@ -335,14 +361,9 @@ def test_get_item_detail_fallback_uses_requested_type_id() -> None:
     session.commit()
 
     repo = TradeRepository(session_factory=lambda: session)
-    detail = repo.get_item_detail(target_location_id, source_location_id, mexallon.type_id, 14)
-
-    assert detail.type_id == mexallon.type_id
-    assert detail.item_name == "Mexallon"
-    assert detail.metrics.type_id == mexallon.type_id
-    assert detail.metrics.item_name == "Mexallon"
-    assert detail.metrics.demand_source == "unavailable"
-    assert detail.metrics.source_station_sell_price == 0.0
-    assert detail.target_market_sell_orders == []
-    assert detail.source_market_sell_orders == []
-    assert detail.source_market_buy_orders == []
+    try:
+        repo.get_item_detail(target_location_id, source_location_id, mexallon.type_id, 14)
+    except LookupError as exc:
+        assert "derived opportunity rows" in str(exc)
+    else:
+        raise AssertionError("expected missing detail row to raise LookupError")

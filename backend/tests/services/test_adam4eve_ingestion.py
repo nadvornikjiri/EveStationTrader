@@ -1,18 +1,16 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import AdamNpcDemandDaily, Item, Location, Region, System
 from app.services.adam4eve.ingestion import AdamNpcDemandIngestionService, AdamNpcDemandRecord
 from app.services.sync.service import SyncService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_locations_and_items(session: Session) -> tuple[list[int], list[int]]:
@@ -163,10 +161,11 @@ def test_sync_service_adam4eve_sync_persists_npc_demand_rows() -> None:
     response = service.trigger_job("adam4eve_sync")
     rows = session.scalars(select(AdamNpcDemandDaily).order_by(AdamNpcDemandDaily.demand_day.desc())).all()
 
-    assert response.records_processed == 2
+    assert response.records_processed == 10
     assert response.target_type == "locations"
     assert response.target_id == "2"
     assert "Synced Adam4EVE NPC demand" in (response.message or "")
+    assert "resolved demand rows" in (response.message or "")
     assert len(rows) == 2
     assert rows[0].demand_day == 20.0
     assert rows[1].demand_day == 10.0

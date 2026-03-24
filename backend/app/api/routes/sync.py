@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.api.schemas.sync import FallbackDiagnostic, SyncJobRunResponse, SyncStatusCard
 from app.services.sync.service import SyncService
@@ -19,6 +19,14 @@ def get_sync_jobs() -> list[SyncJobRunResponse]:
 @router.post("/run/{job_type}", response_model=SyncJobRunResponse)
 def run_job(job_type: str) -> SyncJobRunResponse:
     return SyncService().trigger_job(job_type)
+
+
+@router.post("/cancel/{job_id}", response_model=SyncJobRunResponse)
+def cancel_job(job_id: int) -> SyncJobRunResponse:
+    try:
+        return SyncService().cancel_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/fallback-status", response_model=list[FallbackDiagnostic])

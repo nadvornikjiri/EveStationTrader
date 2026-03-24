@@ -1,9 +1,7 @@
 from datetime import date
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.models.all_models import (
     AdamNpcDemandDaily,
     Item,
@@ -14,12 +12,11 @@ from app.models.all_models import (
     System,
 )
 from app.services.demand.market_demand import MarketDemandResolutionService
+from tests.db_test_utils import build_test_session
 
 
 def build_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)()
+    return build_test_session()
 
 
 def seed_locations_and_item(session: Session) -> tuple[int, int, int]:

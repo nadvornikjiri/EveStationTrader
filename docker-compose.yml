@@ -1,3 +1,5 @@
+name: eve-station-trader-dev
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -5,17 +7,22 @@ services:
       POSTGRES_DB: eve_trader
       POSTGRES_USER: eve_trader
       POSTGRES_PASSWORD: eve_trader
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eve_trader -d eve_trader"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     ports:
       - "5432:5432"
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     volumes:
-      - ./redis-data:/data
+      - redis-data:/data
 
   backend:
     build:
@@ -34,8 +41,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   worker:
     build:
@@ -52,8 +61,10 @@ services:
     volumes:
       - ./backend:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   frontend:
     build:
@@ -68,3 +79,7 @@ services:
       - "5173:5173"
     depends_on:
       - backend
+
+volumes:
+  postgres-data:
+  redis-data:

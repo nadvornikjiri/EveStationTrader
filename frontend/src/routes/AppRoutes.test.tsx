@@ -10,6 +10,11 @@ vi.mock("../hooks/useTradeData", () => ({
   useOpportunityItems: () => ({ data: [] }),
 }));
 
+vi.mock("../hooks/useDatabaseData", () => ({
+  useDatabaseTables: () => ({ data: [] }),
+  useDatabaseTable: () => ({ isLoading: false, data: undefined }),
+}));
+
 test("renders settings route", async () => {
   const queryClient = new QueryClient();
   render(
@@ -20,4 +25,18 @@ test("renders settings route", async () => {
     </QueryClientProvider>,
   );
   expect(screen.getByText("Trading Defaults")).toBeInTheDocument();
+});
+
+test("renders database route", async () => {
+  const queryClient = new QueryClient();
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/database"]}>
+        <AppRoutes />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  expect(
+    screen.getByRole("heading", { name: "Database", level: 1 }),
+  ).toBeInTheDocument();
 });

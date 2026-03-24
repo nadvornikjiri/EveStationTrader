@@ -1,3 +1,5 @@
+import { apiGet } from "./client";
+
 export type TargetLocation = {
   location_id: number;
   name: string;
@@ -77,3 +79,37 @@ export type OpportunityItemDetail = {
   source_market_buy_orders: ItemOrderRow[];
   metrics: OpportunityItem;
 };
+
+export async function getTargets(): Promise<TargetLocation[]> {
+  return apiGet<TargetLocation[]>("/targets");
+}
+
+export async function getSourceSummaries(
+  targetLocationId: number,
+  periodDays: number,
+): Promise<SourceSummary[]> {
+  return apiGet<SourceSummary[]>(
+    `/opportunities/source-summaries?target_location_id=${targetLocationId}&period_days=${periodDays}`,
+  );
+}
+
+export async function getOpportunityItems(
+  targetLocationId: number,
+  sourceLocationId: number,
+  periodDays: number,
+): Promise<OpportunityItem[]> {
+  return apiGet<OpportunityItem[]>(
+    `/opportunities/items?target_location_id=${targetLocationId}&source_location_id=${sourceLocationId}&period_days=${periodDays}`,
+  );
+}
+
+export async function getOpportunityItemDetail(
+  targetLocationId: number,
+  sourceLocationId: number,
+  typeId: number,
+  periodDays: number,
+): Promise<OpportunityItemDetail> {
+  return apiGet<OpportunityItemDetail>(
+    `/opportunities/item-detail?target_location_id=${targetLocationId}&source_location_id=${sourceLocationId}&type_id=${typeId}&period_days=${periodDays}`,
+  );
+}

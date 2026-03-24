@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.api.schemas.trade import OpportunityItemDetail, OpportunityItemRow, SourceSummary, TradeRefreshState
 from app.repositories.trade_repository import TradeRepository
@@ -23,7 +23,10 @@ def get_item_detail(
     type_id: int,
     period_days: int = 14,
 ) -> OpportunityItemDetail:
-    return TradeRepository().get_item_detail(target_location_id, source_location_id, type_id, period_days)
+    try:
+        return TradeRepository().get_item_detail(target_location_id, source_location_id, type_id, period_days)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/refresh-state", response_model=TradeRefreshState)

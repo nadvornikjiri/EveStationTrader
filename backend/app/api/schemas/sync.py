@@ -10,6 +10,11 @@ class SyncStatusCard(BaseModel):
     last_successful_sync: datetime | None = None
     next_scheduled_sync: datetime | None = None
     recent_error_count: int = 0
+    active_message: str | None = None
+    progress_phase: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    progress_unit: str | None = None
 
 
 class SyncJobRunResponse(BaseModel):
@@ -22,6 +27,10 @@ class SyncJobRunResponse(BaseModel):
     records_processed: int = 0
     target_type: str | None = None
     target_id: str | None = None
+    progress_phase: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    progress_unit: str | None = None
     message: str | None = None
     error_details: str | None = None
 
