@@ -4,6 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
+    AdamNpcDemandDaily,
+    EsiHistoryDaily,
+    EsiMarketOrder,
     Item,
     Location,
     OpportunityItem,
@@ -95,8 +98,6 @@ def test_list_source_summaries_reads_computed_rows_when_present() -> None:
             source_avg_price_weighted=100.0,
             target_now_price_weighted=120.0,
             target_period_avg_price_weighted=125.0,
-            risk_pct_weighted=0.04,
-            warning_count=0,
             target_now_profit_weighted=12.0,
             target_period_profit_weighted=15.0,
             capital_required_total=1500.0,
@@ -140,8 +141,6 @@ def test_list_sources_reads_computed_source_locations_when_present() -> None:
             source_avg_price_weighted=100.0,
             target_now_price_weighted=120.0,
             target_period_avg_price_weighted=125.0,
-            risk_pct_weighted=0.04,
-            warning_count=0,
             target_now_profit_weighted=12.0,
             target_period_profit_weighted=15.0,
             capital_required_total=1500.0,
@@ -185,8 +184,6 @@ def test_list_items_reads_computed_rows_when_present() -> None:
             source_station_sell_price=100.0,
             target_station_sell_price=125.0,
             target_period_avg_price=130.0,
-            risk_pct=0.04,
-            warning_flag=False,
             target_now_profit=16.75,
             target_period_profit=21.4,
             capital_required=1200.0,
@@ -247,8 +244,6 @@ def test_get_last_refresh_uses_latest_computed_timestamp() -> None:
             source_avg_price_weighted=100.0,
             target_now_price_weighted=120.0,
             target_period_avg_price_weighted=125.0,
-            risk_pct_weighted=0.04,
-            warning_count=0,
             target_now_profit_weighted=12.0,
             target_period_profit_weighted=15.0,
             capital_required_total=1500.0,
@@ -278,8 +273,6 @@ def test_get_last_refresh_uses_latest_computed_timestamp() -> None:
             source_station_sell_price=100.0,
             target_station_sell_price=125.0,
             target_period_avg_price=130.0,
-            risk_pct=0.04,
-            warning_flag=False,
             target_now_profit=16.75,
             target_period_profit=21.4,
             capital_required=1200.0,
@@ -323,8 +316,6 @@ def test_get_item_detail_reads_requested_computed_row() -> None:
             source_station_sell_price=88.0,
             target_station_sell_price=120.0,
             target_period_avg_price=125.0,
-            risk_pct=0.041666666666666664,
-            warning_flag=False,
             target_now_profit=24.08,
             target_period_profit=28.75,
             capital_required=792.0,
@@ -367,3 +358,63 @@ def test_get_item_detail_raises_when_requested_row_is_missing() -> None:
         assert "derived opportunity rows" in str(exc)
     else:
         raise AssertionError("expected missing detail row to raise LookupError")
+
+
+def test_list_source_summaries_prepares_requested_period_on_demand() -> None:
+    session = build_session()
+    target_location_id, source_location_id, item_id = seed_trade_entities(session)
+    session.add_all(
+        [
+            EsiMarketOrder(
+                order_id=9001,
+                region_id=1,
+                location_id=source_location_id,
+                type_id=item_id,
+                system_id=2,
+                is_buy_order=False,
+                price=100.0,
+                volume_total=100,
+                volume_remain=100,
+                min_volume=1,
+                order_range="region",
+                issued=datetime(2026, 3, 20, tzinfo=UTC),
+                duration=90,
+            ),
+            AdamNpcDemandDaily(
+                location_id=target_location_id,
+                type_id=item_id,
+                date=datetime(2026, 3, 20, tzinfo=UTC).date(),
+                demand_day=12.0,
+                source_label="adam4eve",
+                raw_payload={},
+            ),
+            EsiHistoryDaily(
+                region_id=1,
+                type_id=item_id,
+                date=datetime(2026, 3, 20, tzinfo=UTC).date(),
+                average=120.0,
+                highest=130.0,
+                lowest=110.0,
+                order_count=10,
+                volume=1000,
+            ),
+            EsiHistoryDaily(
+                region_id=1,
+                type_id=item_id,
+                date=datetime(2026, 3, 19, tzinfo=UTC).date(),
+                average=140.0,
+                highest=150.0,
+                lowest=100.0,
+                order_count=10,
+                volume=1000,
+            ),
+        ]
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+    rows = repo.list_source_summaries(target_location_id, 2)
+
+    assert len(rows) == 1
+    assert rows[0].source_location_id == source_location_id
+    assert rows[0].target_period_avg_price_weighted == 130.0

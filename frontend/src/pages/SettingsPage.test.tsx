@@ -10,8 +10,6 @@ const hookState = vi.hoisted(() => ({
     isLoading: false,
     data: {
       default_analysis_period_days: 14,
-      warning_threshold_pct: 0.5,
-      warning_enabled: true,
       debug_enabled: false,
       sales_tax_rate: 0.036,
       broker_fee_rate: 0.03,

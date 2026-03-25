@@ -8,16 +8,15 @@ type Props = {
   periodDays: number;
   itemSearch: string;
   minRoi: string;
-  warningThreshold: string;
   onTargetChange: (targetId: number) => void;
   onPeriodChange: (periodDays: number) => void;
   onItemSearchChange: (value: string) => void;
   onMinRoiChange: (value: string) => void;
-  onWarningThresholdChange: (value: string) => void;
 };
 
 function readNumericValue(event: ChangeEvent<HTMLSelectElement | HTMLInputElement>) {
-  return Number.parseInt(event.target.value, 10);
+  const parsed = Number.parseInt(event.target.value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
 export function TradeControls({
@@ -26,12 +25,10 @@ export function TradeControls({
   periodDays,
   itemSearch,
   minRoi,
-  warningThreshold,
   onTargetChange,
   onPeriodChange,
   onItemSearchChange,
   onMinRoiChange,
-  onWarningThresholdChange,
 }: Props) {
   return (
     <section className="panel controls-grid trade-controls-grid">
@@ -51,16 +48,14 @@ export function TradeControls({
       </label>
       <label>
         <span>Analysis Period</span>
-        <select
+        <input
           aria-label="Analysis Period"
+          type="number"
+          min={1}
+          step={1}
           value={periodDays}
           onChange={(event) => onPeriodChange(readNumericValue(event))}
-        >
-          <option value={3}>3 days</option>
-          <option value={7}>7 days</option>
-          <option value={14}>14 days</option>
-          <option value={30}>30 days</option>
-        </select>
+        />
       </label>
       <label>
         <span>Item Search</span>
@@ -74,14 +69,6 @@ export function TradeControls({
       <label>
         <span>Min ROI</span>
         <input aria-label="Min ROI" value={minRoi} onChange={(event) => onMinRoiChange(event.target.value)} />
-      </label>
-      <label>
-        <span>Warning Threshold</span>
-        <input
-          aria-label="Warning Threshold"
-          value={warningThreshold}
-          onChange={(event) => onWarningThresholdChange(event.target.value)}
-        />
       </label>
       <div className="trade-filter-note" role="status">
         Filters apply to the item table using live query results for the selected target and analysis period.

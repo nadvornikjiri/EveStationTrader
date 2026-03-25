@@ -60,8 +60,6 @@ Top controls:
 * source type filter: npc / structure / all
 * min security filter: high sec / low sec / null sec / all (default: high sec)
 * demand source filter: Adam4EVE / Local / Fallback / Blended / All
-* warning toggle: enable or disable price warning hints
-* warning threshold %, default 50
 * last refresh timestamp
 * item name search box (filters item-level table by name substring match)
 * optional filters for min ROI, min demand/day, max DOS, min confidence
@@ -145,14 +143,7 @@ Columns, in this explicit order:
     * target_period_avg_price_weighted
     * weighted target average price across selected period
 
-14. Risk %
-    * risk_pct_weighted
-
-15. Warning
-    * warning_count or warning_flag_aggregate
-    * count of items triggering warning or boolean aggregate indicator
-
-16. Target Now Profit
+14. Target Now Profit
     * target_now_profit_weighted
     * IMPORTANT: this is per-unit margin style, not total daily profit
     * formula at item level: target_now_profit = target_station_sell_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
@@ -256,19 +247,7 @@ Columns, in this explicit order:
     * target_period_avg_price
     * based on selected period length, default 14 days
 
-14. Risk %
-    * risk_pct
-    * formula: risk_pct = (target_period_avg_price - target_station_sell_price) / target_station_sell_price
-    * risk can be negative
-    * positive means current target price is below period average
-    * negative means current target price is above period average
-
-15. Warning
-    * warning_flag
-    * formula: abs(risk_pct) > warning_threshold
-    * default threshold 50%
-
-16. Target Now Profit
+14. Target Now Profit
     * target_now_profit
     * IMPORTANT: target_now_profit = target_station_sell_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
     * this is per-unit margin after taxes
@@ -350,8 +329,6 @@ Trade Metrics Summary fields:
 * confidence_score
 * period_days
 * target_period_avg_price
-* risk_pct
-* warning_flag
 * roi_now
 * roi_period
 * item_volume_m3
@@ -506,7 +483,7 @@ Structure fallback:
 * mark demand source as regional_fallback
 
 ==================================================
-9. RISK AND WARNING RULES
+9. PERIOD PRICE RULES
 ==================================================
 
 Selected analysis period:
@@ -515,19 +492,8 @@ Selected analysis period:
 
 Period average price:
 * compute target period average price for the selected period
-* must support 3, 7, 14, 30 days, plus extensible custom period later
-
-Risk %:
-* exact formula: risk_pct = (target_period_avg_price - target_station_sell_price) / target_station_sell_price
-
-Interpretation:
-* positive risk_pct means current price is below the selected period average
-* negative risk_pct means current price is above the selected period average
-
-Warning rule:
-* optional warning hint if abs(risk_pct) > threshold
-* default threshold = 50%
-* threshold configurable in settings and on the trade page filter bar
+* use the currently selected analysis period
+* default 14 days
 
 ==================================================
 10. OPPORTUNITY CALCULATION RULES
@@ -537,8 +503,6 @@ For each item opportunity:
 * source_station_sell_price = lowest sell order price in source market for the item
 * target_station_sell_price = lowest sell order price in target market for the item
 * target_period_avg_price = average target price over selected period
-* risk_pct = (target_period_avg_price - target_station_sell_price) / target_station_sell_price
-* warning_flag = abs(risk_pct) > warning_threshold
 * target_demand_day = resolved demand/day
 * target_supply_units = current target-side supply
 * target_dos = target_supply_units / max(target_demand_day, epsilon)
@@ -688,8 +652,6 @@ Character flows:
 
 Per-user settings (with system defaults):
 * default_analysis_period_days (default: 14)
-* warning_threshold_pct (default: 50)
-* warning_enabled (default: true)
 * sales_tax_rate (default: 0.036 — 3.6% base rate)
 * broker_fee_rate (default: 0.03 — 3.0% base rate)
 * min_confidence_for_local_structure_demand
@@ -822,8 +784,6 @@ market_price_period:
 * price_min
 * price_max
 * computed_at
-* risk_pct
-* warning_flag
 
 market_demand_resolved:
 * id
@@ -852,8 +812,6 @@ opportunity_items:
 * source_station_sell_price
 * target_station_sell_price
 * target_period_avg_price
-* risk_pct
-* warning_flag
 * target_now_profit
 * target_period_profit
 * capital_required
@@ -883,8 +841,6 @@ opportunity_source_summaries:
 * source_avg_price_weighted
 * target_now_price_weighted
 * target_period_avg_price_weighted
-* risk_pct_weighted
-* warning_count
 * target_now_profit_weighted
 * target_period_profit_weighted
 * capital_required_total
@@ -1037,8 +993,6 @@ Minimum backend test coverage areas:
 
 1. Column/formula calculation tests
    Test exact formulas and edge cases for:
-   * risk_pct = (target_period_avg_price - target_station_sell_price) / target_station_sell_price
-   * warning_flag = abs(risk_pct) > threshold
    * target_now_profit = target_station_sell_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
    * target_period_profit = target_period_avg_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
    * capital_required = source_station_sell_price * target_demand_day
@@ -1074,7 +1028,6 @@ Minimum backend test coverage areas:
    * source summary aggregation
    * weighted fields behaving correctly
    * capital_required totals summing correctly
-   * warning_count aggregation
 
 5. ESI character setup tests
    Write tests for:
@@ -1147,7 +1100,6 @@ Phase 4:
 * sync dashboard actions and logs
 * confidence reporting
 * demand source badges
-* warning badges
 * ESI rate limit monitoring on sync page
 * performance tuning
 * cleanup and docs

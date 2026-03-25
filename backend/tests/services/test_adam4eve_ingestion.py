@@ -1,10 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.all_models import AdamNpcDemandDaily, Item, Location, Region, System
+from app.models.all_models import AdamNpcDemandDaily, AdamNpcDemandSyncState, Item, Location, Region, System
 from app.services.adam4eve.ingestion import AdamNpcDemandIngestionService, AdamNpcDemandRecord
+from app.services.esi.history_ingestion import EsiRegionalHistoryRecord
 from app.services.sync.service import SyncService
 from tests.db_test_utils import build_test_session
 
@@ -88,7 +89,7 @@ def test_ingest_npc_demand_persists_internal_rows() -> None:
     assert rows[1].demand_day == 8.0
 
 
-def test_ingest_npc_demand_is_idempotent_and_updates_existing_row() -> None:
+def test_ingest_npc_demand_appends_new_history_rows_without_updating_existing_row() -> None:
     session = build_session()
     seed_locations_and_items(session)
     service = AdamNpcDemandIngestionService()
@@ -113,25 +114,46 @@ def test_ingest_npc_demand_is_idempotent_and_updates_existing_row() -> None:
                 "type_id": 34,
                 "demand_day": 14.0,
                 "source": "adam4eve",
-                "date": "2026-03-20",
+                "date": "2026-03-21",
                 "raw_payload": {"custom": True},
             }
         ],
     )
 
-    rows = session.scalars(select(AdamNpcDemandDaily)).all()
+    rows = session.scalars(select(AdamNpcDemandDaily).order_by(AdamNpcDemandDaily.date.asc())).all()
 
     assert first.created == 1
     assert first.updated == 0
-    assert second.created == 0
-    assert second.updated == 1
-    assert len(rows) == 1
-    assert rows[0].demand_day == 14.0
-    assert rows[0].raw_payload == {"custom": True}
+    assert second.created == 1
+    assert second.updated == 0
+    assert len(rows) == 2
+    assert rows[0].date == date(2026, 3, 20)
+    assert rows[0].demand_day == 12.5
+    assert rows[1].date == date(2026, 3, 21)
+    assert rows[1].demand_day == 14.0
+    assert rows[1].raw_payload == {"custom": True}
 
 
 class StubAdamClient:
-    def fetch_npc_demand(self, location_ids: list[int], type_ids: list[int]) -> list[AdamNpcDemandRecord]:
+    def resolve_latest_market_orders_export(self):
+        from app.services.adam4eve.client import AdamMarketOrdersExport
+
+        return AdamMarketOrdersExport(
+            path="/MarketOrdersTrades/2026/marketOrderTrades_weekly_2026-12.csv",
+            export_key="2026-12",
+            covered_through_date=date(2026, 3, 22),
+        )
+
+    def fetch_npc_demand(
+        self,
+        location_ids: list[int],
+        type_ids: list[int],
+        *,
+        export_path: str | None = None,
+        synced_through_by_region: dict[int, date] | None = None,
+    ) -> list[AdamNpcDemandRecord]:
+        del export_path
+        del synced_through_by_region
         return [
             {
                 "location_id": location_ids[0],
@@ -149,6 +171,16 @@ class StubAdamClient:
             },
         ]
 
+    def fetch_regional_price_history(
+        self,
+        region_id: int,
+        type_ids: list[int],
+        *,
+        since_date: date | None = None,
+    ) -> list[EsiRegionalHistoryRecord]:
+        del region_id, type_ids, since_date
+        return []
+
 
 def test_sync_service_adam4eve_sync_persists_npc_demand_rows() -> None:
     session = build_session()
@@ -160,12 +192,16 @@ def test_sync_service_adam4eve_sync_persists_npc_demand_rows() -> None:
 
     response = service.trigger_job("adam4eve_sync")
     rows = session.scalars(select(AdamNpcDemandDaily).order_by(AdamNpcDemandDaily.demand_day.desc())).all()
+    sync_states = session.scalars(select(AdamNpcDemandSyncState).order_by(AdamNpcDemandSyncState.region_id.asc())).all()
 
-    assert response.records_processed == 10
+    assert response.records_processed == 4
     assert response.target_type == "locations"
     assert response.target_id == "2"
-    assert "Synced Adam4EVE NPC demand" in (response.message or "")
+    assert "Synced Adam4EVE demand and regional price history" in (response.message or "")
     assert "resolved demand rows" in (response.message or "")
     assert len(rows) == 2
     assert rows[0].demand_day == 20.0
     assert rows[1].demand_day == 10.0
+    assert len(sync_states) == 1
+    assert sync_states[0].export_key == "2026-12"
+    assert sync_states[0].synced_through_date == datetime.now(UTC).date()

@@ -17,11 +17,14 @@ class SettingsService:
     def get_settings(self) -> UserSettingsResponse:
         session = self.session_factory()
         try:
-            settings = self._load_settings(session)
-            self._apply_runtime_flags(settings)
-            return settings
+            return self.get_settings_for_session(session)
         finally:
             session.close()
+
+    def get_settings_for_session(self, session: Session) -> UserSettingsResponse:
+        settings = self._load_settings(session)
+        self._apply_runtime_flags(settings)
+        return settings
 
     def update_settings(self, payload: UserSettingsUpdate) -> UserSettingsResponse:
         session = self.session_factory()
@@ -49,7 +52,10 @@ class SettingsService:
                     "target_demand_day": 1,
                 }
             )
-        return UserSettingsResponse(**row.value)
+        value = dict(row.value)
+        value.pop("warning_threshold_pct", None)
+        value.pop("warning_enabled", None)
+        return UserSettingsResponse(**value)
 
     @staticmethod
     def _apply_runtime_flags(settings: UserSettingsResponse) -> None:

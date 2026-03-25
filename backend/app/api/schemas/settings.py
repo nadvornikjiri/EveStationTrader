@@ -3,8 +3,6 @@ from pydantic import BaseModel
 
 class UserSettingsResponse(BaseModel):
     default_analysis_period_days: int = 14
-    warning_threshold_pct: float = 0.5
-    warning_enabled: bool = True
     debug_enabled: bool = False
     sales_tax_rate: float = 0.036
     broker_fee_rate: float = 0.03

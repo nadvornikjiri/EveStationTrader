@@ -26,8 +26,6 @@ class SourceSummary(BaseModel):
     source_avg_price_weighted: float
     target_now_price_weighted: float
     target_period_avg_price_weighted: float
-    risk_pct_weighted: float
-    warning_count: int
     target_now_profit_weighted: float
     target_period_profit_weighted: float
     capital_required_total: float
@@ -54,8 +52,6 @@ class OpportunityItemRow(BaseModel):
     source_station_sell_price: float
     target_station_sell_price: float
     target_period_avg_price: float
-    risk_pct: float
-    warning_flag: bool
     target_now_profit: float
     target_period_profit: float
     capital_required: float

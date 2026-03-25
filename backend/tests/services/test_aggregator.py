@@ -2,7 +2,7 @@ from app.api.schemas.trade import OpportunityItemRow
 from app.services.opportunities.aggregator import aggregate_source_summary
 
 
-def make_item(name: str, purchase_units: float, warning_flag: bool, demand_source: str = "Adam4EVE") -> OpportunityItemRow:
+def make_item(name: str, purchase_units: float, demand_source: str = "Adam4EVE") -> OpportunityItemRow:
     return OpportunityItemRow(
         type_id=1,
         item_name=name,
@@ -18,8 +18,6 @@ def make_item(name: str, purchase_units: float, warning_flag: bool, demand_sourc
         source_station_sell_price=100,
         target_station_sell_price=125,
         target_period_avg_price=130,
-        risk_pct=0.04,
-        warning_flag=warning_flag,
         target_now_profit=16.75,
         target_period_profit=21.4,
         capital_required=1000,
@@ -33,8 +31,7 @@ def make_item(name: str, purchase_units: float, warning_flag: bool, demand_sourc
 
 
 def test_aggregate_source_summary_counts_and_weights() -> None:
-    summary = aggregate_source_summary(1, "Amarr", [make_item("A", 10, True), make_item("B", 5, False)])
+    summary = aggregate_source_summary(1, "Amarr", [make_item("A", 10), make_item("B", 5)])
     assert summary.purchase_units_total == 15
-    assert summary.warning_count == 1
     assert summary.capital_required_total == 2000
     assert summary.demand_source_summary == "Adam4EVE"

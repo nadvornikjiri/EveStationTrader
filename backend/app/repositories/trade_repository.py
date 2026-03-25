@@ -59,12 +59,25 @@ class TradeRepository:
 
     def list_sources(self, target_location_id: int, period_days: int) -> list[TargetLocation]:
         from app.models.all_models import Location, OpportunitySourceSummary, Region, System
+        from app.services.sync.service import SyncService
 
         session = self.session_factory()
         try:
             resolved_target_location_id = self._resolve_location_id(session, target_location_id)
             if resolved_target_location_id is None:
                 return []
+            has_rows = session.scalar(
+                select(OpportunitySourceSummary.id).where(
+                    OpportunitySourceSummary.target_location_id == resolved_target_location_id,
+                    OpportunitySourceSummary.period_days == period_days,
+                )
+            )
+            if has_rows is None:
+                SyncService(session_factory=lambda: session).prepare_trade_period(
+                    session,
+                    target_location_id=resolved_target_location_id,
+                    period_days=period_days,
+                )
 
             rows = session.execute(
                 select(
@@ -100,12 +113,25 @@ class TradeRepository:
 
     def list_source_summaries(self, target_location_id: int, period_days: int) -> list[SourceSummary]:
         from app.models.all_models import Location, OpportunitySourceSummary
+        from app.services.sync.service import SyncService
 
         session = self.session_factory()
         try:
             resolved_target_location_id = self._resolve_location_id(session, target_location_id)
             if resolved_target_location_id is None:
                 return []
+            has_rows = session.scalar(
+                select(OpportunitySourceSummary.id).where(
+                    OpportunitySourceSummary.target_location_id == resolved_target_location_id,
+                    OpportunitySourceSummary.period_days == period_days,
+                )
+            )
+            if has_rows is None:
+                SyncService(session_factory=lambda: session).prepare_trade_period(
+                    session,
+                    target_location_id=resolved_target_location_id,
+                    period_days=period_days,
+                )
 
             rows = (
                 session.execute(
@@ -136,8 +162,6 @@ class TradeRepository:
                         source_avg_price_weighted=summary.source_avg_price_weighted,
                         target_now_price_weighted=summary.target_now_price_weighted,
                         target_period_avg_price_weighted=summary.target_period_avg_price_weighted,
-                        risk_pct_weighted=summary.risk_pct_weighted,
-                        warning_count=summary.warning_count,
                         target_now_profit_weighted=summary.target_now_profit_weighted,
                         target_period_profit_weighted=summary.target_period_profit_weighted,
                         capital_required_total=summary.capital_required_total,
@@ -156,6 +180,7 @@ class TradeRepository:
 
     def list_items(self, target_location_id: int, source_location_id: int, period_days: int) -> list[OpportunityItemRow]:
         from app.models.all_models import Item, OpportunityItem
+        from app.services.sync.service import SyncService
 
         session = self.session_factory()
         try:
@@ -163,6 +188,20 @@ class TradeRepository:
             resolved_source_location_id = self._resolve_location_id(session, source_location_id)
             if resolved_target_location_id is None or resolved_source_location_id is None:
                 return []
+            has_rows = session.scalar(
+                select(OpportunityItem.id).where(
+                    OpportunityItem.target_location_id == resolved_target_location_id,
+                    OpportunityItem.source_location_id == resolved_source_location_id,
+                    OpportunityItem.period_days == period_days,
+                )
+            )
+            if has_rows is None:
+                SyncService(session_factory=lambda: session).prepare_trade_period(
+                    session,
+                    target_location_id=resolved_target_location_id,
+                    source_location_id=resolved_source_location_id,
+                    period_days=period_days,
+                )
 
             rows = (
                 session.execute(
@@ -194,8 +233,6 @@ class TradeRepository:
                         source_station_sell_price=item.source_station_sell_price,
                         target_station_sell_price=item.target_station_sell_price,
                         target_period_avg_price=item.target_period_avg_price,
-                        risk_pct=item.risk_pct,
-                        warning_flag=item.warning_flag,
                         target_now_profit=item.target_now_profit,
                         target_period_profit=item.target_period_profit,
                         capital_required=item.capital_required,
@@ -220,11 +257,34 @@ class TradeRepository:
         period_days: int,
     ) -> OpportunityItemDetail:
         from app.models.all_models import Item, OpportunityItem
+        from app.services.sync.service import SyncService
 
         session = self.session_factory()
         try:
             resolved_target_location_id = self._resolve_location_id(session, target_location_id)
             resolved_source_location_id = self._resolve_location_id(session, source_location_id)
+            if resolved_target_location_id is None or resolved_source_location_id is None:
+                raise LookupError(
+                    "Opportunity item detail was requested before derived opportunity rows were available."
+                )
+            has_row = session.scalar(
+                select(OpportunityItem.id)
+                .join(Item, Item.id == OpportunityItem.type_id)
+                .where(
+                    OpportunityItem.target_location_id == resolved_target_location_id,
+                    OpportunityItem.source_location_id == resolved_source_location_id,
+                    OpportunityItem.period_days == period_days,
+                    Item.type_id == type_id,
+                )
+            )
+            if has_row is None:
+                SyncService(session_factory=lambda: session).prepare_trade_period(
+                    session,
+                    target_location_id=resolved_target_location_id,
+                    source_location_id=resolved_source_location_id,
+                    type_id=type_id,
+                    period_days=period_days,
+                )
             row = session.execute(
                 select(OpportunityItem, Item.name)
                 .join(Item, Item.id == OpportunityItem.type_id)
@@ -256,8 +316,6 @@ class TradeRepository:
                 source_station_sell_price=item.source_station_sell_price,
                 target_station_sell_price=item.target_station_sell_price,
                 target_period_avg_price=item.target_period_avg_price,
-                risk_pct=item.risk_pct,
-                warning_flag=item.warning_flag,
                 target_now_profit=item.target_now_profit,
                 target_period_profit=item.target_period_profit,
                 capital_required=item.capital_required,

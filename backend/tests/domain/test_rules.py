@@ -3,23 +3,11 @@ import math
 from app.domain.rules import (
     calculate_capital_required,
     calculate_purchase_units,
-    calculate_risk_pct,
     calculate_roi,
     calculate_target_dos,
     calculate_target_now_profit,
     calculate_target_period_profit,
-    calculate_warning_flag,
 )
-
-
-def test_risk_pct_positive_and_negative() -> None:
-    assert math.isclose(calculate_risk_pct(120, 100), 0.2)
-    assert math.isclose(calculate_risk_pct(80, 100), -0.2)
-
-
-def test_warning_flag_threshold_boundary() -> None:
-    assert calculate_warning_flag(0.5001, 0.5) is True
-    assert calculate_warning_flag(0.5, 0.5) is False
 
 
 def test_profit_formulas() -> None:

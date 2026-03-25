@@ -1,16 +1,6 @@
 from app.domain.constants import EPSILON
 
 
-def calculate_risk_pct(target_period_avg_price: float, target_station_sell_price: float) -> float:
-    if abs(target_station_sell_price) < EPSILON:
-        return 0.0
-    return (target_period_avg_price - target_station_sell_price) / target_station_sell_price
-
-
-def calculate_warning_flag(risk_pct: float, threshold: float) -> bool:
-    return abs(risk_pct) > threshold
-
-
 def calculate_target_now_profit(
     target_station_sell_price: float,
     source_station_sell_price: float,

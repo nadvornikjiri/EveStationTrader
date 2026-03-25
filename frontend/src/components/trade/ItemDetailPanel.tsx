@@ -88,10 +88,6 @@ export function ItemDetailPanel({ detail, isLoading = false }: Props) {
               <dd>{formatNumber(detail.metrics.target_now_profit)} ISK</dd>
             </div>
             <div>
-              <dt>Risk</dt>
-              <dd>{(detail.metrics.risk_pct * 100).toFixed(1)}%</dd>
-            </div>
-            <div>
               <dt>DOS</dt>
               <dd>{formatNumber(detail.metrics.target_dos)}</dd>
             </div>

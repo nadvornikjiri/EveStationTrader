@@ -59,8 +59,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 period_avg_price=150.0,
                 price_min=100.0,
                 price_max=155.0,
-                risk_pct=0.25,
-                warning_flag=False,
             ),
             MarketPricePeriod(
                 location_id=target.id,
@@ -70,8 +68,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 period_avg_price=80.0,
                 price_min=75.0,
                 price_max=205.0,
-                risk_pct=-0.6,
-                warning_flag=True,
             ),
             MarketPricePeriod(
                 location_id=source.id,
@@ -81,8 +77,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 period_avg_price=98.0,
                 price_min=97.0,
                 price_max=101.0,
-                risk_pct=-0.02,
-                warning_flag=False,
             ),
             MarketPricePeriod(
                 location_id=source.id,
@@ -92,8 +86,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 period_avg_price=140.0,
                 price_min=135.0,
                 price_max=151.0,
-                risk_pct=-0.07,
-                warning_flag=False,
             ),
             MarketDemandResolved(
                 location_id=target.id,
@@ -152,12 +144,10 @@ def test_generate_opportunities_persists_items_and_source_summary() -> None:
     assert first_item.target_period_profit == pytest.approx(40.1)
     assert first_item.capital_required == 1000.0
     assert first_item.roi_now == pytest.approx(0.1208)
-    assert first_item.warning_flag is False
 
     summary = summary_rows[0]
     assert summary.purchase_units_total == 0.0
     assert summary.capital_required_total == pytest.approx(1750.0)
-    assert summary.warning_count == 1
     assert summary.source_security_status == 0.7
     assert summary.demand_source_summary == "adam4eve"
     assert summary.confidence_score_summary == 0.8

@@ -25,8 +25,6 @@ def aggregate_source_summary(source_location_id: int, source_market_name: str, i
         source_avg_price_weighted=weighted("source_station_sell_price"),
         target_now_price_weighted=weighted("target_station_sell_price"),
         target_period_avg_price_weighted=weighted("target_period_avg_price"),
-        risk_pct_weighted=weighted("risk_pct"),
-        warning_count=sum(1 for item in items if item.warning_flag),
         target_now_profit_weighted=weighted("target_now_profit"),
         target_period_profit_weighted=weighted("target_period_profit"),
         capital_required_total=sum(item.capital_required for item in items),

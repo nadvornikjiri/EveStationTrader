@@ -46,8 +46,6 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       source_avg_price_weighted: 100,
       target_now_price_weighted: 120,
       target_period_avg_price_weighted: 130,
-      risk_pct_weighted: 0.08,
-      warning_count: 0,
       target_now_profit_weighted: 12,
       target_period_profit_weighted: 18,
       capital_required_total: 500,
@@ -75,8 +73,6 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       source_avg_price_weighted: 90,
       target_now_price_weighted: 120,
       target_period_avg_price_weighted: 125,
-      risk_pct_weighted: 0.04,
-      warning_count: 0,
       target_now_profit_weighted: 15,
       target_period_profit_weighted: 18,
       capital_required_total: 270,
@@ -106,8 +102,6 @@ const itemRows = [
     source_station_sell_price: 100,
     target_station_sell_price: 120,
     target_period_avg_price: 130,
-    risk_pct: 0.08,
-    warning_flag: false,
     target_now_profit: 12,
     target_period_profit: 18,
     capital_required: 500,
@@ -133,8 +127,6 @@ const itemRows = [
     source_station_sell_price: 90,
     target_station_sell_price: 97,
     target_period_avg_price: 99,
-    risk_pct: 0.6,
-    warning_flag: true,
     target_now_profit: 4,
     target_period_profit: 6,
     capital_required: 810,
@@ -214,8 +206,6 @@ test("supports search, threshold changes, and sortable item rows", async () => {
 
   await user.clear(screen.getByLabelText("Min ROI"));
   await user.type(screen.getByLabelText("Min ROI"), "0");
-  await user.clear(screen.getByLabelText("Warning Threshold"));
-  await user.type(screen.getByLabelText("Warning Threshold"), "100");
   await user.type(screen.getByLabelText("Item Search"), "pyer");
 
   const filteredTable = screen.getAllByRole("table")[1];
@@ -243,8 +233,6 @@ test("loads item detail for the selected row and updates when a different row is
 
   await user.clear(screen.getByLabelText("Min ROI"));
   await user.type(screen.getByLabelText("Min ROI"), "0");
-  await user.clear(screen.getByLabelText("Warning Threshold"));
-  await user.type(screen.getByLabelText("Warning Threshold"), "100");
   await user.click(within(screen.getAllByRole("table")[1]).getByText("Pyerite"));
 
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 35, 14);
@@ -259,7 +247,9 @@ test("requeries summaries and items when target or period changes and resets sou
   expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 14);
   expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(1, 2, 14);
 
-  await user.selectOptions(screen.getByLabelText("Analysis Period"), "30");
+  const analysisPeriodInput = screen.getByLabelText("Analysis Period");
+  await user.click(analysisPeriodInput);
+  await user.keyboard("{Control>}a{/Control}30");
   expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 30);
   expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(1, 2, 30);
 

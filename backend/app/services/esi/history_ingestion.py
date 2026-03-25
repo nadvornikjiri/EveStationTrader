@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TypedDict
 
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import EsiHistoryDaily, Item, Region
@@ -65,7 +65,6 @@ class EsiRegionalHistoryIngestionService:
             raise ValueError(f"items were not found for type_ids: {missing}")
 
         normalized_rows: list[tuple[int, int, date, float, float, float, int, int]] = []
-        row_keys: list[tuple[int, date]] = []
         for record in records:
             record_date = record["date"]
             normalized_date = date.fromisoformat(record_date) if isinstance(record_date, str) else record_date
@@ -82,31 +81,16 @@ class EsiRegionalHistoryIngestionService:
                     record["volume"],
                 )
             )
-            row_keys.append((item_id, normalized_date))
+        created = len(normalized_rows)
+        updated = 0
 
-        existing_keys = set(
-            session.execute(
-                select(EsiHistoryDaily.type_id, EsiHistoryDaily.date).where(
-                    EsiHistoryDaily.region_id == region.id,
-                    tuple_(EsiHistoryDaily.type_id, EsiHistoryDaily.date).in_(row_keys),
-                )
-            ).all()
-        )
-        updated = sum(1 for key in row_keys if key in existing_keys)
-        created = len(row_keys) - updated
-
-        session.execute(
-            delete(EsiHistoryDaily).where(
-                EsiHistoryDaily.region_id == region.id,
-                tuple_(EsiHistoryDaily.type_id, EsiHistoryDaily.date).in_(row_keys),
+        if normalized_rows:
+            copy_rows(
+                session,
+                table_name="esi_history_daily",
+                columns=("region_id", "type_id", "date", "average", "highest", "lowest", "order_count", "volume"),
+                rows=normalized_rows,
             )
-        )
-        copy_rows(
-            session,
-            table_name="esi_history_daily",
-            columns=("region_id", "type_id", "date", "average", "highest", "lowest", "order_count", "volume"),
-            rows=normalized_rows,
-        )
 
         session.commit()
         return EsiRegionalHistoryIngestionResult(
@@ -137,48 +121,33 @@ class EsiRegionalHistoryIngestionService:
             missing = ", ".join(str(type_id) for type_id in missing_type_ids)
             raise ValueError(f"items were not found for type_ids: {missing}")
 
-        created = 0
+        rows_to_add: list[EsiHistoryDaily] = []
         updated = 0
 
         for record in records:
             record_date = record["date"]
             normalized_date = date.fromisoformat(record_date) if isinstance(record_date, str) else record_date
             item_id = item_lookup[record["type_id"]]
-            row = session.scalar(
-                select(EsiHistoryDaily).where(
-                    EsiHistoryDaily.region_id == region.id,
-                    EsiHistoryDaily.type_id == item_id,
-                    EsiHistoryDaily.date == normalized_date,
+            rows_to_add.append(
+                EsiHistoryDaily(
+                    region_id=region.id,
+                    type_id=item_id,
+                    date=normalized_date,
+                    average=record["average"],
+                    highest=record["highest"],
+                    lowest=record["lowest"],
+                    order_count=record["order_count"],
+                    volume=record["volume"],
                 )
             )
 
-            if row is None:
-                session.add(
-                    EsiHistoryDaily(
-                        region_id=region.id,
-                        type_id=item_id,
-                        date=normalized_date,
-                        average=record["average"],
-                        highest=record["highest"],
-                        lowest=record["lowest"],
-                        order_count=record["order_count"],
-                        volume=record["volume"],
-                    )
-                )
-                created += 1
-                continue
-
-            row.average = record["average"]
-            row.highest = record["highest"]
-            row.lowest = record["lowest"]
-            row.order_count = record["order_count"]
-            row.volume = record["volume"]
-            updated += 1
+        if rows_to_add:
+            session.add_all(rows_to_add)
 
         session.commit()
         return EsiRegionalHistoryIngestionResult(
             region_id=region.id,
             records_processed=len(records),
-            created=created,
+            created=len(rows_to_add),
             updated=updated,
         )

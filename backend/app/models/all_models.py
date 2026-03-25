@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
@@ -167,6 +167,15 @@ class EsiHistoryDaily(Base):
     volume: Mapped[int] = mapped_column(Integer)
 
 
+class EsiHistorySyncState(Base):
+    __tablename__ = "esi_history_sync_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), unique=True, index=True)
+    synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class EsiMarketOrder(Base):
     __tablename__ = "esi_market_orders"
     __table_args__ = (UniqueConstraint("order_id"),)
@@ -199,6 +208,16 @@ class AdamNpcDemandDaily(Base):
     demand_day: Mapped[float] = mapped_column(Float)
     source_label: Mapped[str] = mapped_column(String(64), default="adam4eve")
     raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AdamNpcDemandSyncState(Base):
+    __tablename__ = "adam_npc_demand_sync_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), unique=True, index=True)
+    export_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class StructureSnapshot(Base):
@@ -271,8 +290,6 @@ class MarketPricePeriod(Base):
     price_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_max: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    risk_pct: Mapped[float] = mapped_column(Float)
-    warning_flag: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class MarketDemandResolved(Base):
@@ -309,8 +326,6 @@ class OpportunityItem(Base):
     source_station_sell_price: Mapped[float] = mapped_column(Float)
     target_station_sell_price: Mapped[float] = mapped_column(Float)
     target_period_avg_price: Mapped[float] = mapped_column(Float)
-    risk_pct: Mapped[float] = mapped_column(Float)
-    warning_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     target_now_profit: Mapped[float] = mapped_column(Float)
     target_period_profit: Mapped[float] = mapped_column(Float)
     capital_required: Mapped[float] = mapped_column(Float)
@@ -344,8 +359,6 @@ class OpportunitySourceSummary(Base):
     source_avg_price_weighted: Mapped[float] = mapped_column(Float)
     target_now_price_weighted: Mapped[float] = mapped_column(Float)
     target_period_avg_price_weighted: Mapped[float] = mapped_column(Float)
-    risk_pct_weighted: Mapped[float] = mapped_column(Float)
-    warning_count: Mapped[int] = mapped_column(Integer, default=0)
     target_now_profit_weighted: Mapped[float] = mapped_column(Float)
     target_period_profit_weighted: Mapped[float] = mapped_column(Float)
     capital_required_total: Mapped[float] = mapped_column(Float)

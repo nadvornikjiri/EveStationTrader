@@ -39,7 +39,6 @@ export function TradePage() {
   const [periodDays, setPeriodDays] = useState(14);
   const [itemSearch, setItemSearch] = useState("");
   const [minRoi, setMinRoi] = useState("0.05");
-  const [warningThreshold, setWarningThreshold] = useState("50");
   const [sortKey, setSortKey] = useState<SortKey>("roi_now");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -72,15 +71,13 @@ export function TradePage() {
   const filteredItems = useMemo(() => {
     const searchValue = itemSearch.trim().toLowerCase();
     const minRoiValue = parseNumberInput(minRoi, 0);
-    const warningThresholdValue = parseNumberInput(warningThreshold, 50) / 100;
 
     return (items.data ?? []).filter((row) => {
       const matchesSearch = searchValue.length === 0 || row.item_name.toLowerCase().includes(searchValue);
       const meetsRoi = row.roi_now >= minRoiValue;
-      const withinWarningThreshold = row.risk_pct <= warningThresholdValue;
-      return matchesSearch && meetsRoi && withinWarningThreshold;
+      return matchesSearch && meetsRoi;
     });
-  }, [itemSearch, items.data, minRoi, warningThreshold]);
+  }, [itemSearch, items.data, minRoi]);
 
   const sortedItems = useMemo(
     () => sortItems(filteredItems, sortKey, sortDirection),
@@ -136,12 +133,10 @@ export function TradePage() {
         periodDays={periodDays}
         itemSearch={itemSearch}
         minRoi={minRoi}
-        warningThreshold={warningThreshold}
         onTargetChange={setTargetId}
         onPeriodChange={setPeriodDays}
         onItemSearchChange={setItemSearch}
         onMinRoiChange={setMinRoi}
-        onWarningThresholdChange={setWarningThreshold}
       />
       <SourceSummaryTable
         rows={summaries.data ?? []}

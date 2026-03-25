@@ -396,8 +396,6 @@ CURATED_ITEMS: tuple[ItemSeed, ...] = (
 
 CURATED_DEFAULT_USER_SETTINGS: dict[str, object] = {
     "default_analysis_period_days": 14,
-    "warning_threshold_pct": 0.5,
-    "warning_enabled": True,
     "sales_tax_rate": 0.036,
     "broker_fee_rate": 0.03,
     "min_confidence_for_local_structure_demand": 0.75,

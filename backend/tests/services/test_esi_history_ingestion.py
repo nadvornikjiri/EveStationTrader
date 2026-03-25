@@ -4,6 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import EsiHistoryDaily, EsiMarketOrder, Item, Location, MarketPricePeriod, Region, System
+from app.services.adam4eve.ingestion import AdamNpcDemandRecord
+from app.services.adam4eve.client import AdamMarketOrdersExport
 from app.services.esi.history_ingestion import EsiRegionalHistoryRecord, EsiRegionalHistoryIngestionService
 from app.services.sync.service import SyncService
 from tests.db_test_utils import build_test_session
@@ -83,7 +85,7 @@ def test_ingest_region_history_persists_internal_rows() -> None:
     assert rows[1].average == 200.0
 
 
-def test_ingest_region_history_is_idempotent_and_updates_existing_row() -> None:
+def test_ingest_region_history_appends_new_history_rows_without_reading_existing_keys() -> None:
     session = build_session()
     seed_region_location_and_items(session)
     service = EsiRegionalHistoryIngestionService()
@@ -109,7 +111,7 @@ def test_ingest_region_history_is_idempotent_and_updates_existing_row() -> None:
         records=[
             {
                 "type_id": 34,
-                "date": "2026-03-20",
+                "date": "2026-03-21",
                 "average": 105.0,
                 "highest": 125.0,
                 "lowest": 95.0,
@@ -119,23 +121,56 @@ def test_ingest_region_history_is_idempotent_and_updates_existing_row() -> None:
         ],
     )
 
-    rows = session.scalars(select(EsiHistoryDaily)).all()
+    rows = session.scalars(select(EsiHistoryDaily).order_by(EsiHistoryDaily.date.asc())).all()
 
     assert first.created == 1
     assert first.updated == 0
-    assert second.created == 0
-    assert second.updated == 1
-    assert len(rows) == 1
-    assert rows[0].average == 105.0
-    assert rows[0].highest == 125.0
-    assert rows[0].lowest == 95.0
-    assert rows[0].order_count == 30
-    assert rows[0].volume == 1_200
+    assert second.created == 1
+    assert second.updated == 0
+    assert len(rows) == 2
+    assert rows[0].average == 100.0
+    assert rows[0].highest == 120.0
+    assert rows[0].lowest == 90.0
+    assert rows[0].order_count == 25
+    assert rows[0].volume == 1_000
+    assert rows[1].date == date(2026, 3, 21)
+    assert rows[1].average == 105.0
+    assert rows[1].highest == 125.0
+    assert rows[1].lowest == 95.0
+    assert rows[1].order_count == 30
+    assert rows[1].volume == 1_200
 
 
-class StubEsiClient:
-    def fetch_regional_history(self, region_id: int, type_ids: list[int]) -> list[EsiRegionalHistoryRecord]:
+class StubAdamHistoryClient:
+    def resolve_latest_market_orders_export(self) -> AdamMarketOrdersExport:
+        return AdamMarketOrdersExport(
+            path="/MarketOrdersTrades/2026/marketOrderTrades_weekly_2026-12.csv",
+            export_key="2026-12",
+            covered_through_date=date(2026, 3, 22),
+        )
+
+    def fetch_npc_demand(
+        self,
+        location_ids: list[int],
+        type_ids: list[int],
+        *,
+        export_path: str | None = None,
+        synced_through_by_region: dict[int, date] | None = None,
+    ) -> list[AdamNpcDemandRecord]:
+        del export_path
+        del synced_through_by_region
+        del location_ids, type_ids
+        return []
+
+    def fetch_regional_price_history(
+        self,
+        region_id: int,
+        type_ids: list[int],
+        *,
+        since_date: date | None = None,
+    ) -> list[EsiRegionalHistoryRecord]:
         del region_id
+        del since_date
         return [
             {
                 "type_id": type_ids[0],
@@ -158,7 +193,7 @@ class StubEsiClient:
         ]
 
 
-def test_sync_service_esi_history_sync_feeds_market_price_period_computation() -> None:
+def test_sync_service_adam4eve_sync_feeds_market_price_period_computation() -> None:
     session = build_session()
     location_id, item_ids, _region_id = seed_region_location_and_items(session)
     location = session.scalar(select(Location).where(Location.id == location_id))
@@ -184,26 +219,25 @@ def test_sync_service_esi_history_sync_feeds_market_price_period_computation() -
 
     service = SyncService(
         session_factory=lambda: session,
-        esi_client=StubEsiClient(),
+        adam_client=StubAdamHistoryClient(),
     )
 
-    response = service.trigger_job("esi_history_sync")
+    response = service.trigger_job("adam4eve_sync")
     result = session.scalar(
         select(MarketPricePeriod).where(
             MarketPricePeriod.location_id == location_id,
             MarketPricePeriod.type_id == item_ids[0],
-            MarketPricePeriod.period_days == 3,
+            MarketPricePeriod.period_days == 14,
         )
     )
 
-    assert response.records_processed == 6
-    assert response.target_type == "regions"
+    assert response.records_processed == 3
+    assert response.target_type == "locations"
     assert response.target_id == "1"
-    assert "Synced ESI history" in (response.message or "")
+    assert "Synced Adam4EVE demand and regional price history" in (response.message or "")
     assert "price periods" in (response.message or "")
     assert result is not None
     assert result.current_price == 100.0
     assert result.period_avg_price == 105.0
     assert result.price_min == 90.0
     assert result.price_max == 130.0
-    assert result.warning_flag is False

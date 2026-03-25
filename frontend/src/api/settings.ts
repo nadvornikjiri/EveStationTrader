@@ -2,8 +2,6 @@ import { apiGet, apiPut } from "./client";
 
 export type UserSettings = {
   default_analysis_period_days: number;
-  warning_threshold_pct: number;
-  warning_enabled: boolean;
   debug_enabled: boolean;
   sales_tax_rate: number;
   broker_fee_rate: number;

@@ -23,8 +23,6 @@ export type SourceSummary = {
   source_avg_price_weighted: number;
   target_now_price_weighted: number;
   target_period_avg_price_weighted: number;
-  risk_pct_weighted: number;
-  warning_count: number;
   target_now_profit_weighted: number;
   target_period_profit_weighted: number;
   capital_required_total: number;
@@ -51,8 +49,6 @@ export type OpportunityItem = {
   source_station_sell_price: number;
   target_station_sell_price: number;
   target_period_avg_price: number;
-  risk_pct: number;
-  warning_flag: boolean;
   target_now_profit: number;
   target_period_profit: number;
   capital_required: number;

@@ -54,7 +54,7 @@ class MockFoundationSeedSource:
         return (TrackedStructureSeed(structure_id=99940001, name="Mock Structure", tracking_tier="secondary"),)
 
     def default_user_settings(self) -> Mapping[str, object]:
-        return {"default_analysis_period_days": 7, "warning_enabled": True}
+        return {"default_analysis_period_days": 7}
 
 
 def build_session() -> Session:

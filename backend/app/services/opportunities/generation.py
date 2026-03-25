@@ -8,12 +8,10 @@ from app.api.schemas.trade import OpportunityItemRow
 from app.domain.rules import (
     calculate_capital_required,
     calculate_purchase_units,
-    calculate_risk_pct,
     calculate_roi,
     calculate_target_dos,
     calculate_target_now_profit,
     calculate_target_period_profit,
-    calculate_warning_flag,
 )
 from app.models.all_models import (
     Item,
@@ -44,7 +42,6 @@ class OpportunityGenerationService:
         period_days: int,
         sales_tax_rate: float = 0.036,
         broker_fee_rate: float = 0.03,
-        warning_threshold: float = 0.5,
         shipping_cost_per_m3: float = 0.0,
     ) -> OpportunityGenerationResult:
         if not source_location_ids or not type_ids:
@@ -139,8 +136,6 @@ class OpportunityGenerationService:
                 target_supply_units = 0.0
                 purchase_units = calculate_purchase_units(source_units_available, demand.demand_day)
                 shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
-                risk_pct = calculate_risk_pct(target_price.period_avg_price, target_price.current_price)
-                warning_flag = calculate_warning_flag(risk_pct, warning_threshold)
                 target_now_profit = calculate_target_now_profit(
                     target_price.current_price,
                     source_price.current_price,
@@ -174,8 +169,6 @@ class OpportunityGenerationService:
                     source_station_sell_price=source_price.current_price,
                     target_station_sell_price=target_price.current_price,
                     target_period_avg_price=target_price.period_avg_price,
-                    risk_pct=risk_pct,
-                    warning_flag=warning_flag,
                     target_now_profit=target_now_profit,
                     target_period_profit=target_period_profit,
                     capital_required=capital_required,
@@ -207,8 +200,6 @@ class OpportunityGenerationService:
                         source_station_sell_price=source_price.current_price,
                         target_station_sell_price=target_price.current_price,
                         target_period_avg_price=target_price.period_avg_price,
-                        risk_pct=risk_pct,
-                        warning_flag=warning_flag,
                         target_now_profit=target_now_profit,
                         target_period_profit=target_period_profit,
                         capital_required=capital_required,
@@ -242,8 +233,6 @@ class OpportunityGenerationService:
                     source_avg_price_weighted=summary.source_avg_price_weighted,
                     target_now_price_weighted=summary.target_now_price_weighted,
                     target_period_avg_price_weighted=summary.target_period_avg_price_weighted,
-                    risk_pct_weighted=summary.risk_pct_weighted,
-                    warning_count=summary.warning_count,
                     target_now_profit_weighted=summary.target_now_profit_weighted,
                     target_period_profit_weighted=summary.target_period_profit_weighted,
                     capital_required_total=summary.capital_required_total,

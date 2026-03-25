@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TypedDict
 
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import AdamNpcDemandDaily, Item, Location
@@ -70,7 +70,6 @@ class AdamNpcDemandIngestionService:
             raise ValueError(f"items were not found for type_ids: {missing}")
 
         normalized_rows: list[tuple[int, int, date, float, str, str]] = []
-        row_keys: list[tuple[int, int, date]] = []
         for record in records:
             normalized_date = self._normalize_date(record.get("date"))
             internal_location_id = location_lookup[record["location_id"]]
@@ -87,31 +86,6 @@ class AdamNpcDemandIngestionService:
                     json.dumps(raw_payload),
                 )
             )
-            row_keys.append((internal_location_id, internal_type_id, normalized_date))
-
-        existing_keys = set(
-            session.execute(
-                select(AdamNpcDemandDaily.location_id, AdamNpcDemandDaily.type_id, AdamNpcDemandDaily.date).where(
-                    tuple_(
-                        AdamNpcDemandDaily.location_id,
-                        AdamNpcDemandDaily.type_id,
-                        AdamNpcDemandDaily.date,
-                    ).in_(row_keys)
-                )
-            ).all()
-        )
-        updated = sum(1 for key in row_keys if key in existing_keys)
-        created = len(row_keys) - updated
-
-        session.execute(
-            delete(AdamNpcDemandDaily).where(
-                tuple_(
-                    AdamNpcDemandDaily.location_id,
-                    AdamNpcDemandDaily.type_id,
-                    AdamNpcDemandDaily.date,
-                ).in_(row_keys)
-            )
-        )
         copy_rows(
             session,
             table_name="adam_npc_demand_daily",
@@ -122,8 +96,8 @@ class AdamNpcDemandIngestionService:
         session.commit()
         return AdamNpcDemandIngestionResult(
             records_processed=len(records),
-            created=created,
-            updated=updated,
+            created=len(normalized_rows),
+            updated=0,
         )
 
     def _ingest_via_orm(
@@ -154,47 +128,28 @@ class AdamNpcDemandIngestionService:
             missing = ", ".join(str(type_id) for type_id in missing_type_ids)
             raise ValueError(f"items were not found for type_ids: {missing}")
 
-        created = 0
-        updated = 0
-
         for record in records:
             normalized_date = self._normalize_date(record.get("date"))
             internal_location_id = location_lookup[record["location_id"]]
             internal_type_id = item_lookup[record["type_id"]]
-            row = session.scalar(
-                select(AdamNpcDemandDaily).where(
-                    AdamNpcDemandDaily.location_id == internal_location_id,
-                    AdamNpcDemandDaily.type_id == internal_type_id,
-                    AdamNpcDemandDaily.date == normalized_date,
-                )
-            )
             raw_payload = record.get("raw_payload", dict(record))
             source_label = record.get("source", "adam4eve")
-
-            if row is None:
-                session.add(
-                    AdamNpcDemandDaily(
-                        location_id=internal_location_id,
-                        type_id=internal_type_id,
-                        date=normalized_date,
-                        demand_day=record["demand_day"],
-                        source_label=source_label,
-                        raw_payload=raw_payload,
-                    )
+            session.add(
+                AdamNpcDemandDaily(
+                    location_id=internal_location_id,
+                    type_id=internal_type_id,
+                    date=normalized_date,
+                    demand_day=record["demand_day"],
+                    source_label=source_label,
+                    raw_payload=raw_payload,
                 )
-                created += 1
-                continue
-
-            row.demand_day = record["demand_day"]
-            row.source_label = source_label
-            row.raw_payload = raw_payload
-            updated += 1
+            )
 
         session.commit()
         return AdamNpcDemandIngestionResult(
             records_processed=len(records),
-            created=created,
-            updated=updated,
+            created=len(records),
+            updated=0,
         )
 
     def _normalize_date(self, value: str | date | None) -> date:

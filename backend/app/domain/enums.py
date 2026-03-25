@@ -28,7 +28,6 @@ class JobStatus(str, Enum):
 
 class JobType(str, Enum):
     ADAM4EVE_SYNC = "adam4eve_sync"
-    ESI_HISTORY_SYNC = "esi_history_sync"
     STRUCTURE_SNAPSHOT_SYNC = "structure_snapshot_sync"
     CHARACTER_SYNC = "character_sync"
     OPPORTUNITY_REBUILD = "opportunity_rebuild"

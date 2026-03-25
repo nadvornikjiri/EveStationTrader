@@ -1328,3 +1328,39 @@ Priority rationale:
   - bulk replace affected `market_price_period` rows instead of issuing thousands of per-row commits
 - Mismatches:
   - current implementation still recomputes identical regional history per location and commits one row at a time
+
+### T12B - Fix Adam4EVE Demand Completion Semantics And Bulk Demand Refresh
+
+- Status: `TODO`
+- Objective: make `adam4eve_sync` treat weekly Adam4EVE demand exports as incomplete until each region's `synced_through_date` truly reaches the export coverage date, then replace the current full `locations x items` demand rebuild with a set-based refresh over only affected demand keys.
+- Dependencies:
+  - Adam4EVE weekly demand ingest now append-only with per-region sync state
+  - current Postgres-backed `adam_npc_demand_daily`
+- Acceptance criteria:
+  - Adam demand sync-state does not treat `export_key` alone as proof of full regional completion
+  - a region is considered fully synced for a weekly export only when its `synced_through_date` reaches that export's covered-through date
+  - `adam4eve_sync` no longer brute-forces all NPC locations against all items when rebuilding `market_demand_resolved`
+  - demand refresh work is limited to touched `(location_id, type_id, period_days)` keys plus any explicitly required cleanup keys
+  - deterministic backend tests cover partial-week state, fully-synced state, reruns, and no-op reruns
+  - benchmark evidence shows Adam4EVE sync time is dominated neither by weekly export discovery nor by an all-locations-all-items demand rebuild
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/services/demand/market_demand.py`
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_market_demand.py`
+- Out of scope:
+  - switching to a different raw Adam4EVE demand source
+  - redesigning opportunity-generation formulas
+  - frontend UX changes
+- Test hints:
+  - seed a region with `export_key` matching the latest export but `synced_through_date` behind the export coverage date and assert the sync still fetches deltas
+  - seed a truly complete region and assert the sync skips download entirely
+  - benchmark the live path before and after replacing the full `location_ids x type_ids` demand refresh loop
+- Implementation mapping:
+  - compute weekly export completeness from `covered_through_date` rather than `export_key` equality
+  - derive affected demand keys from imported Adam rows and rebuild only those keys in bulk
+- Mismatches:
+  - current live state marks some regions with `export_key='2026-13'` even when `synced_through_date` is only `2026-03-24` or `NULL`
+  - current demand refresh still loops across roughly `5,154 NPC locations x 17,136 items`, which is the dominant Adam4EVE sync bottleneck

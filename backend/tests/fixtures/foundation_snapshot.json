@@ -46,8 +46,6 @@
     }
   ],
   "default_user_settings": {
-    "default_analysis_period_days": 21,
-    "warning_threshold_pct": 0.25,
-    "warning_enabled": true
+    "default_analysis_period_days": 21
   }
 }

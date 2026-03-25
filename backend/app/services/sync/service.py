@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import signal
 from threading import Event, Lock, current_thread, main_thread
-from typing import Callable, Protocol, cast
+from typing import Callable, Protocol, Sequence, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from app.api.schemas.sync import FallbackDiagnostic, SyncJobRunResponse, SyncStatusCard
 from app.db.session import SessionLocal
 from app.models.all_models import (
+    AdamNpcDemandSyncState,
+    AdamNpcDemandDaily,
     EsiCharacter,
+    EsiHistoryDaily,
+    EsiHistorySyncState,
     EsiMarketOrder,
     Item,
     Location,
@@ -25,7 +29,7 @@ from app.models.all_models import (
     WorkerHeartbeat,
 )
 from app.repositories.seed_data import FoundationSeedSource, StationSeed
-from app.services.adam4eve.client import Adam4EveClient
+from app.services.adam4eve.client import Adam4EveClient, AdamMarketOrdersExport
 from app.services.adam4eve.ingestion import AdamNpcDemandIngestionService, AdamNpcDemandRecord
 from app.services.demand.market_demand import MarketDemandResolutionService
 from app.services.esi.client import EsiClient, EsiRegionalOrderRecord
@@ -40,10 +44,6 @@ from app.services.sync.foundation_data import FoundationDataService
 from app.services.sync.foundation_import import CcpSdeClient, FoundationImportService
 
 
-class HistoryCapableEsiClient(Protocol):
-    def fetch_regional_history(self, region_id: int, type_ids: list[int]) -> list[EsiRegionalHistoryRecord]: ...
-
-
 class FoundationImportCapableClient(Protocol):
     def build_seed_source(self) -> FoundationSeedSource: ...
 
@@ -51,11 +51,28 @@ class FoundationImportCapableClient(Protocol):
 class UniverseCapableEsiClient(Protocol):
     def fetch_station(self, station_id: int) -> StationSeed: ...
 
-    def fetch_regional_orders(self, region_id: int) -> list[object]: ...
+    def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]: ...
 
 
 class AdamDemandCapableClient(Protocol):
-    def fetch_npc_demand(self, location_ids: list[int], type_ids: list[int]) -> list[AdamNpcDemandRecord]: ...
+    def resolve_latest_market_orders_export(self) -> AdamMarketOrdersExport: ...
+
+    def fetch_npc_demand(
+        self,
+        location_ids: list[int],
+        type_ids: list[int],
+        *,
+        export_path: str | None = None,
+        synced_through_by_region: dict[int, date] | None = None,
+    ) -> list[AdamNpcDemandRecord]: ...
+
+    def fetch_regional_price_history(
+        self,
+        region_id: int,
+        type_ids: list[int],
+        *,
+        since_date: date | None = None,
+    ) -> list[EsiRegionalHistoryRecord]: ...
 
 
 @dataclass(frozen=True)
@@ -102,12 +119,10 @@ def register_cancellation_signal_handlers() -> None:
 
 
 class SyncService:
-    SUPPORTED_PERIOD_DAYS: tuple[int, ...] = (3, 7, 14, 30)
     STALE_CANCELLING_JOB_MINUTES = 2
     STATUS_CARD_DEFINITIONS: tuple[tuple[str, str], ...] = (
         ("foundation_import_sync", "Foundation universe sync"),
         ("adam4eve_sync", "Adam4EVE sync"),
-        ("esi_history_sync", "ESI region sync"),
         ("esi_market_orders_sync", "ESI market orders sync"),
         ("structure_snapshot_sync", "Structure snapshot sync"),
         ("character_sync", "Character sync"),
@@ -121,7 +136,7 @@ class SyncService:
         *,
         session_factory: Callable[[], Session] = SessionLocal,
         adam_client: AdamDemandCapableClient | None = None,
-        esi_client: HistoryCapableEsiClient | None = None,
+        esi_client: UniverseCapableEsiClient | None = None,
         foundation_client: FoundationImportCapableClient | None = None,
         structure_snapshot_client: StructureSnapshotCapableClient | None = None,
     ) -> None:
@@ -353,7 +368,9 @@ class SyncService:
         target_type = "manual"
         target_id: str | None = None
         message = f"Queued {job_type}."
-        debug_enabled = SettingsService().get_settings().debug_enabled
+        settings = SettingsService().get_settings_for_session(session)
+        debug_enabled = settings.debug_enabled
+        analysis_period_days = max(settings.default_analysis_period_days, 1)
 
         if job_type == "foundation_seed_sync":
             foundation_result = FoundationDataService().bootstrap(
@@ -386,122 +403,78 @@ class SyncService:
                 message = "Skipped Adam4EVE sync because reference data is missing."
             else:
                 self._check_for_cancellation(session, job_id)
-                adam_demand_rows = self.adam_client.fetch_npc_demand(
-                    [location.location_id for location in npc_locations],
-                    [item.type_id for item in items],
-                )
-                demand_result = AdamNpcDemandIngestionService().ingest_npc_demand(
+                latest_demand_export = self.adam_client.resolve_latest_market_orders_export()
+                demand_regions = self._adam_demand_regions(
                     session,
-                    records=adam_demand_rows,
+                    locations=npc_locations,
+                    latest_export=latest_demand_export,
+                )
+                if demand_regions:
+                    synced_through_by_region = self._adam_demand_synced_through_dates(
+                        session,
+                        region_ids=sorted(demand_regions),
+                    )
+                    external_region_ids_by_internal_id = {
+                        region.id: region.region_id
+                        for region in self._all_regions(session, debug_enabled=debug_enabled)
+                        if region.id in demand_regions
+                    }
+                    adam_demand_rows = self.adam_client.fetch_npc_demand(
+                        [location.location_id for location in npc_locations if location.region_id in demand_regions],
+                        [item.type_id for item in items],
+                        export_path=latest_demand_export.path,
+                        synced_through_by_region={
+                            external_region_ids_by_internal_id[region_id]: synced_date
+                            for region_id, synced_date in synced_through_by_region.items()
+                            if region_id in external_region_ids_by_internal_id
+                        },
+                    )
+                    demand_result = AdamNpcDemandIngestionService().ingest_npc_demand(
+                        session,
+                        records=adam_demand_rows,
+                    )
+                    self._record_adam_demand_region_check(
+                        session,
+                        region_ids=sorted(demand_regions),
+                        export=latest_demand_export,
+                        locations=npc_locations,
+                        rows=adam_demand_rows,
+                    )
+                else:
+                    demand_result = AdamNpcDemandIngestionService().ingest_npc_demand(session, records=[])
+                history_processed, history_created, history_updated, price_count = self._sync_adam_regional_price_history(
+                    session,
+                    job_id=job_id,
+                    regions=self._all_regions(session, debug_enabled=debug_enabled),
+                    period_days=analysis_period_days,
                 )
                 derived_count = self._refresh_market_demand_for_locations(
                     session,
                     location_ids=[location.id for location in npc_locations],
                     type_ids=[item.id for item in items],
+                    period_days=analysis_period_days,
                     cancellation_check=lambda: self._check_for_cancellation(session, job_id),
                 )
                 generated_count, scope_count = self._rebuild_opportunities(
                     session,
+                    period_days=analysis_period_days,
                     cancellation_check=lambda: self._check_for_cancellation(session, job_id),
                 )
-                records_processed = demand_result.records_processed + derived_count + generated_count
+                records_processed = (
+                    demand_result.records_processed
+                    + history_processed
+                    + derived_count
+                    + price_count
+                    + generated_count
+                )
                 target_type = "locations"
                 target_id = str(len(npc_locations))
                 message = (
-                    "Synced Adam4EVE NPC demand "
-                    f"({demand_result.created} created, {demand_result.updated} updated, "
-                    f"{derived_count} resolved demand rows, {generated_count} opportunity items across {scope_count} scopes)."
-                )
-        elif job_type == "esi_history_sync":
-            regions = self._all_regions(session, debug_enabled=debug_enabled)
-            items = self._history_sync_items(session, region_ids=[region.id for region in regions])
-            if not regions or not items:
-                message = (
-                    "Skipped ESI history sync because no eligible market scope is available yet. "
-                    "Sync NPC orders first for the imported regions."
-                )
-            else:
-                downloaded_history_batches: list[tuple[Region, list[EsiRegionalHistoryRecord]]] = []
-                total_history_processed = 0
-                total_created = 0
-                total_updated = 0
-                price_count = 0
-                self._update_job_progress(
-                    session,
-                    job_id,
-                    progress_phase="Downloading ESI history batches",
-                    progress_current=0,
-                    progress_total=len(regions),
-                    progress_unit="regions",
-                    message=f"Downloading ESI history for 0 / {len(regions)} regions.",
-                )
-                for region_index, region in enumerate(regions, start=1):
-                    self._check_for_cancellation(session, job_id)
-                    history_rows = self.esi_client.fetch_regional_history(
-                        region.region_id,
-                        [item.type_id for item in items],
-                    )
-                    downloaded_history_batches.append((region, history_rows))
-                    self._update_job_progress(
-                        session,
-                        job_id,
-                        progress_phase="Downloading ESI history batches",
-                        progress_current=region_index,
-                        progress_total=len(regions),
-                        progress_unit="regions",
-                        message=f"Downloaded ESI history for {region_index} / {len(regions)} regions.",
-                    )
-                total_downloaded_records = sum(len(rows) for _, rows in downloaded_history_batches)
-                self._update_job_progress(
-                    session,
-                    job_id,
-                    progress_phase="Processing downloaded ESI history records",
-                    progress_current=0,
-                    progress_total=total_downloaded_records,
-                    progress_unit="downloaded records",
-                    message=f"Processing 0 / {total_downloaded_records} downloaded ESI history records.",
-                )
-                processed_downloaded_records = 0
-                for region, history_rows in downloaded_history_batches:
-                    self._check_for_cancellation(session, job_id)
-                    history_result = EsiRegionalHistoryIngestionService().ingest_region_history(
-                        session,
-                        eve_region_id=region.region_id,
-                        records=history_rows,
-                    )
-                    total_history_processed += history_result.records_processed
-                    total_created += history_result.created
-                    total_updated += history_result.updated
-                    processed_downloaded_records += history_result.records_processed
-                    price_count += self._refresh_market_prices_for_region(
-                        session,
-                        region_id=region.id,
-                        type_ids=[item.id for item in items],
-                        cancellation_check=lambda: self._check_for_cancellation(session, job_id),
-                    )
-                    self._update_job_progress(
-                        session,
-                        job_id,
-                        progress_phase="Processing downloaded ESI history records",
-                        progress_current=processed_downloaded_records,
-                        progress_total=total_downloaded_records,
-                        progress_unit="downloaded records",
-                        message=(
-                            f"Processed {processed_downloaded_records} / {total_downloaded_records} "
-                            "downloaded ESI history records."
-                        ),
-                    )
-                generated_count, scope_count = self._rebuild_opportunities(
-                    session,
-                    cancellation_check=lambda: self._check_for_cancellation(session, job_id),
-                )
-                records_processed = total_history_processed + price_count + generated_count
-                target_type = "regions"
-                target_id = str(len(regions))
-                message = (
-                    "Synced ESI history "
-                    f"({total_created} created, {total_updated} updated across {len(regions)} regions, "
-                    f"{price_count} price periods, {generated_count} opportunity items across {scope_count} scopes)."
+                    "Synced Adam4EVE demand and regional price history "
+                    f"({demand_result.created} demand rows created, {demand_result.updated} demand rows updated, "
+                    f"{history_created} history rows created, {history_updated} history rows updated, "
+                    f"{derived_count} resolved demand rows, {price_count} price periods, "
+                    f"{generated_count} opportunity items across {scope_count} scopes)."
                 )
         elif job_type == "esi_market_orders_sync":
             universe_client = cast(UniverseCapableEsiClient, self.esi_client)
@@ -618,6 +591,7 @@ class SyncService:
         elif job_type == "opportunity_rebuild":
             generated_count, scope_count = self._rebuild_opportunities(
                 session,
+                period_days=analysis_period_days,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
             if generated_count == 0 and scope_count == 0:
@@ -641,12 +615,12 @@ class SyncService:
                 session,
                 location_ids=location_ids,
                 type_ids=list(structure_sync_result.type_ids),
-                period_days_options=(14,),
+                period_days=analysis_period_days,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
             generated_count, scope_count = self._rebuild_opportunities(
                 session,
-                period_days_options=(14,),
+                period_days=analysis_period_days,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
             records_processed = structure_sync_result.records_processed + demand_count + generated_count
@@ -779,6 +753,7 @@ class SyncService:
         *,
         region_id: int,
         type_ids: list[int],
+        period_days: int,
         cancellation_check: Callable[[], None] | None = None,
     ) -> int:
         if not type_ids:
@@ -789,21 +764,15 @@ class SyncService:
             return 0
 
         service = MarketPricePeriodService()
-        refreshed_count = 0
-        for period_days in self.SUPPORTED_PERIOD_DAYS:
-            for location_id in location_ids:
-                for type_id in type_ids:
-                    if cancellation_check is not None:
-                        cancellation_check()
-                    result = service.upsert_from_history(
-                        session,
-                        location_id=location_id,
-                        type_id=type_id,
-                        period_days=period_days,
-                    )
-                    if result.row is not None:
-                        refreshed_count += 1
-        return refreshed_count
+        if cancellation_check is not None:
+            cancellation_check()
+        return service.refresh_region_from_history(
+            session,
+            region_id=region_id,
+            location_ids=list(location_ids),
+            type_ids=type_ids,
+            period_days=period_days,
+        )
 
     def _refresh_market_demand_for_locations(
         self,
@@ -811,7 +780,7 @@ class SyncService:
         *,
         location_ids: list[int],
         type_ids: list[int],
-        period_days_options: tuple[int, ...] | None = None,
+        period_days: int,
         cancellation_check: Callable[[], None] | None = None,
     ) -> int:
         if not location_ids or not type_ids:
@@ -819,25 +788,24 @@ class SyncService:
 
         service = MarketDemandResolutionService()
         refreshed_count = 0
-        for period_days in period_days_options or self.SUPPORTED_PERIOD_DAYS:
-            for location_id in location_ids:
-                for type_id in type_ids:
-                    if cancellation_check is not None:
-                        cancellation_check()
-                    result = service.upsert_for_location(
-                        session,
-                        location_id=location_id,
-                        type_id=type_id,
-                        period_days=period_days,
-                    )
-                    if result.row is not None:
-                        refreshed_count += 1
+        for location_id in location_ids:
+            for type_id in type_ids:
+                if cancellation_check is not None:
+                    cancellation_check()
+                result = service.upsert_for_location(
+                    session,
+                    location_id=location_id,
+                    type_id=type_id,
+                    period_days=period_days,
+                )
+                if result.row is not None:
+                    refreshed_count += 1
         return refreshed_count
 
     def _rebuild_opportunities(
         self,
         session: Session,
-        period_days_options: tuple[int, ...] | None = None,
+        period_days: int | None = None,
         cancellation_check: Callable[[], None] | None = None,
     ) -> tuple[int, int]:
         rebuild_demand_rows: list[MarketDemandResolved] = list(
@@ -849,8 +817,8 @@ class SyncService:
                 )
             ).all()
         )
-        if period_days_options is not None:
-            rebuild_demand_rows = [row for row in rebuild_demand_rows if row.period_days in period_days_options]
+        if period_days is not None:
+            rebuild_demand_rows = [row for row in rebuild_demand_rows if row.period_days == period_days]
         if not rebuild_demand_rows:
             return (0, 0)
 
@@ -890,6 +858,120 @@ class SyncService:
 
         return (generated_count, scope_count)
 
+    def prepare_trade_period(
+        self,
+        session: Session,
+        *,
+        target_location_id: int,
+        period_days: int,
+        source_location_id: int | None = None,
+        type_id: int | None = None,
+    ) -> None:
+        target_location = session.get(Location, target_location_id)
+        if target_location is None:
+            return
+
+        requested_period_days = max(period_days, 1)
+        region_location_ids = list(
+            session.scalars(select(Location.id).where(Location.region_id == target_location.region_id)).all()
+        )
+        if not region_location_ids:
+            return
+
+        source_location_ids = [location_id for location_id in region_location_ids if location_id != target_location.id]
+        if source_location_id is not None:
+            if source_location_id not in source_location_ids:
+                return
+            source_location_ids = [source_location_id]
+        if not source_location_ids:
+            return
+
+        type_ids = self._trade_period_type_ids(
+            session,
+            region_id=target_location.region_id,
+            target_location_id=target_location.id,
+            requested_type_id=type_id,
+        )
+        if not type_ids:
+            return
+
+        self._refresh_market_prices_for_region(
+            session,
+            region_id=target_location.region_id,
+            type_ids=type_ids,
+            period_days=requested_period_days,
+        )
+        if target_location.location_type == "structure":
+            self._refresh_structure_demand_for_location(
+                session,
+                location=target_location,
+                type_ids=type_ids,
+                period_days=requested_period_days,
+            )
+        self._refresh_market_demand_for_locations(
+            session,
+            location_ids=[target_location.id],
+            type_ids=type_ids,
+            period_days=requested_period_days,
+        )
+        OpportunityGenerationService().generate_for_target(
+            session,
+            target_location_id=target_location.id,
+            source_location_ids=source_location_ids,
+            type_ids=type_ids,
+            period_days=requested_period_days,
+        )
+
+    def _trade_period_type_ids(
+        self,
+        session: Session,
+        *,
+        region_id: int,
+        target_location_id: int,
+        requested_type_id: int | None = None,
+    ) -> list[int]:
+        if requested_type_id is not None:
+            resolved_type_id = session.scalar(
+                select(Item.id).where((Item.id == requested_type_id) | (Item.type_id == requested_type_id))
+            )
+            return [resolved_type_id] if resolved_type_id is not None else []
+
+        type_ids = set(
+            session.scalars(
+                select(EsiMarketOrder.type_id).where(EsiMarketOrder.region_id == region_id).distinct()
+            ).all()
+        )
+        type_ids.update(
+            session.scalars(
+                select(AdamNpcDemandDaily.type_id).where(AdamNpcDemandDaily.location_id == target_location_id).distinct()
+            ).all()
+        )
+        type_ids.update(
+            session.scalars(
+                select(StructureOrderDelta.type_id)
+                .where(StructureOrderDelta.structure_id == target_location_id)
+                .distinct()
+            ).all()
+        )
+        return sorted(type_ids)
+
+    def _refresh_structure_demand_for_location(
+        self,
+        session: Session,
+        *,
+        location: Location,
+        type_ids: list[int],
+        period_days: int,
+    ) -> None:
+        service = StructureDemandPeriodService()
+        for type_id in type_ids:
+            service.upsert_period(
+                session,
+                structure_id=location.location_id,
+                type_id=type_id,
+                period_days=period_days,
+            )
+
     def _all_regions(self, session: Session, *, debug_enabled: bool = False) -> list[Region]:
         regions = list(
             session.scalars(
@@ -900,6 +982,286 @@ class SyncService:
             return regions[: self.DEBUG_REGION_LIMIT]
         return regions
 
+    def _adam_demand_regions(
+        self,
+        session: Session,
+        *,
+        locations: Sequence[Location],
+        latest_export: AdamMarketOrdersExport,
+    ) -> set[int]:
+        region_ids = sorted({location.region_id for location in locations})
+        if not region_ids:
+            return set()
+
+        state_by_region_id = {
+            row.region_id: row
+            for row in session.scalars(
+                select(AdamNpcDemandSyncState).where(AdamNpcDemandSyncState.region_id.in_(region_ids))
+            ).all()
+        }
+        regions_to_fetch: set[int] = set()
+        created_state = False
+        for region_id in region_ids:
+            state = state_by_region_id.get(region_id)
+            synced_through_date = state.synced_through_date if state is not None else None
+            if synced_through_date is None:
+                synced_through_date = self._max_persisted_adam_demand_date(session, region_id=region_id)
+            if self._adam_demand_region_synced_for_export(
+                state=state,
+                latest_export=latest_export,
+                synced_through_date=synced_through_date,
+            ):
+                if state is None:
+                    session.add(
+                        AdamNpcDemandSyncState(
+                            region_id=region_id,
+                            export_key=latest_export.export_key,
+                            synced_through_date=synced_through_date,
+                            last_checked_at=datetime.now(UTC),
+                        )
+                    )
+                    created_state = True
+                continue
+            regions_to_fetch.add(region_id)
+
+        if created_state:
+            session.commit()
+        return regions_to_fetch
+
+    def _adam_demand_synced_through_dates(self, session: Session, *, region_ids: list[int]) -> dict[int, date]:
+        if not region_ids:
+            return {}
+
+        state_by_region_id = {
+            row.region_id: row
+            for row in session.scalars(
+                select(AdamNpcDemandSyncState).where(AdamNpcDemandSyncState.region_id.in_(region_ids))
+            ).all()
+        }
+        synced_through_by_region: dict[int, date] = {}
+        for region_id in region_ids:
+            state = state_by_region_id.get(region_id)
+            synced_through_date = state.synced_through_date if state is not None else None
+            if synced_through_date is None:
+                synced_through_date = self._max_persisted_adam_demand_date(session, region_id=region_id)
+            if synced_through_date is not None:
+                synced_through_by_region[region_id] = synced_through_date
+        return synced_through_by_region
+
+    def _adam_demand_region_synced_for_export(
+        self,
+        *,
+        state: AdamNpcDemandSyncState | None,
+        latest_export: AdamMarketOrdersExport,
+        synced_through_date: date | None,
+    ) -> bool:
+        if state is not None and state.export_key == latest_export.export_key:
+            return True
+
+        if synced_through_date is None:
+            return False
+        return synced_through_date >= latest_export.covered_through_date
+
+    def _record_adam_demand_region_check(
+        self,
+        session: Session,
+        *,
+        region_ids: list[int],
+        export: AdamMarketOrdersExport,
+        locations: Sequence[Location],
+        rows: list[AdamNpcDemandRecord],
+    ) -> None:
+        if not region_ids:
+            return
+
+        location_to_region = {location.location_id: location.region_id for location in locations}
+        max_dates_by_region: dict[int, date] = {}
+        for row in rows:
+            region_id = location_to_region.get(row["location_id"])
+            if region_id is None:
+                continue
+            row_date = row["date"] if isinstance(row["date"], date) else date.fromisoformat(row["date"])
+            previous_date = max_dates_by_region.get(region_id)
+            if previous_date is None or row_date > previous_date:
+                max_dates_by_region[region_id] = row_date
+
+        for region_id in region_ids:
+            state = session.scalar(select(AdamNpcDemandSyncState).where(AdamNpcDemandSyncState.region_id == region_id))
+            if state is None:
+                state = AdamNpcDemandSyncState(region_id=region_id)
+                session.add(state)
+
+            latest_row_date = max_dates_by_region.get(region_id)
+            if latest_row_date is not None:
+                existing_synced_through = state.synced_through_date
+                state.synced_through_date = (
+                    max(existing_synced_through, latest_row_date)
+                    if existing_synced_through is not None
+                    else latest_row_date
+                )
+            state.export_key = export.export_key
+            state.last_checked_at = datetime.now(UTC)
+
+        session.commit()
+
+    def _max_persisted_adam_demand_date(self, session: Session, *, region_id: int) -> date | None:
+        persisted_dates = session.scalars(
+            select(AdamNpcDemandDaily.date)
+            .join(Location, Location.id == AdamNpcDemandDaily.location_id)
+            .where(Location.region_id == region_id)
+            .order_by(AdamNpcDemandDaily.date.desc())
+        ).all()
+        return persisted_dates[0] if persisted_dates else None
+
+    def _regions_needing_history_check(self, session: Session, regions: list[Region]) -> list[Region]:
+        if not regions:
+            return []
+
+        today_utc = datetime.now(UTC).date()
+        state_by_region_id = {
+            row.region_id: row
+            for row in session.scalars(
+                select(EsiHistorySyncState).where(EsiHistorySyncState.region_id.in_([region.id for region in regions]))
+            ).all()
+        }
+        return [
+            region
+            for region in regions
+            if not self._history_region_checked_today(state_by_region_id.get(region.id), today_utc=today_utc)
+        ]
+
+    def _history_sync_since_date(self, session: Session, region_id: int) -> date | None:
+        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
+        if state is not None and state.synced_through_date is not None:
+            return state.synced_through_date
+        return self._max_persisted_history_date(session, region_id=region_id)
+
+    def _history_region_checked_today(
+        self,
+        state: EsiHistorySyncState | None,
+        *,
+        today_utc: date,
+    ) -> bool:
+        if state is None or state.last_checked_at is None:
+            return False
+        return self._ensure_utc(state.last_checked_at).date() >= today_utc
+
+    def _record_history_region_check(
+        self,
+        session: Session,
+        *,
+        region_id: int,
+        synced_through_date: date | None,
+    ) -> None:
+        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
+        if state is None:
+            state = EsiHistorySyncState(region_id=region_id)
+            session.add(state)
+
+        existing_synced_through = state.synced_through_date
+        if synced_through_date is not None:
+            state.synced_through_date = (
+                max(existing_synced_through, synced_through_date)
+                if existing_synced_through is not None
+                else synced_through_date
+            )
+        state.last_checked_at = datetime.now(UTC)
+        session.commit()
+
+    def _max_persisted_history_date(self, session: Session, *, region_id: int) -> date | None:
+        persisted_dates = session.scalars(
+            select(EsiHistoryDaily.date)
+            .where(EsiHistoryDaily.region_id == region_id)
+            .order_by(EsiHistoryDaily.date.desc())
+        ).all()
+        return persisted_dates[0] if persisted_dates else None
+
+    def _max_history_date(self, rows: list[EsiRegionalHistoryRecord]) -> date | None:
+        if not rows:
+            return None
+        normalized_dates = [
+            row["date"] if isinstance(row["date"], date) else date.fromisoformat(row["date"])
+            for row in rows
+        ]
+        return max(normalized_dates)
+
+    def _sync_adam_regional_price_history(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        regions: list[Region],
+        period_days: int,
+    ) -> tuple[int, int, int, int]:
+        items_by_region_id = {
+            region.id: self._history_sync_items(session, region_ids=[region.id])
+            for region in regions
+        }
+        eligible_regions = [region for region in regions if items_by_region_id[region.id]]
+        if not eligible_regions:
+            return (0, 0, 0, 0)
+
+        regions_to_fetch = self._regions_needing_history_check(session, eligible_regions)
+        if not regions_to_fetch:
+            return (0, 0, 0, 0)
+
+        self._update_job_progress(
+            session,
+            job_id,
+            progress_phase="Downloading Adam4EVE regional price history",
+            progress_current=0,
+            progress_total=len(regions_to_fetch),
+            progress_unit="regions",
+            message=f"Downloading Adam4EVE regional price history for 0 / {len(regions_to_fetch)} regions.",
+        )
+
+        total_history_processed = 0
+        total_created = 0
+        total_updated = 0
+        total_price_rows = 0
+        for region_index, region in enumerate(regions_to_fetch, start=1):
+            self._check_for_cancellation(session, job_id)
+            region_items = items_by_region_id[region.id]
+            since_date = self._history_sync_since_date(session, region.id)
+            history_rows = self.adam_client.fetch_regional_price_history(
+                region.region_id,
+                [item.type_id for item in region_items],
+                since_date=since_date,
+            )
+            history_result = EsiRegionalHistoryIngestionService().ingest_region_history(
+                session,
+                eve_region_id=region.region_id,
+                records=history_rows,
+            )
+            total_history_processed += history_result.records_processed
+            total_created += history_result.created
+            total_updated += history_result.updated
+            total_price_rows += self._refresh_market_prices_for_region(
+                session,
+                region_id=region.id,
+                type_ids=[item.id for item in region_items],
+                period_days=period_days,
+                cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+            )
+            self._record_history_region_check(
+                session,
+                region_id=region.id,
+                synced_through_date=self._max_history_date(history_rows) or since_date,
+            )
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Downloading Adam4EVE regional price history",
+                progress_current=region_index,
+                progress_total=len(regions_to_fetch),
+                progress_unit="regions",
+                message=(
+                    f"Downloaded Adam4EVE regional price history for {region_index} / {len(regions_to_fetch)} regions."
+                ),
+            )
+
+        return (total_history_processed, total_created, total_updated, total_price_rows)
+
     def _history_sync_items(self, session: Session, *, region_ids: list[int]) -> list[Item]:
         if not region_ids:
             return []
@@ -909,19 +1271,6 @@ class SyncService:
                 select(EsiMarketOrder.type_id).where(EsiMarketOrder.region_id.in_(region_ids)).distinct()
             ).all()
         )
-        target_location_ids = list(
-            session.scalars(
-                select(Location.id).where(Location.location_type == "npc_station")
-            ).all()
-        )
-        if target_location_ids:
-            item_ids.update(
-                session.scalars(
-                    select(MarketDemandResolved.type_id)
-                    .where(MarketDemandResolved.location_id.in_(target_location_ids))
-                    .distinct()
-                ).all()
-            )
         if not item_ids:
             return []
 

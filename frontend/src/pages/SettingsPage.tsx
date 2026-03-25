@@ -5,8 +5,6 @@ import { useSettings, useUpdateSettings } from "../hooks/useSettingsData";
 
 const DEFAULT_SETTINGS: UserSettings = {
   default_analysis_period_days: 14,
-  warning_threshold_pct: 0.5,
-  warning_enabled: true,
   debug_enabled: false,
   sales_tax_rate: 0.036,
   broker_fee_rate: 0.03,
@@ -70,23 +68,14 @@ export function SettingsPage() {
         <label>
           <span>Default Analysis Period</span>
           <input
+            type="number"
+            min={1}
+            step={1}
             value={formState.default_analysis_period_days}
             onChange={(event) =>
               setFormState((current) => ({
                 ...current,
-                default_analysis_period_days: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
-        <label>
-          <span>Warning Threshold %</span>
-          <input
-            value={formState.warning_threshold_pct}
-            onChange={(event) =>
-              setFormState((current) => ({
-                ...current,
-                warning_threshold_pct: Number(event.target.value),
+                default_analysis_period_days: Math.max(Number(event.target.value) || 1, 1),
               }))
             }
           />

@@ -833,6 +833,211 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
   - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
 
+- task id: `ADAM4EVE-DEMAND-INCREMENTAL-2026-03-25`
+- title: Skip Adam4EVE Demand Downloads For Already-Synced Region Weeks
+- status: `PASS`
+- spec refs: user-requested incremental Adam4EVE workflow
+- acceptance criteria covered:
+  - Adam4EVE demand ingest is append-only and no longer probes or rewrites existing `(location, item, date)` rows
+  - sync state tracks Adam4EVE NPC demand coverage per region
+  - `adam4eve_sync` resolves the latest Adam4EVE export metadata first and skips regions already synced for that export week without downloading the weekly CSV
+  - existing persisted demand history can bootstrap the new skip logic from max stored region date
+  - tests cover export metadata resolution, append-only demand ingest, sync-state persistence, and no-download skip behavior
+- files changed:
+  - `backend/alembic/versions/20260325_0005_adam_npc_demand_sync_state.py`
+  - `backend/app/models/all_models.py`
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/app/services/adam4eve/ingestion.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_adam4eve_client.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Added per-region Adam4EVE demand sync state keyed to the latest weekly export, switched demand ingest to append-only writes, and taught `adam4eve_sync` to skip already-synced regions before fetching the weekly demand dump.
+- important decisions:
+  - the pre-download skip check uses Adam4EVE weekly export metadata from the index pages, not the CSV body itself
+  - regions with historical demand rows but no explicit sync-state row bootstrap into the new skip path from their max persisted demand date
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+
+- task id: `ESI-HISTORY-ORDER-SCOPE-2026-03-25`
+- title: Restrict ESI History Pull To Active Regional Orders
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 6
+- acceptance criteria covered:
+  - ESI history sync only requests items that currently have active market orders in the region
+  - demand-only items do not expand the history download scope
+  - raw trade sync coverage stays aligned with the new order-backed history rule
+- files changed:
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Locked the history-sync scope to active regional orders with a regression test that proves demand rows alone do not trigger ESI history fetches.
+- important decisions:
+  - kept the narrowed `_history_sync_items()` behavior already present in the working tree and added coverage rather than broadening the sync back out
+  - updated the raw trade sync test seed to include a real active order so it still exercises the intended order-backed path
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend/tests/services/test_sync_service.py backend/tests/services/test_esi_history_ingestion.py`
+
+- task id: `ESI-HISTORY-APPEND-ONLY-2026-03-25`
+- title: Make ESI History Ingest Trust Region Sync Watermark
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 6
+- acceptance criteria covered:
+  - ESI history ingest no longer performs per-row database existence checks before writing
+  - region sync watermark remains the mechanism that limits downloaded history to unseen dates
+  - ingestion tests cover append-only history rows instead of row-level idempotent skipping
+- files changed:
+  - `backend/app/services/esi/history_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+- short implementation summary: Removed the large tuple-key existence probe from ESI history ingestion and switched the service to append incoming delta rows directly, relying on per-region sync state to avoid re-downloading already synced dates.
+- important decisions:
+  - preserved the append-only contract in both the Postgres COPY path and the ORM fallback
+  - updated coverage to validate new-date appends rather than duplicate-row skipping
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend/tests/services/test_esi_history_ingestion.py backend/tests/services/test_sync_service.py`
+
+- task id: `ADAM4EVE-REGIONAL-HISTORY-2026-03-25`
+- title: Replace ESI History Source With Adam4EVE Regional Price Dumps
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 6
+- acceptance criteria covered:
+  - historical price rows are sourced from Adam4EVE regional price dumps instead of CCP ESI market history
+  - `adam4eve_sync` imports both NPC demand and regional historical sell-price data before derived rebuilds
+  - region sync watermark limits Adam4EVE history downloads to unseen dates and can bootstrap from existing persisted history
+- files changed:
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_adam4eve_client.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Added Adam4EVE per-region daily price-history fetching from the static dump, mapped sell-side regional prices into the existing daily history table, merged that import into `adam4eve_sync`, and pointed the legacy `esi_history_sync` job at the same Adam4EVE-backed regional-history flow.
+- important decisions:
+  - mapped `sell_price_avg/high/low` into the existing `esi_history_daily` average/highest/lowest fields because downstream pricing compares against target sell pricing
+  - preserved the legacy history job as a compatibility alias while moving the actual source off ESI
+  - seeded the history watermark from already persisted daily rows when no explicit sync-state row exists to avoid full-region re-downloads
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
+
+- task id: `REMOVE-ESI-HISTORY-JOB-2026-03-25`
+- title: Remove Legacy ESI History Sync Job Surface
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 6
+- acceptance criteria covered:
+  - legacy `esi_history_sync` job is no longer exposed in backend sync execution paths or status cards
+  - frontend manual sync actions no longer offer a separate ESI history button
+  - dead ESI market-history client code and compatibility-only tests are removed
+- files changed:
+  - `backend/app/domain/enums.py`
+  - `backend/app/services/esi/client.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_esi_client.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `frontend/src/components/sync/ManualSyncActions.tsx`
+- short implementation summary: Removed the obsolete `esi_history_sync` job and all remaining code paths that implied CCP ESI was still a historical-price source, leaving Adam4EVE as the only historical-price import flow.
+- important decisions:
+  - kept the existing `esi_history_daily` storage table and sync-state table names for now because they are internal storage details still used by the Adam4EVE-backed history pipeline
+  - removed only the legacy job surface and dead ESI client history fetch logic, not the reusable ingestion/storage layer
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
+  - `npm.cmd test -- --run`
+  - `npm.cmd run build`
+
+- task id: `TRADE-SINGLE-PERIOD-2026-03-25`
+- title: Collapse Fixed Multi-Period Price Snapshots To One Selected Period
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 2, 9, 10, 12C
+- acceptance criteria covered:
+  - trade analysis period is now a numeric up/down input with a default of 14 days
+  - sync jobs compute demand and price-period derivatives only for the configured single analysis period instead of fixed `3/7/14/30` snapshots
+  - trade reads can prepare the requested period on demand so changing the selected number still yields data
+  - design prompt no longer requires fixed supported snapshot periods
+- files changed:
+  - `DESIGN_PROMPT.md`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_trade_repository.py`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Replaced the hardcoded multi-period snapshot loop with a single selected analysis period, computed during sync for the configured default and prepared on demand for trade page requests.
+- important decisions:
+  - kept the selected period as a numeric input so the UI is no longer limited to a fixed enum
+  - avoided deleting or recomputing already-present derived rows during trade reads unless the requested period rows were missing
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
+  - `npm.cmd test -- --run`
+  - `npm.cmd run build`
+
+- task id: `TRADE-RISK-REMOVAL-2026-03-25`
+- title: Remove Calculated Risk And Warning Outputs
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 2, 5, 9, 10, 12C, 13, 16
+- acceptance criteria covered:
+  - calculated risk and warning fields are removed from backend models, schemas, repositories, and generation logic
+  - trade/settings frontend no longer exposes risk or warning controls or fields
+  - database migration removes obsolete risk/warning columns from derived tables
+  - design prompt no longer specifies calculated risk or warning behavior
+- files changed:
+  - `DESIGN_PROMPT.md`
+  - `backend/alembic/versions/20260325_0004_remove_risk_fields.py`
+  - `backend/app/api/schemas/settings.py`
+  - `backend/app/api/schemas/trade.py`
+  - `backend/app/domain/constants.py`
+  - `backend/app/domain/rules.py`
+  - `backend/app/models/all_models.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/opportunities/aggregator.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/app/services/pricing/market_price_periods.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/domain/test_rules.py`
+  - `backend/tests/fixtures/foundation_snapshot.json`
+  - `backend/tests/services/test_aggregator.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_foundation_data.py`
+  - `backend/tests/services/test_market_price_periods.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_trade_repository.py`
+  - `frontend/src/api/settings.ts`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/components/trade/ItemDetailPanel.tsx`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/SettingsPage.test.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/types/trade.ts`
+- short implementation summary: Removed the risk and warning concept from the trade flow entirely, including derived persistence, APIs, UI controls, tests, and the written product spec, while keeping a small legacy settings cleanup for older saved JSON.
+- important decisions:
+  - retained legacy stripping of `warning_threshold_pct` and `warning_enabled` in settings loading so old persisted settings remain readable
+  - treated the risk fields as derived-only state and removed them from the database via a forward migration
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
+  - `npm.cmd test -- --run`
+  - `npm.cmd run build`
+
 - task id: `ESI-COPY-RAW-2026-03-24`
 - title: Bulk Load Raw ESI Imports With PostgreSQL COPY
 - status: `PASS`
@@ -854,6 +1059,34 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - kept the existing ORM path as a fallback for non-Postgres dialects
   - history and Adam demand continue to replace incoming unique rows rather than deleting broader slices
   - regional orders keep full-region snapshot semantics by deleting the prior region snapshot before copying the refreshed rows
+- validation:
+  - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend -q`
+
+- task id: `ESI-HISTORY-INCREMENTAL-2026-03-25`
+- title: Incremental ESI History Raw Sync
+- status: `PASS`
+- spec refs: `DESIGN_PROMPT.md` sections 5, 6, 12A
+- acceptance criteria covered:
+  - raw `esi_history_daily` ingestion no longer rewrites immutable historical rows that are already present
+  - ESI history sync tracks a per-region watermark and last-check timestamp in persisted state
+  - same-day reruns skip regions already checked today instead of redownloading the full history payload again
+  - client-side history filtering only passes through rows newer than the region watermark
+- files changed:
+  - `backend/app/models/all_models.py`
+  - `backend/alembic/versions/20260325_0003_esi_history_sync_state.py`
+  - `backend/app/services/esi/client.py`
+  - `backend/app/services/esi/history_ingestion.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_esi_client.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Added `esi_history_sync_state` as a per-region high-water mark, switched history ingestion to append only missing days, and taught `esi_history_sync` to skip regions already checked on the current UTC day while requesting only rows newer than the stored watermark.
+- important decisions:
+  - CCP's `/markets/{region_id}/history/` endpoint has no server-side `since` parameter, so true delta download by date is not possible; the implementation avoids repeat same-day calls and filters the returned payload client-side for new rows only
+  - immutable historical rows are treated as append-only, so existing `esi_history_daily` rows are preserved and no longer counted as updates
+  - the Alembic migration is defensive because the test harness can materialize metadata before startup migrations run
 - validation:
   - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
   - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
