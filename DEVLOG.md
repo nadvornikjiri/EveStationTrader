@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T23`
+- title: ESI Rate Limit Sync Status Card
+- status: `PASS`
+- summary: added ESI rate limit status card to the sync dashboard. The card reads shared `EsiRateLimitState` from `EsiClient.get_rate_limit_state()` and displays error_limit_remain as a progress bar (out of 100), total requests, cached responses, error-limited count, and reset timer. Status shows "degraded" when backoff threshold is hit. Integrates seamlessly with existing StatusCards component.
+
+## 2026-03-26
+
 - task id: `T18`
 - title: Characters Page Frontend
 - status: `PASS`

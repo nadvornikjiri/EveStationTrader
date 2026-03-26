@@ -199,11 +199,39 @@ class SyncService:
                     select(WorkerHeartbeat).order_by(WorkerHeartbeat.recorded_at.desc(), WorkerHeartbeat.id.desc())
                 )
                 cards.append(self._build_worker_status_card(heartbeat))
+                cards.append(self._build_esi_rate_limit_card())
                 return cards
             finally:
                 session.close()
 
         return load_status()
+
+    @staticmethod
+    def _build_esi_rate_limit_card() -> SyncStatusCard:
+        from app.services.esi.client import EsiClient
+
+        state = EsiClient.get_rate_limit_state()
+        status = "degraded" if state.should_backoff() else "healthy"
+        message = (
+            f"Remain: {state.error_limit_remain}, "
+            f"Reset: {state.error_limit_reset}s, "
+            f"Total requests: {state.total_requests}, "
+            f"Cached: {state.cached_responses}, "
+            f"Error-limited: {state.error_limited_count}"
+        )
+        return SyncStatusCard(
+            key="esi_rate_limit",
+            label="ESI rate limit",
+            status=status,
+            last_successful_sync=state.last_updated,
+            next_scheduled_sync=None,
+            recent_error_count=state.error_limited_count,
+            active_message=message,
+            progress_phase=None,
+            progress_current=state.error_limit_remain,
+            progress_total=100,
+            progress_unit="remaining",
+        )
 
     def _build_worker_status_card(self, heartbeat: WorkerHeartbeat | None) -> SyncStatusCard:
         if heartbeat is None:
