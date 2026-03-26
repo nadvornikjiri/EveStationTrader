@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T28`
+- title: Initial Sync Job Enqueue on Character Connect
+- status: `PASS`
+- summary: after a new character is connected via EVE SSO, the auth callback now enqueues a `character_sync` SyncJobRun with status "pending" and triggered_by "sso_connect". Re-authenticating an existing character does not create duplicate jobs (sync state already exists check). Tests verify job creation on first connect and no duplicates on re-auth.
+
+## 2026-03-26
+
 - task id: `T25`
 - title: Settings Page Polish
 - status: `PASS`

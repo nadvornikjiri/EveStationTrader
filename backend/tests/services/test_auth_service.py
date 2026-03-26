@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, User
+from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, SyncJobRun, User
 from app.services.auth.service import AuthService
 from tests.db_test_utils import build_test_session
 
@@ -55,6 +55,13 @@ def test_handle_callback_creates_initial_user_character_token_and_sync_state() -
     assert characters[0].user_id == users[0].id
     assert users[0].primary_character_id == characters[0].id
     assert tokens[0].access_token == "access-1"
+
+    # Verify initial sync job enqueued
+    jobs = session.scalars(select(SyncJobRun).where(SyncJobRun.job_type == "character_sync")).all()
+    assert len(jobs) == 1
+    assert jobs[0].status == "pending"
+    assert jobs[0].triggered_by == "sso_connect"
+    assert jobs[0].target_id == "90000042"
 
 
 def test_handle_callback_links_second_character_to_existing_user() -> None:
@@ -129,3 +136,7 @@ def test_handle_callback_updates_existing_character_and_token_without_duplicates
     assert characters[0].granted_scopes == "esi-wallet.read_character_wallet.v1"
     assert tokens[0].access_token == "access-2"
     assert tokens[0].refresh_token == "refresh-2"
+
+    # Re-auth should NOT create additional sync jobs
+    jobs = session.scalars(select(SyncJobRun).where(SyncJobRun.job_type == "character_sync")).all()
+    assert len(jobs) == 1

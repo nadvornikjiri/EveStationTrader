@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas.auth import CurrentUser
 from app.db.session import SessionLocal
-from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, User
+from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, SyncJobRun, User
 from app.services.esi.client import EsiClient
 
 
@@ -83,8 +83,22 @@ class AuthService:
             sync_state = session.scalar(
                 select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id)
             )
+            is_new_sync_state = sync_state is None
             if sync_state is None:
                 session.add(EsiCharacterSyncState(character_id=character.id))
+
+            # Enqueue initial sync job for newly connected characters
+            if is_new_sync_state:
+                session.add(
+                    SyncJobRun(
+                        job_type="character_sync",
+                        status="pending",
+                        triggered_by="sso_connect",
+                        target_type="character",
+                        target_id=str(character.character_id),
+                        message=f"Initial sync for {character.character_name}",
+                    )
+                )
 
             if user.primary_character_id is None:
                 user.primary_character_id = character.id
