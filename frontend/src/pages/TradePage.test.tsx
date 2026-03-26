@@ -285,3 +285,46 @@ test("renders stable empty states when no computed opportunities exist for the s
   expect(screen.getByText("Select an item to inspect its detail.")).toBeInTheDocument();
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, null, null, 14);
 });
+
+test("new filters: min profit, min margin pct, min demand/day, max DOS, min confidence, demand source, and min security", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  // Clear default min ROI so both items appear
+  await user.clear(screen.getByLabelText("Min ROI"));
+  await user.type(screen.getByLabelText("Min ROI"), "0");
+
+  const itemTable = screen.getAllByRole("table")[1];
+  expect(within(itemTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(itemTable).getByText("Pyerite")).toBeInTheDocument();
+
+  // Min Profit filter — Tritanium has profit 12, Pyerite has profit 4
+  await user.type(screen.getByLabelText("Min Profit"), "10");
+  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
+  await user.clear(screen.getByLabelText("Min Profit"));
+
+  // Min Demand/Day filter — Tritanium 12, Pyerite 16
+  await user.clear(screen.getByLabelText("Min Demand Day"));
+  await user.type(screen.getByLabelText("Min Demand Day"), "15");
+  expect(within(screen.getAllByRole("table")[1]).queryByText("Tritanium")).not.toBeInTheDocument();
+  expect(within(screen.getAllByRole("table")[1]).getByText("Pyerite")).toBeInTheDocument();
+  await user.clear(screen.getByLabelText("Min Demand Day"));
+
+  // Max DOS filter — Tritanium 1.5, Pyerite 2.5
+  await user.type(screen.getByLabelText("Max DOS"), "2");
+  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
+  await user.clear(screen.getByLabelText("Max DOS"));
+
+  // Min Confidence filter — Tritanium 0.9, Pyerite 0.5
+  await user.type(screen.getByLabelText("Min Confidence"), "0.8");
+  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
+  await user.clear(screen.getByLabelText("Min Confidence"));
+
+  // Source Type, Min Security, Demand Source selects render
+  expect(screen.getByLabelText("Source Type")).toBeInTheDocument();
+  expect(screen.getByLabelText("Min Security")).toBeInTheDocument();
+  expect(screen.getByLabelText("Demand Source")).toBeInTheDocument();
+});

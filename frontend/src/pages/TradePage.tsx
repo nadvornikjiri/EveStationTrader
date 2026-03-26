@@ -20,6 +20,19 @@ function parseNumberInput(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function securityThreshold(minSecurity: string): number {
+  switch (minSecurity) {
+    case "highsec":
+      return 0.5;
+    case "lowsec":
+      return 0.0;
+    case "nullsec":
+      return -10.0;
+    default:
+      return -10.0;
+  }
+}
+
 function sortItems(rows: OpportunityItem[], sortKey: SortKey, sortDirection: SortDirection) {
   const sortedRows = [...rows].sort((left, right) => {
     if (sortKey === "item_name") {
@@ -39,6 +52,14 @@ export function TradePage() {
   const [periodDays, setPeriodDays] = useState(14);
   const [itemSearch, setItemSearch] = useState("");
   const [minRoi, setMinRoi] = useState("0.05");
+  const [minProfit, setMinProfit] = useState("");
+  const [minMarginPct, setMinMarginPct] = useState("");
+  const [minDemandDay, setMinDemandDay] = useState("1");
+  const [maxDos, setMaxDos] = useState("");
+  const [minConfidence, setMinConfidence] = useState("");
+  const [sourceType, setSourceType] = useState("all");
+  const [minSecurity, setMinSecurity] = useState("all");
+  const [demandSource, setDemandSource] = useState("all");
   const [sortKey, setSortKey] = useState<SortKey>("roi_now");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -71,13 +92,39 @@ export function TradePage() {
   const filteredItems = useMemo(() => {
     const searchValue = itemSearch.trim().toLowerCase();
     const minRoiValue = parseNumberInput(minRoi, 0);
+    const minProfitValue = parseNumberInput(minProfit, 0);
+    const minMarginPctValue = parseNumberInput(minMarginPct, 0) / 100;
+    const minDemandDayValue = parseNumberInput(minDemandDay, 0);
+    const maxDosValue = parseNumberInput(maxDos, Infinity);
+    const minConfidenceValue = parseNumberInput(minConfidence, 0);
+    const secThreshold = securityThreshold(minSecurity);
 
     return (items.data ?? []).filter((row) => {
       const matchesSearch = searchValue.length === 0 || row.item_name.toLowerCase().includes(searchValue);
       const meetsRoi = row.roi_now >= minRoiValue;
-      return matchesSearch && meetsRoi;
+      const meetsProfit = row.target_now_profit >= minProfitValue;
+      const meetsMargin =
+        minMarginPctValue <= 0 ||
+        (row.source_station_sell_price > 0 &&
+          row.target_now_profit / row.source_station_sell_price >= minMarginPctValue);
+      const meetsDemand = row.target_demand_day >= minDemandDayValue;
+      const meetsDos = row.target_dos <= maxDosValue;
+      const meetsConfidence = row.confidence_score >= minConfidenceValue;
+      const meetsSecurity = row.source_security_status >= secThreshold;
+      const meetsDemandSource = demandSource === "all" || row.demand_source === demandSource;
+      return (
+        matchesSearch &&
+        meetsRoi &&
+        meetsProfit &&
+        meetsMargin &&
+        meetsDemand &&
+        meetsDos &&
+        meetsConfidence &&
+        meetsSecurity &&
+        meetsDemandSource
+      );
     });
-  }, [itemSearch, items.data, minRoi]);
+  }, [itemSearch, items.data, minRoi, minProfit, minMarginPct, minDemandDay, maxDos, minConfidence, minSecurity, demandSource]);
 
   const sortedItems = useMemo(
     () => sortItems(filteredItems, sortKey, sortDirection),
@@ -133,10 +180,26 @@ export function TradePage() {
         periodDays={periodDays}
         itemSearch={itemSearch}
         minRoi={minRoi}
+        minProfit={minProfit}
+        minMarginPct={minMarginPct}
+        minDemandDay={minDemandDay}
+        maxDos={maxDos}
+        minConfidence={minConfidence}
+        sourceType={sourceType}
+        minSecurity={minSecurity}
+        demandSource={demandSource}
         onTargetChange={setTargetId}
         onPeriodChange={setPeriodDays}
         onItemSearchChange={setItemSearch}
         onMinRoiChange={setMinRoi}
+        onMinProfitChange={setMinProfit}
+        onMinMarginPctChange={setMinMarginPct}
+        onMinDemandDayChange={setMinDemandDay}
+        onMaxDosChange={setMaxDos}
+        onMinConfidenceChange={setMinConfidence}
+        onSourceTypeChange={setSourceType}
+        onMinSecurityChange={setMinSecurity}
+        onDemandSourceChange={setDemandSource}
       />
       <SourceSummaryTable
         rows={summaries.data ?? []}

@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T16`
+- title: Trade Page Missing Filters
+- status: `PASS`
+- summary: added all spec-required filters to the trade page: min profit (ISK), min margin %, min demand/day, max D.O.S, min confidence, source type (NPC/structure/all), min security (highsec/lowsec/nullsec/all), and demand source (adam4eve/local/fallback/blended/all). Filters are client-side against the existing opportunity items query. Updated `TradeControls` with new inputs/selects and `TradePage` with filter state and useMemo filtering logic. Added test covering all new filter behaviors.
+
+## 2026-03-26
+
 - task id: `T15`
 - title: ESI Rate Limiting
 - status: `PASS`
