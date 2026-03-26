@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T17`
+- title: Trade Page Missing Columns
+- status: `PASS`
+- summary: expanded both `SourceSummaryTable` and `ItemOpportunityTable` to display all 22 spec-required columns each. Source summary now shows: Source Units Available, Target Supply Units, Target D.O.S, In Transit, Assets, Active Sell Orders, Source Avg Price, Target Now Price, Target Period Avg Price, Target Period Profit, ROI Period, Item Volume, Shipping Cost, Demand Source. Item table now shows: Sec, Source Units Available, Target Demand/Day, Target Supply Units, Target D.O.S, In Transit, Assets, Active Sell Orders, all price columns, ROI Period, Item Volume, Shipping Cost. Added `table-scroll` wrapper for horizontal scrolling. Test verifies all column headers render.
+
+## 2026-03-26
+
 - task id: `T16`
 - title: Trade Page Missing Filters
 - status: `PASS`

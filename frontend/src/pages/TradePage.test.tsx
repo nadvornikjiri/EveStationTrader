@@ -328,3 +328,45 @@ test("new filters: min profit, min margin pct, min demand/day, max DOS, min conf
   expect(screen.getByLabelText("Min Security")).toBeInTheDocument();
   expect(screen.getByLabelText("Demand Source")).toBeInTheDocument();
 });
+
+test("source summary and item tables display all spec-required columns", () => {
+  renderPage();
+
+  const tables = screen.getAllByRole("table");
+  const summaryTable = tables[0];
+  const itemTable = tables[1];
+
+  // Source summary table columns
+  const summaryHeaders = within(summaryTable).getAllByRole("columnheader").map((th) => th.textContent);
+  for (const col of [
+    "Source Market", "Sec", "Purchase Units", "Source Units Avail",
+    "Target Demand / Day", "Target Supply Units", "Target D.O.S",
+    "In Transit", "Assets", "Active Sell Orders",
+    "Source Avg Price", "Target Now Price", "Target Period Avg Price",
+    "Target Now Profit", "Target Period Profit", "Capital Required",
+    "ROI Now", "ROI Period", "Item Volume", "Shipping Cost",
+    "Demand Source", "Confidence",
+  ]) {
+    expect(summaryHeaders).toContain(col);
+  }
+
+  // Item table columns (sortable columns have button text)
+  const itemHeaders = within(itemTable).getAllByRole("columnheader").map((th) => th.textContent);
+  for (const col of [
+    "Sec", "Source Units Avail",
+    "Target Demand / Day", "Target Supply Units", "Target D.O.S",
+    "In Transit", "Assets", "Active Sell Orders",
+    "Source Avg Price", "Target Now Price", "Target Period Avg Price",
+    "Target Now Profit", "Target Period Profit", "Capital Required",
+    "ROI Period", "Item Volume", "Shipping Cost", "Demand Source",
+  ]) {
+    expect(itemHeaders).toContain(col);
+  }
+
+  // Verify data renders in source summary row
+  expect(within(summaryTable).getByText("Amarr")).toBeInTheDocument();
+  expect(within(summaryTable).getByText("Adam4EVE")).toBeInTheDocument();
+
+  // Verify data renders in item row (Tritanium visible with default ROI filter)
+  expect(within(itemTable).getByText("Tritanium")).toBeInTheDocument();
+});
