@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T18`
+- title: Characters Page Frontend
+- status: `PASS`
+- summary: wired CharactersPage and CharacterDetailPage to the backend API. Created `types/characters.ts`, `api/characters.ts`, `hooks/useCharacterData.ts` with React Query hooks for list, detail, connect, sync, patch, and track-structure mutations. CharactersPage shows all 11 spec columns (character name with link, corporation, scopes count, sync status, token refresh, last sync, per-domain sync statuses, accessible structure count). CharacterDetailPage shows identity, sync toggles, accessible structures table with all 9 spec columns plus track action, and skills. Added `apiPatch` to client.ts. Tests verify column rendering, empty state, and connect flow.
+
+## 2026-03-26
+
 - task id: `T17`
 - title: Trade Page Missing Columns
 - status: `PASS`
