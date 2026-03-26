@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.schemas.trade import OpportunityItemRow
@@ -14,6 +14,7 @@ from app.domain.rules import (
     calculate_target_period_profit,
 )
 from app.models.all_models import (
+    EsiMarketOrder,
     Item,
     Location,
     MarketDemandResolved,
@@ -114,6 +115,25 @@ class OpportunityGenerationService:
             ).all()
         }
 
+        # Aggregate sell-side volume from live market orders per (location, type)
+        all_location_ids = [target_location_id] + normalized_source_ids
+        sell_volume_rows = session.execute(
+            select(
+                EsiMarketOrder.location_id,
+                EsiMarketOrder.type_id,
+                func.sum(EsiMarketOrder.volume_remain),
+            )
+            .where(
+                EsiMarketOrder.location_id.in_(all_location_ids),
+                EsiMarketOrder.type_id.in_(normalized_type_ids),
+                EsiMarketOrder.is_buy_order.is_(False),
+            )
+            .group_by(EsiMarketOrder.location_id, EsiMarketOrder.type_id)
+        ).all()
+        sell_volume: dict[tuple[int, int], float] = {
+            (row[0], row[1]): float(row[2]) for row in sell_volume_rows
+        }
+
         generated_items: list[OpportunityItem] = []
         source_rows: dict[int, list[OpportunityItemRow]] = {}
 
@@ -132,8 +152,8 @@ class OpportunityGenerationService:
                 if item is None or source_price is None or target_price is None or demand is None:
                     continue
 
-                source_units_available = 0.0
-                target_supply_units = 0.0
+                source_units_available = sell_volume.get((source_location_id, type_id), 0.0)
+                target_supply_units = sell_volume.get((target_location_id, type_id), 0.0)
                 purchase_units = calculate_purchase_units(source_units_available, demand.demand_day)
                 shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
                 target_now_profit = calculate_target_now_profit(

@@ -1,3 +1,10 @@
+## 2026-03-26
+
+- task id: `T13`
+- title: Wire Live Order Data Into Opportunity Generation
+- status: `PASS`
+- summary: replaced hardcoded zero placeholders for `source_units_available` and `target_supply_units` with aggregated sell-side volume from `esi_market_orders`. This makes `purchase_units`, `target_dos`, and all dependent summary fields reflect real market liquidity. Added tests for both populated-order and zero-order edge cases.
+
 ## 2026-03-22
 
 - task id: `T05F`
@@ -832,6 +839,37 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
   - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
   - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+
+- task id: `T12A-2026-03-26`
+- title: Bulk Market Price Rebuild And Persistent Bulk Import Cache
+- status: `PARTIAL`
+- spec refs: `TASKS.md` `T12A`, user follow-up on persistent bulk import progress and local file reuse
+- acceptance criteria covered:
+  - market price stats for `3/7/14/30` day periods are now computed from one regional history read and written in bulk
+  - sync state now records generic bulk import progress by scope instead of only relying on source-specific tables
+  - dated Adam/ESI-style bulk files are cached locally and reused on reruns instead of being downloaded again
+- files changed:
+  - `backend/app/core/config.py`
+  - `backend/app/models/all_models.py`
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/app/services/pricing/market_price_periods.py`
+  - `backend/app/services/sync/bulk_imports.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/alembic/versions/20260326_0006_bulk_import_tracking.py`
+  - `backend/tests/services/test_bulk_imports.py`
+  - `backend/tests/services/test_market_price_periods.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `TASKS.md`
+- short implementation summary: Added a shared bulk-import cursor/file cache layer for dated Adam/ESI exports and replaced the market-price rebuild path with a multi-period regional bulk write that populates `3/7/14/30` day rows in one pass.
+- important decisions:
+  - kept the existing source-specific sync-state tables for compatibility while mirroring progress into the new generic bulk-import cursor table
+  - limited the forever-cache behavior to dated export files; the CCP foundation `latest` zip was left uncached because its URL is not versioned
+- validation:
+  - `C:\Users\ASUS\AppData\Local\Python\bin\python.exe -m compileall backend\app`
+  - in-memory SQLite smoke script covering `BulkImportService`, generic cursor progression, multi-period market price rebuild, and the Adam export completion gate
+  - `C:\Users\ASUS\AppData\Local\Python\bin\python.exe -m pytest ...` attempted but blocked during import because local application-control policy blocks `psycopg-binary` and the pure-Python fallback cannot find `libpq`
 
 - task id: `ADAM4EVE-DEMAND-INCREMENTAL-2026-03-25`
 - title: Skip Adam4EVE Demand Downloads For Already-Synced Region Weeks
