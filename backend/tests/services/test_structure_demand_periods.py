@@ -23,8 +23,8 @@ def seed_deltas(session: Session) -> None:
                 structure_id=1022734985679,
                 type_id=item.id,
                 order_id=1,
-                from_snapshot_time=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
-                to_snapshot_time=datetime(2026, 3, 18, 10, 10, tzinfo=UTC),
+                from_snapshot_time=datetime(2026, 3, 16, 10, 0, tzinfo=UTC),
+                to_snapshot_time=datetime(2026, 3, 16, 10, 10, tzinfo=UTC),
                 old_volume=50,
                 new_volume=20,
                 delta_volume=-30,
@@ -76,18 +76,76 @@ def test_upsert_period_aggregates_deltas_into_structure_demand_period() -> None:
         session,
         structure_id=1022734985679,
         type_id=item.id,
-        period_days=3,
+        period_days=5,
         as_of=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
     )
 
     row = result.row
     assert result.created is True
     assert result.delta_count == 3
-    assert row.demand_min == pytest.approx(55 / 3)
-    assert row.demand_max == pytest.approx(55 / 3)
-    assert row.demand_chosen == pytest.approx(55 / 3)
-    assert row.coverage_pct == 1.0
-    assert row.confidence_score == 1.0
+    assert row.demand_min == pytest.approx(55 / 5)
+    assert row.demand_max == pytest.approx(55 / 5)
+    assert row.demand_chosen == pytest.approx(55 / 5)
+    assert row.coverage_pct == pytest.approx(3 / 5)
+    # observation_window = (2026-03-20 08:10 - 2026-03-16 10:10) ≈ 94h → factor = 1.0
+    # recency = within 24h → 1.0
+    # confidence = 0.6 * 1.0 * 1.0 = 0.6
+    assert row.confidence_score == pytest.approx(0.6)
+
+
+def test_confidence_penalized_when_observation_window_below_72h() -> None:
+    session = build_session()
+    item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(item)
+    session.flush()
+    # Two deltas only 24h apart — observation window < 72h
+    session.add_all(
+        [
+            StructureOrderDelta(
+                structure_id=1022734985679,
+                type_id=item.id,
+                order_id=10,
+                from_snapshot_time=datetime(2026, 3, 19, 10, 0, tzinfo=UTC),
+                to_snapshot_time=datetime(2026, 3, 19, 10, 10, tzinfo=UTC),
+                old_volume=100,
+                new_volume=80,
+                delta_volume=-20,
+                disappeared=False,
+                inferred_trade_side="buy_from_sell",
+                inferred_trade_units=20,
+                price=50.0,
+            ),
+            StructureOrderDelta(
+                structure_id=1022734985679,
+                type_id=item.id,
+                order_id=11,
+                from_snapshot_time=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+                to_snapshot_time=datetime(2026, 3, 20, 10, 10, tzinfo=UTC),
+                old_volume=60,
+                new_volume=40,
+                delta_volume=-20,
+                disappeared=False,
+                inferred_trade_side="buy_from_sell",
+                inferred_trade_units=20,
+                price=50.0,
+            ),
+        ]
+    )
+    session.commit()
+
+    result = StructureDemandPeriodService().upsert_period(
+        session,
+        structure_id=1022734985679,
+        type_id=item.id,
+        period_days=2,
+        as_of=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
+    )
+    row = result.row
+    # observation_window = 24h → factor = 24/72 = 0.333
+    # coverage = 2/2 = 1.0, recency = 1.0
+    # confidence = 1.0 * 1.0 * 0.333 ≈ 0.333 — below 0.75 threshold
+    assert row.confidence_score == pytest.approx(24 / 72, abs=0.01)
+    assert row.confidence_score < 0.75
 
 
 def test_upsert_period_updates_existing_row_on_rerun() -> None:

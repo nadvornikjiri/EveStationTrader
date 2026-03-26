@@ -45,13 +45,24 @@ class StructureDemandPeriodService:
 
         coverage_pct = min(len(deltas) / max(period_days, 1), 1.0)
         latest_delta_time = max((self._ensure_utc(delta.to_snapshot_time) for delta in deltas), default=None)
+        earliest_delta_time = min((self._ensure_utc(delta.to_snapshot_time) for delta in deltas), default=None)
+
+        # Recency factor: 1.0 if latest delta within 24h, 0.5 if older, 0.0 if none
         if latest_delta_time is None:
             recency_factor = 0.0
         elif latest_delta_time >= computed_at - timedelta(hours=24):
             recency_factor = 1.0
         else:
             recency_factor = 0.5
-        confidence_score = coverage_pct * recency_factor
+
+        # Observation window factor: require >= 72h of observation (MVP gate)
+        if earliest_delta_time is not None and latest_delta_time is not None:
+            observation_window_hours = (latest_delta_time - earliest_delta_time).total_seconds() / 3600
+            observation_factor = min(observation_window_hours / 72.0, 1.0)
+        else:
+            observation_factor = 0.0
+
+        confidence_score = coverage_pct * recency_factor * observation_factor
 
         record = session.scalar(
             select(StructureDemandPeriod).where(

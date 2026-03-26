@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T22`
+- title: Full Confidence Gating
+- status: `PASS`
+- summary: implemented the spec's MVP confidence gate: observation_window >= 72h requirement. Added `observation_factor = min(observation_window_hours / 72, 1.0)` to the confidence formula in `demand_periods.py`, making `confidence_score = coverage_pct * recency_factor * observation_factor`. Structures with < 72h of observation data now produce confidence below the 0.75 threshold, correctly falling back to regional demand. Added test verifying sub-72h observation windows are penalized. Updated existing test data to span 94h (>72h) with corrected expected values.
+
+## 2026-03-26
+
 - task id: `T23`
 - title: ESI Rate Limit Sync Status Card
 - status: `PASS`
