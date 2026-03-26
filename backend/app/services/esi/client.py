@@ -1,4 +1,7 @@
+import logging
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
@@ -6,7 +9,55 @@ import httpx
 
 from app.core.config import get_settings
 from app.repositories.seed_data import ItemSeed, RegionSeed, StationSeed, SystemSeed
+
+logger = logging.getLogger(__name__)
+
 ESI_BASE_URL = "https://esi.evetech.net/latest"
+
+# Rate limit thresholds
+ERROR_LIMIT_BACKOFF_THRESHOLD = 20
+MAX_RETRIES = 3
+INITIAL_BACKOFF_SECONDS = 1.0
+
+
+@dataclass
+class EsiRateLimitState:
+    """Tracks ESI error-limit state from response headers."""
+
+    error_limit_remain: int = 100
+    error_limit_reset: int = 60
+    last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
+    total_requests: int = 0
+    cached_responses: int = 0
+    error_limited_count: int = 0
+
+    def update_from_headers(self, headers: httpx.Headers) -> None:
+        self.total_requests += 1
+        remain = headers.get("X-ESI-Error-Limit-Remain")
+        reset = headers.get("X-ESI-Error-Limit-Reset")
+        if remain is not None:
+            self.error_limit_remain = int(remain)
+        if reset is not None:
+            self.error_limit_reset = int(reset)
+        self.last_updated = datetime.now(UTC)
+
+    def should_backoff(self) -> bool:
+        return self.error_limit_remain < ERROR_LIMIT_BACKOFF_THRESHOLD
+
+    def backoff_seconds(self) -> float:
+        if not self.should_backoff():
+            return 0.0
+        return float(self.error_limit_reset)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "error_limit_remain": self.error_limit_remain,
+            "error_limit_reset": self.error_limit_reset,
+            "last_updated": self.last_updated.isoformat(),
+            "total_requests": self.total_requests,
+            "cached_responses": self.cached_responses,
+            "error_limited_count": self.error_limited_count,
+        }
 
 
 class EsiRegionalOrderRecord(TypedDict):
@@ -25,14 +76,90 @@ class EsiRegionalOrderRecord(TypedDict):
 
 
 class EsiClient:
+    # Shared rate limit state across all EsiClient instances
+    rate_limit_state: EsiRateLimitState = EsiRateLimitState()
+
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._etag_cache: dict[str, str] = {}
+
+    @classmethod
+    def get_rate_limit_state(cls) -> EsiRateLimitState:
+        return cls.rate_limit_state
 
     def get_headers(self) -> dict[str, str]:
         return {
             "User-Agent": self.settings.a4e_user_agent,
             "X-Compatibility-Date": self.settings.esi_compatibility_date,
         }
+
+    def _request_with_rate_limit(
+        self,
+        client: httpx.Client,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Make an ESI request with rate-limit tracking, ETag support, and retry."""
+        state = self.rate_limit_state
+
+        # Pre-request backoff if near error limit
+        if state.should_backoff():
+            wait = state.backoff_seconds()
+            logger.warning("ESI error limit low (%d remain), backing off %.1fs", state.error_limit_remain, wait)
+            time.sleep(wait)
+
+        headers: dict[str, str] = {}
+        cache_key = f"{method}:{url}:{params}"
+        etag = self._etag_cache.get(cache_key)
+        if etag:
+            headers["If-None-Match"] = etag
+
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            response = client.request(method, url, params=params, headers=headers)
+            state.update_from_headers(response.headers)
+
+            # ETag caching
+            new_etag = response.headers.get("ETag")
+            if new_etag:
+                self._etag_cache[cache_key] = new_etag
+
+            if response.status_code == 304:
+                state.cached_responses += 1
+                logger.debug("ESI cache hit (304) for %s", url)
+                return response
+
+            if response.status_code == 420:
+                state.error_limited_count += 1
+                backoff = INITIAL_BACKOFF_SECONDS * (2**attempt)
+                logger.warning("ESI error limited (420), retry %d after %.1fs", attempt + 1, backoff)
+                time.sleep(backoff)
+                last_exc = httpx.HTTPStatusError(
+                    f"ESI error limited: {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
+                continue
+
+            if response.status_code >= 500:
+                backoff = INITIAL_BACKOFF_SECONDS * (2**attempt)
+                logger.warning("ESI server error (%d), retry %d after %.1fs", response.status_code, attempt + 1, backoff)
+                time.sleep(backoff)
+                last_exc = httpx.HTTPStatusError(
+                    f"ESI server error: {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
+                continue
+
+            response.raise_for_status()
+            return response
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("ESI request failed after retries")
 
     def exchange_code(self, code: str) -> dict:
         # TODO: Implement real EVE SSO token exchange.
@@ -54,34 +181,31 @@ class EsiClient:
 
     def fetch_universe_regions(self) -> list[RegionSeed]:
         with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
-            region_ids_response = client.get("/universe/regions/")
-            region_ids_response.raise_for_status()
+            region_ids_response = self._request_with_rate_limit(client, "GET", "/universe/regions/")
             region_ids = self._require_integer_list(region_ids_response.json(), "region ids")
 
             regions: list[RegionSeed] = []
             for region_id in region_ids:
-                region_response = client.get(f"/universe/regions/{region_id}/")
-                region_response.raise_for_status()
+                region_response = self._request_with_rate_limit(client, "GET", f"/universe/regions/{region_id}/")
                 payload = self._require_mapping(region_response.json(), "region detail")
                 regions.append(RegionSeed(region_id=region_id, name=self._require_string(payload, "name")))
             return regions
 
     def fetch_universe_systems(self) -> list[SystemSeed]:
         with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
-            system_ids_response = client.get("/universe/systems/")
-            system_ids_response.raise_for_status()
+            system_ids_response = self._request_with_rate_limit(client, "GET", "/universe/systems/")
             system_ids = self._require_integer_list(system_ids_response.json(), "system ids")
 
             constellation_region_ids: dict[int, int] = {}
             systems: list[SystemSeed] = []
             for system_id in system_ids:
-                system_response = client.get(f"/universe/systems/{system_id}/")
-                system_response.raise_for_status()
+                system_response = self._request_with_rate_limit(client, "GET", f"/universe/systems/{system_id}/")
                 payload = self._require_mapping(system_response.json(), "system detail")
                 constellation_id = self._require_integer(payload, "constellation_id")
                 if constellation_id not in constellation_region_ids:
-                    constellation_response = client.get(f"/universe/constellations/{constellation_id}/")
-                    constellation_response.raise_for_status()
+                    constellation_response = self._request_with_rate_limit(
+                        client, "GET", f"/universe/constellations/{constellation_id}/"
+                    )
                     constellation_payload = self._require_mapping(
                         constellation_response.json(),
                         "constellation detail",
@@ -103,13 +227,11 @@ class EsiClient:
 
     def fetch_universe_items(self) -> list[ItemSeed]:
         with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
-            first_response = client.get("/universe/types/", params={"page": 1})
-            first_response.raise_for_status()
+            first_response = self._request_with_rate_limit(client, "GET", "/universe/types/", params={"page": 1})
             type_ids = self._require_integer_list(first_response.json(), "type ids")
             total_pages = int(first_response.headers.get("X-Pages", "1"))
             for page in range(2, total_pages + 1):
-                page_response = client.get("/universe/types/", params={"page": page})
-                page_response.raise_for_status()
+                page_response = self._request_with_rate_limit(client, "GET", "/universe/types/", params={"page": page})
                 type_ids.extend(self._require_integer_list(page_response.json(), "type ids"))
 
             items: list[ItemSeed] = []
@@ -122,8 +244,7 @@ class EsiClient:
             with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as managed_client:
                 return self.fetch_universe_item(type_id, client=managed_client)
 
-        response = client.get(f"/universe/types/{type_id}/")
-        response.raise_for_status()
+        response = self._request_with_rate_limit(client, "GET", f"/universe/types/{type_id}/")
         payload = self._require_mapping(response.json(), "type detail")
         return ItemSeed(
             type_id=type_id,
@@ -138,8 +259,7 @@ class EsiClient:
             with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as managed_client:
                 return self.fetch_station(station_id, client=managed_client)
 
-        response = client.get(f"/universe/stations/{station_id}/")
-        response.raise_for_status()
+        response = self._request_with_rate_limit(client, "GET", f"/universe/stations/{station_id}/")
         payload = self._require_mapping(response.json(), "station detail")
         return StationSeed(
             station_id=station_id,
@@ -150,16 +270,15 @@ class EsiClient:
 
     def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]:
         with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
-            first_response = client.get(f"/markets/{region_id}/orders/", params={"order_type": "all", "page": 1})
-            first_response.raise_for_status()
+            first_response = self._request_with_rate_limit(
+                client, "GET", f"/markets/{region_id}/orders/", params={"order_type": "all", "page": 1}
+            )
             orders = self._parse_regional_orders_payload(first_response.json())
             total_pages = int(first_response.headers.get("X-Pages", "1"))
             for page in range(2, total_pages + 1):
-                page_response = client.get(
-                    f"/markets/{region_id}/orders/",
-                    params={"order_type": "all", "page": page},
+                page_response = self._request_with_rate_limit(
+                    client, "GET", f"/markets/{region_id}/orders/", params={"order_type": "all", "page": page}
                 )
-                page_response.raise_for_status()
                 orders.extend(self._parse_regional_orders_payload(page_response.json()))
             return orders
 

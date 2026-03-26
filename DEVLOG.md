@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T15`
+- title: ESI Rate Limiting
+- status: `PASS`
+- summary: added first-class ESI rate limiting to `EsiClient`: tracks `X-ESI-Error-Limit-Remain`/Reset headers on every response, backs off when remain drops below 20, supports ETag/If-None-Match caching, implements exponential backoff on 5xx and 420 responses with configurable retries. Rate limit state is shared across all client instances and exposes a `to_dict()` for the sync status card. All existing ESI fetch methods now route through `_request_with_rate_limit()`.
+
+## 2026-03-26
+
 - task id: `T14`
 - title: Wire Live Order Book Into Item Detail Panel
 - status: `PASS`

@@ -18,14 +18,13 @@ class FakeResponse:
         status_code: int = 200,
     ) -> None:
         self.payload = payload
-        self.headers = dict(headers or {})
+        self.headers = httpx.Headers(dict(headers or {}))
         self.status_code = status_code
+        self.request = httpx.Request("GET", "https://esi.evetech.net/latest/test")
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            request = httpx.Request("GET", "https://esi.evetech.net/latest/test")
-            response = httpx.Response(self.status_code, request=request)
-            raise httpx.HTTPStatusError("request failed", request=request, response=response)
+            raise httpx.HTTPStatusError("request failed", request=self.request, response=self)  # type: ignore[arg-type]
         return None
 
     def json(self) -> object:
@@ -53,6 +52,18 @@ class FakeHttpxClient:
         normalized_params = dict(params or {})
         self.calls.append((path, normalized_params))
         key = (path, tuple(sorted(normalized_params.items())))
+        return self.responses[key]
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, int | str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> FakeResponse:
+        normalized_params = dict(params or {})
+        self.calls.append((url, normalized_params))
+        key = (url, tuple(sorted(normalized_params.items())))
         return self.responses[key]
 
 
@@ -211,3 +222,52 @@ def test_esi_client_rejects_malformed_payloads(
             client.fetch_universe_regions()
         else:
             client.fetch_regional_orders(10000002)
+
+
+def test_rate_limit_state_tracks_headers() -> None:
+    from app.services.esi.client import EsiRateLimitState
+
+    state = EsiRateLimitState()
+    assert state.error_limit_remain == 100
+    assert state.total_requests == 0
+
+    state.update_from_headers(httpx.Headers({"X-ESI-Error-Limit-Remain": "42", "X-ESI-Error-Limit-Reset": "30"}))
+    assert state.error_limit_remain == 42
+    assert state.error_limit_reset == 30
+    assert state.total_requests == 1
+    assert not state.should_backoff()
+
+    state.update_from_headers(httpx.Headers({"X-ESI-Error-Limit-Remain": "10", "X-ESI-Error-Limit-Reset": "55"}))
+    assert state.error_limit_remain == 10
+    assert state.should_backoff()
+    assert state.backoff_seconds() == 55.0
+    assert state.total_requests == 2
+
+
+def test_esi_client_updates_rate_limit_state_on_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeHttpxClient.instances.clear()
+    FakeHttpxClient.responses = {
+        ("/universe/regions/", ()): FakeResponse(
+            [10000002],
+            headers={"X-ESI-Error-Limit-Remain": "80", "X-ESI-Error-Limit-Reset": "45"},
+        ),
+        ("/universe/regions/10000002/", ()): FakeResponse(
+            {"name": "The Forge"},
+            headers={"X-ESI-Error-Limit-Remain": "79", "X-ESI-Error-Limit-Reset": "44"},
+        ),
+    }
+    monkeypatch.setattr(esi_client_module.httpx, "Client", FakeHttpxClient)
+
+    # Reset shared state
+    EsiClient.rate_limit_state = esi_client_module.EsiRateLimitState()
+    client = EsiClient()
+    client.fetch_universe_regions()
+
+    state = EsiClient.get_rate_limit_state()
+    assert state.total_requests == 2
+    assert state.error_limit_remain == 79
+    assert state.error_limit_reset == 44
+
+    state_dict = state.to_dict()
+    assert state_dict["total_requests"] == 2
+    assert state_dict["error_limit_remain"] == 79
