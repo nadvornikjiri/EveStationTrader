@@ -234,25 +234,69 @@ class EsiClient:
                 page_response = self._request_with_rate_limit(client, "GET", "/universe/types/", params={"page": page})
                 type_ids.extend(self._require_integer_list(page_response.json(), "type ids"))
 
+            group_cache: dict[int, tuple[str, str | None]] = {}
             items: list[ItemSeed] = []
             for type_id in type_ids:
-                items.append(self.fetch_universe_item(type_id, client=client))
+                items.append(self.fetch_universe_item(type_id, client=client, group_cache=group_cache))
             return items
 
-    def fetch_universe_item(self, type_id: int, *, client: httpx.Client | None = None) -> ItemSeed:
+    def fetch_universe_item(
+        self,
+        type_id: int,
+        *,
+        client: httpx.Client | None = None,
+        group_cache: dict[int, tuple[str, str | None]] | None = None,
+    ) -> ItemSeed:
         if client is None:
             with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as managed_client:
-                return self.fetch_universe_item(type_id, client=managed_client)
+                return self.fetch_universe_item(type_id, client=managed_client, group_cache=group_cache)
 
         response = self._request_with_rate_limit(client, "GET", f"/universe/types/{type_id}/")
         payload = self._require_mapping(response.json(), "type detail")
+        group_id = payload.get("group_id")
+        group_name: str | None = None
+        category_name: str | None = None
+        if isinstance(group_id, int):
+            group_name, category_name = self._resolve_group(client, group_id, group_cache or {})
         return ItemSeed(
             type_id=type_id,
             name=self._require_string(payload, "name"),
             volume_m3=self._require_numeric(payload, "volume"),
-            group_name=str(payload.get("group_id")) if isinstance(payload.get("group_id"), int) else None,
-            category_name=None,
+            group_name=group_name,
+            category_name=category_name,
         )
+
+    def _resolve_group(
+        self,
+        client: httpx.Client,
+        group_id: int,
+        cache: dict[int, tuple[str, str | None]],
+    ) -> tuple[str, str | None]:
+        if group_id in cache:
+            return cache[group_id]
+        try:
+            group_response = self._request_with_rate_limit(client, "GET", f"/universe/groups/{group_id}/")
+            group_payload = self._require_mapping(group_response.json(), "group detail")
+            group_name = self._require_string(group_payload, "name")
+            category_id = group_payload.get("category_id")
+            category_name: str | None = None
+            if isinstance(category_id, int):
+                category_name = self._resolve_category(client, category_id)
+            cache[group_id] = (group_name, category_name)
+            return group_name, category_name
+        except Exception:
+            logger.warning("Failed to resolve group %d, using fallback", group_id)
+            cache[group_id] = (str(group_id), None)
+            return str(group_id), None
+
+    def _resolve_category(self, client: httpx.Client, category_id: int) -> str | None:
+        try:
+            response = self._request_with_rate_limit(client, "GET", f"/universe/categories/{category_id}/")
+            payload = self._require_mapping(response.json(), "category detail")
+            return self._require_string(payload, "name")
+        except Exception:
+            logger.warning("Failed to resolve category %d", category_id)
+            return None
 
     def fetch_station(self, station_id: int, *, client: httpx.Client | None = None) -> StationSeed:
         if client is None:

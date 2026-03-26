@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T26`
+- title: Market Groups Import
+- status: `PASS`
+- summary: ESI client now resolves real group_name and category_name for items instead of storing raw group_id. Added `_resolve_group()` and `_resolve_category()` methods that fetch `/universe/groups/{id}/` and `/universe/categories/{id}/`, with in-memory caching to avoid duplicate requests. Graceful fallback on resolution failure. Test updated to verify "Mineral" group and "Material" category are resolved for Tritanium.
+
+## 2026-03-26
+
 - task id: `T28`
 - title: Initial Sync Job Enqueue on Character Connect
 - status: `PASS`

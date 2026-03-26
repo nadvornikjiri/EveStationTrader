@@ -81,6 +81,8 @@ def test_fetch_universe_data_requests_paginated_types_and_normalizes_seed_rows(
         ("/universe/constellations/20000020/", ()): FakeResponse({"region_id": 10000002}),
         ("/universe/types/", (("page", 1),)): FakeResponse([34], headers={"X-Pages": "1"}),
         ("/universe/types/34/", ()): FakeResponse({"name": "Tritanium", "volume": 0.01, "group_id": 18}),
+        ("/universe/groups/18/", ()): FakeResponse({"name": "Mineral", "category_id": 4}),
+        ("/universe/categories/4/", ()): FakeResponse({"name": "Material"}),
     }
     monkeypatch.setattr(esi_client_module.httpx, "Client", FakeHttpxClient)
 
@@ -103,8 +105,8 @@ def test_fetch_universe_data_requests_paginated_types_and_normalizes_seed_rows(
             type_id=34,
             name="Tritanium",
             volume_m3=0.01,
-            group_name="18",
-            category_name=None,
+            group_name="Mineral",
+            category_name="Material",
         )
     ]
 
