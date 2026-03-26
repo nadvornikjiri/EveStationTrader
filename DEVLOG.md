@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T25`
+- title: Settings Page Polish
+- status: `PASS`
+- summary: expanded the settings page from 4 fields to all 9 spec-required settings plus 4 default filter fields. All numeric inputs now use `type="number"` with proper `min`/`max`/`step` constraints. Added controls for: min confidence for local demand, structure poll interval, snapshot retention days, fallback policy (select), shipping cost per m3. Default filters section uses a fieldset with labeled inputs for min item profit, min order margin %, min ROI, and min demand/day.
+
+## 2026-03-26
+
 - task id: `T22`
 - title: Full Confidence Gating
 - status: `PASS`
