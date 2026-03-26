@@ -4,7 +4,7 @@ from typing import Callable
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas.trade import OpportunityItemDetail, OpportunityItemRow, SourceSummary, TargetLocation
+from app.api.schemas.trade import ItemOrderRow, OpportunityItemDetail, OpportunityItemRow, SourceSummary, TargetLocation
 from app.db.session import SessionLocal
 from app.domain.enums import LocationType
 from app.repositories.seed_data import CURATED_STATIONS
@@ -267,6 +267,13 @@ class TradeRepository:
                 raise LookupError(
                     "Opportunity item detail was requested before derived opportunity rows were available."
                 )
+            resolved_type_id = session.scalar(
+                select(Item.id).where(Item.type_id == type_id)
+            )
+            if resolved_type_id is None:
+                raise LookupError(
+                    "Opportunity item detail was requested before derived opportunity rows were available."
+                )
             has_row = session.scalar(
                 select(OpportunityItem.id)
                 .join(Item, Item.id == OpportunityItem.type_id)
@@ -326,17 +333,61 @@ class TradeRepository:
                 demand_source=item.demand_source,
                 confidence_score=item.confidence_score,
             )
+
+            target_sell_orders = self._query_orders(
+                session, resolved_target_location_id, resolved_type_id, is_buy=False
+            )
+            source_sell_orders = self._query_orders(
+                session, resolved_source_location_id, resolved_type_id, is_buy=False
+            )
+            source_buy_orders = self._query_orders(
+                session, resolved_source_location_id, resolved_type_id, is_buy=True
+            )
         finally:
             session.close()
 
         return OpportunityItemDetail(
             type_id=type_id,
             item_name=metrics.item_name,
-            target_market_sell_orders=[],
-            source_market_sell_orders=[],
-            source_market_buy_orders=[],
+            target_market_sell_orders=target_sell_orders,
+            source_market_sell_orders=source_sell_orders,
+            source_market_buy_orders=source_buy_orders,
             metrics=metrics,
         )
+
+    @staticmethod
+    def _query_orders(
+        session: Session, location_id: int, type_id: int, *, is_buy: bool
+    ) -> list[ItemOrderRow]:
+        from app.models.all_models import EsiMarketOrder
+
+        order_by = EsiMarketOrder.price.asc() if not is_buy else EsiMarketOrder.price.desc()
+        rows = session.execute(
+            select(
+                EsiMarketOrder.price,
+                EsiMarketOrder.volume_remain,
+            )
+            .where(
+                EsiMarketOrder.location_id == location_id,
+                EsiMarketOrder.type_id == type_id,
+                EsiMarketOrder.is_buy_order.is_(is_buy),
+            )
+            .order_by(order_by)
+        ).all()
+
+        result: list[ItemOrderRow] = []
+        cumulative = 0
+        for price, volume in rows:
+            cumulative += volume
+            result.append(
+                ItemOrderRow(
+                    price=price,
+                    volume=volume,
+                    order_value=price * volume,
+                    cumulative_volume=cumulative if not is_buy else None,
+                )
+            )
+        return result
 
     @staticmethod
     def _resolve_location_id(session: Session, location_reference: int) -> int | None:

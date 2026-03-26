@@ -339,9 +339,146 @@ def test_get_item_detail_reads_requested_computed_row() -> None:
     assert detail.metrics.type_id == pyerite.type_id
     assert detail.metrics.item_name == "Pyerite"
     assert detail.metrics.source_station_sell_price == 88.0
+    # No EsiMarketOrder rows seeded, so order lists should be empty
     assert detail.target_market_sell_orders == []
     assert detail.source_market_sell_orders == []
     assert detail.source_market_buy_orders == []
+
+
+def test_get_item_detail_returns_live_order_book() -> None:
+    """When EsiMarketOrder rows exist, detail panel returns real order book data."""
+    session = build_session()
+    target_location_id, source_location_id, _item_id = seed_trade_entities(session)
+    now = datetime(2026, 3, 20, tzinfo=UTC)
+    region = session.scalar(select(Region).where(Region.region_id == 10000002))
+    assert region is not None
+
+    pyerite = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(pyerite)
+    session.flush()
+
+    session.add(
+        OpportunityItem(
+            target_location_id=target_location_id,
+            source_location_id=source_location_id,
+            type_id=pyerite.id,
+            period_days=14,
+            purchase_units=7.0,
+            source_units_available=15.0,
+            target_demand_day=9.0,
+            target_supply_units=18.0,
+            target_dos=2.0,
+            in_transit_units=0.0,
+            assets_units=0.0,
+            active_sell_orders_units=0.0,
+            source_station_sell_price=88.0,
+            target_station_sell_price=120.0,
+            target_period_avg_price=125.0,
+            target_now_profit=24.08,
+            target_period_profit=28.75,
+            capital_required=792.0,
+            roi_now=0.27,
+            roi_period=0.33,
+            source_security_status=1.0,
+            item_volume_m3=0.01,
+            shipping_cost=0.0,
+            demand_source="adam4eve",
+            confidence_score=1.0,
+            computed_at=now,
+        )
+    )
+
+    # Target sell orders
+    session.add_all(
+        [
+            EsiMarketOrder(
+                order_id=5001,
+                region_id=region.id,
+                location_id=target_location_id,
+                type_id=pyerite.id,
+                system_id=1,
+                is_buy_order=False,
+                price=120.0,
+                volume_total=50,
+                volume_remain=50,
+                min_volume=1,
+                order_range="station",
+                issued=now,
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=5002,
+                region_id=region.id,
+                location_id=target_location_id,
+                type_id=pyerite.id,
+                system_id=1,
+                is_buy_order=False,
+                price=125.0,
+                volume_total=30,
+                volume_remain=30,
+                min_volume=1,
+                order_range="station",
+                issued=now,
+                duration=90,
+            ),
+            # Source sell order
+            EsiMarketOrder(
+                order_id=5003,
+                region_id=region.id,
+                location_id=source_location_id,
+                type_id=pyerite.id,
+                system_id=2,
+                is_buy_order=False,
+                price=88.0,
+                volume_total=100,
+                volume_remain=100,
+                min_volume=1,
+                order_range="station",
+                issued=now,
+                duration=90,
+            ),
+            # Source buy order
+            EsiMarketOrder(
+                order_id=5004,
+                region_id=region.id,
+                location_id=source_location_id,
+                type_id=pyerite.id,
+                system_id=2,
+                is_buy_order=True,
+                price=80.0,
+                volume_total=200,
+                volume_remain=200,
+                min_volume=1,
+                order_range="station",
+                issued=now,
+                duration=90,
+            ),
+        ]
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+    detail = repo.get_item_detail(target_location_id, source_location_id, pyerite.type_id, 14)
+
+    # Target sell orders sorted ascending by price
+    assert len(detail.target_market_sell_orders) == 2
+    assert detail.target_market_sell_orders[0].price == 120.0
+    assert detail.target_market_sell_orders[0].volume == 50
+    assert detail.target_market_sell_orders[0].order_value == 6000.0
+    assert detail.target_market_sell_orders[0].cumulative_volume == 50
+    assert detail.target_market_sell_orders[1].price == 125.0
+    assert detail.target_market_sell_orders[1].cumulative_volume == 80
+
+    # Source sell orders
+    assert len(detail.source_market_sell_orders) == 1
+    assert detail.source_market_sell_orders[0].price == 88.0
+    assert detail.source_market_sell_orders[0].volume == 100
+
+    # Source buy orders (no cumulative_volume)
+    assert len(detail.source_market_buy_orders) == 1
+    assert detail.source_market_buy_orders[0].price == 80.0
+    assert detail.source_market_buy_orders[0].volume == 200
+    assert detail.source_market_buy_orders[0].cumulative_volume is None
 
 
 def test_get_item_detail_raises_when_requested_row_is_missing() -> None:

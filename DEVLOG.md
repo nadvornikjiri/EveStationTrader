@@ -1,5 +1,12 @@
 ## 2026-03-26
 
+- task id: `T14`
+- title: Wire Live Order Book Into Item Detail Panel
+- status: `PASS`
+- summary: replaced empty placeholder order lists in `get_item_detail()` with real queries against `esi_market_orders`. Target sell orders sorted ascending by price with cumulative volume, source sell orders ascending, source buy orders descending. Added `_query_orders` helper to TradeRepository. New test covers full order book population.
+
+## 2026-03-26
+
 - task id: `T13`
 - title: Wire Live Order Data Into Opportunity Generation
 - status: `PASS`
