@@ -156,10 +156,11 @@ class StubAdamHistoryClient:
         *,
         export_path: str | None = None,
         synced_through_by_region: dict[int, date] | None = None,
+        session=None,
     ) -> list[AdamNpcDemandRecord]:
         del export_path
         del synced_through_by_region
-        del location_ids, type_ids
+        del location_ids, type_ids, session
         return []
 
     def fetch_regional_price_history(
@@ -168,9 +169,11 @@ class StubAdamHistoryClient:
         type_ids: list[int],
         *,
         since_date: date | None = None,
+        session=None,
     ) -> list[EsiRegionalHistoryRecord]:
         del region_id
         del since_date
+        del session
         return [
             {
                 "type_id": type_ids[0],

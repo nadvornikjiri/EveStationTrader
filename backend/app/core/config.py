@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://eve_trader:eve_trader@localhost:5432/eve_trader"
     redis_url: str = "redis://localhost:6379/0"
     frontend_url: str = "http://localhost:5173"
+    bulk_import_cache_dir: str = ".cache/imports"
     esi_client_id: str = "change-me"
     esi_client_secret: str = "change-me"
     esi_callback_url: str = "http://localhost:8000/api/auth/callback"

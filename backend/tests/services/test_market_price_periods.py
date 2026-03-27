@@ -217,3 +217,45 @@ def test_refresh_region_from_history_computes_once_and_writes_all_locations() ->
     assert all(row.period_avg_price == 100.0 for row in rows)
     assert all(row.price_min == 80.0 for row in rows)
     assert all(row.price_max == 130.0 for row in rows)
+
+
+def test_refresh_region_periods_from_history_writes_multiple_periods_in_one_pass() -> None:
+    session = build_session()
+    first_location_id, item_id, region_id = seed_location_and_item(session)
+    second_location_id = seed_second_location(session, region_id=region_id)
+    add_history(
+        session,
+        region_id=region_id,
+        type_id=item_id,
+        rows=[
+            ("2026-03-20", 100.0, 120.0, 90.0),
+            ("2026-03-19", 110.0, 130.0, 95.0),
+            ("2026-03-18", 90.0, 105.0, 80.0),
+            ("2026-03-17", 80.0, 90.0, 70.0),
+        ],
+    )
+
+    refreshed_count = MarketPricePeriodService().refresh_region_periods_from_history(
+        session,
+        region_id=region_id,
+        location_ids=[first_location_id, second_location_id],
+        type_ids=[item_id],
+        period_days_list=[3, 7, 14, 30],
+    )
+    rows = list(
+        session.scalars(
+            select(MarketPricePeriod).order_by(
+                MarketPricePeriod.period_days.asc(),
+                MarketPricePeriod.location_id.asc(),
+            )
+        ).all()
+    )
+
+    assert refreshed_count == 8
+    assert len(rows) == 8
+    three_day_rows = [row for row in rows if row.period_days == 3]
+    assert all(row.current_price == 100.0 for row in three_day_rows)
+    assert all(row.period_avg_price == 100.0 for row in three_day_rows)
+    seven_day_rows = [row for row in rows if row.period_days == 7]
+    assert all(row.current_price == 100.0 for row in seven_day_rows)
+    assert all(row.period_avg_price == 95.0 for row in seven_day_rows)

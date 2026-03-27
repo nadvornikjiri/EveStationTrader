@@ -151,9 +151,11 @@ class StubAdamClient:
         *,
         export_path: str | None = None,
         synced_through_by_region: dict[int, date] | None = None,
+        session=None,
     ) -> list[AdamNpcDemandRecord]:
         del export_path
         del synced_through_by_region
+        del session
         return [
             {
                 "location_id": location_ids[0],
@@ -177,8 +179,9 @@ class StubAdamClient:
         type_ids: list[int],
         *,
         since_date: date | None = None,
+        session=None,
     ) -> list[EsiRegionalHistoryRecord]:
-        del region_id, type_ids, since_date
+        del region_id, type_ids, since_date, session
         return []
 
 

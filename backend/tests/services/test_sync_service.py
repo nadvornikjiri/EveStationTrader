@@ -12,6 +12,7 @@ from app.models.all_models import (
     AdamNpcDemandDaily,
     Item,
     AdamNpcDemandSyncState,
+    BulkImportCursor,
     EsiMarketOrder,
     Location,
     MarketDemandResolved,
@@ -250,8 +251,9 @@ class StubAdamClient:
         *,
         export_path: str | None = None,
         synced_through_by_region: dict[int, date] | None = None,
+        session=None,
     ) -> list[AdamNpcDemandRecord]:
-        del synced_through_by_region
+        del synced_through_by_region, session
         self.demand_calls.append((list(location_ids), list(type_ids), export_path))
         return [
             row
@@ -265,7 +267,9 @@ class StubAdamClient:
         type_ids: list[int],
         *,
         since_date=None,
+        session=None,
     ) -> list[EsiRegionalHistoryRecord]:
+        del session
         normalized_since = since_date.isoformat() if since_date is not None else None
         self.history_calls.append((region_id, list(type_ids), normalized_since))
         return [
@@ -1168,6 +1172,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
     assert adam_result.status == "success"
     assert any(row.location_id > 0 and row.type_id > 0 for row in demand_rows)
     assert any(row.location_id > 0 and row.type_id > 0 for row in price_rows)
+    assert {row.period_days for row in price_rows} == {3, 7, 14, 30}
     assert opportunity_item is not None
     assert opportunity_summary is not None
 
@@ -1222,6 +1227,44 @@ def test_adam4eve_sync_skips_demand_download_when_latest_export_is_already_synce
     assert demand_rows == []
 
 
+def test_adam4eve_sync_skips_demand_download_when_generic_cursor_is_complete() -> None:
+    session = build_session()
+    region_id, target_location_id, source_location_id, type_id = seed_raw_trade_inputs(session)
+    del region_id, source_location_id
+    session.add(
+        BulkImportCursor(
+            import_kind="adam4eve_npc_demand",
+            scope_key="region:1",
+            synced_through_date=date(2026, 3, 22),
+            last_completed_key="2026-12",
+            last_checked_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+
+    adam_client = StubAdamClient(
+        [
+            {
+                "location_id": target_location_id,
+                "type_id": type_id,
+                "demand_day": 12.0,
+                "date": "2026-03-20",
+                "source": "adam4eve",
+            }
+        ],
+        history_rows_by_region={10000002: []},
+    )
+    service = SyncService(
+        session_factory=lambda: session,
+        adam_client=adam_client,
+    )
+
+    result = service.trigger_job("adam4eve_sync")
+
+    assert result.status == "success"
+    assert adam_client.demand_calls == []
+
+
 def test_adam4eve_sync_passes_external_region_ids_for_demand_watermarks() -> None:
     session = build_session()
     region_id, target_location_id, _source_location_id, type_id = seed_raw_trade_inputs(session)
@@ -1247,8 +1290,9 @@ def test_adam4eve_sync_passes_external_region_ids_for_demand_watermarks() -> Non
             *,
             export_path: str | None = None,
             synced_through_by_region: dict[int, date] | None = None,
+            session=None,
         ) -> list[AdamNpcDemandRecord]:
-            del location_ids, type_ids, export_path
+            del location_ids, type_ids, export_path, session
             captured_watermarks.update(synced_through_by_region or {})
             return []
 

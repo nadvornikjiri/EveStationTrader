@@ -40,6 +40,7 @@ from app.services.pricing.market_price_periods import MarketPricePeriodService
 from app.services.settings_service import SettingsService
 from app.services.structures.demand_periods import StructureDemandPeriodService
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
+from app.services.sync.bulk_imports import BulkImportService
 from app.services.sync.foundation_data import FoundationDataService
 from app.services.sync.foundation_import import CcpSdeClient, FoundationImportService
 
@@ -64,6 +65,7 @@ class AdamDemandCapableClient(Protocol):
         *,
         export_path: str | None = None,
         synced_through_by_region: dict[int, date] | None = None,
+        session: Session | None = None,
     ) -> list[AdamNpcDemandRecord]: ...
 
     def fetch_regional_price_history(
@@ -72,6 +74,7 @@ class AdamDemandCapableClient(Protocol):
         type_ids: list[int],
         *,
         since_date: date | None = None,
+        session: Session | None = None,
     ) -> list[EsiRegionalHistoryRecord]: ...
 
 
@@ -130,6 +133,9 @@ class SyncService:
     )
     WORKER_HEARTBEAT_STALE_MINUTES = 15
     DEBUG_REGION_LIMIT = 1
+    MARKET_PRICE_PERIODS: tuple[int, ...] = (3, 7, 14, 30)
+    IMPORT_KIND_ADAM_DEMAND = "adam4eve_npc_demand"
+    IMPORT_KIND_ESI_HISTORY = "esi_history_daily"
 
     def __init__(
         self,
@@ -146,6 +152,7 @@ class SyncService:
         self.esi_client = esi_client or EsiClient()
         self.foundation_client = foundation_client or CcpSdeClient()
         self.structure_snapshot_client = structure_snapshot_client
+        self.bulk_imports = BulkImportService()
 
     @staticmethod
     def _ensure_utc(timestamp: datetime) -> datetime:
@@ -456,6 +463,7 @@ class SyncService:
                             for region_id, synced_date in synced_through_by_region.items()
                             if region_id in external_region_ids_by_internal_id
                         },
+                        session=session,
                     )
                     demand_result = AdamNpcDemandIngestionService().ingest_npc_demand(
                         session,
@@ -474,7 +482,6 @@ class SyncService:
                     session,
                     job_id=job_id,
                     regions=self._all_regions(session, debug_enabled=debug_enabled),
-                    period_days=analysis_period_days,
                 )
                 derived_count = self._refresh_market_demand_for_locations(
                     session,
@@ -781,7 +788,8 @@ class SyncService:
         *,
         region_id: int,
         type_ids: list[int],
-        period_days: int,
+        period_days: int | None = None,
+        period_days_list: Sequence[int] | None = None,
         cancellation_check: Callable[[], None] | None = None,
     ) -> int:
         if not type_ids:
@@ -794,12 +802,19 @@ class SyncService:
         service = MarketPricePeriodService()
         if cancellation_check is not None:
             cancellation_check()
-        return service.refresh_region_from_history(
+        requested_periods = (
+            sorted(set(period_days_list))
+            if period_days_list is not None
+            else ([period_days] if period_days is not None else [])
+        )
+        if not requested_periods:
+            return 0
+        return service.refresh_region_periods_from_history(
             session,
             region_id=region_id,
             location_ids=list(location_ids),
             type_ids=type_ids,
-            period_days=period_days,
+            period_days_list=requested_periods,
         )
 
     def _refresh_market_demand_for_locations(
@@ -1031,11 +1046,18 @@ class SyncService:
         created_state = False
         for region_id in region_ids:
             state = state_by_region_id.get(region_id)
-            synced_through_date = state.synced_through_date if state is not None else None
+            cursor = self.bulk_imports.get_cursor(
+                session,
+                import_kind=self.IMPORT_KIND_ADAM_DEMAND,
+                scope_key=f"region:{region_id}",
+            )
+            synced_through_date = cursor.synced_through_date if cursor is not None else None
+            if synced_through_date is None and state is not None:
+                synced_through_date = state.synced_through_date
             if synced_through_date is None:
                 synced_through_date = self._max_persisted_adam_demand_date(session, region_id=region_id)
             if self._adam_demand_region_synced_for_export(
-                state=state,
+                last_completed_key=cursor.last_completed_key if cursor is not None else (state.export_key if state is not None else None),
                 latest_export=latest_export,
                 synced_through_date=synced_through_date,
             ):
@@ -1069,7 +1091,14 @@ class SyncService:
         synced_through_by_region: dict[int, date] = {}
         for region_id in region_ids:
             state = state_by_region_id.get(region_id)
-            synced_through_date = state.synced_through_date if state is not None else None
+            cursor = self.bulk_imports.get_cursor(
+                session,
+                import_kind=self.IMPORT_KIND_ADAM_DEMAND,
+                scope_key=f"region:{region_id}",
+            )
+            synced_through_date = cursor.synced_through_date if cursor is not None else None
+            if synced_through_date is None and state is not None:
+                synced_through_date = state.synced_through_date
             if synced_through_date is None:
                 synced_through_date = self._max_persisted_adam_demand_date(session, region_id=region_id)
             if synced_through_date is not None:
@@ -1079,12 +1108,12 @@ class SyncService:
     def _adam_demand_region_synced_for_export(
         self,
         *,
-        state: AdamNpcDemandSyncState | None,
+        last_completed_key: str | None,
         latest_export: AdamMarketOrdersExport,
         synced_through_date: date | None,
     ) -> bool:
-        if state is not None and state.export_key == latest_export.export_key:
-            return True
+        if last_completed_key == latest_export.export_key and synced_through_date is not None:
+            return synced_through_date >= latest_export.covered_through_date
 
         if synced_through_date is None:
             return False
@@ -1130,6 +1159,14 @@ class SyncService:
             state.export_key = export.export_key
             state.last_checked_at = datetime.now(UTC)
 
+            self.bulk_imports.mark_cursor(
+                session,
+                import_kind=self.IMPORT_KIND_ADAM_DEMAND,
+                scope_key=f"region:{region_id}",
+                synced_through_date=state.synced_through_date,
+                last_completed_key=export.export_key,
+            )
+
         session.commit()
 
     def _max_persisted_adam_demand_date(self, session: Session, *, region_id: int) -> date | None:
@@ -1155,10 +1192,25 @@ class SyncService:
         return [
             region
             for region in regions
-            if not self._history_region_checked_today(state_by_region_id.get(region.id), today_utc=today_utc)
+            if not self._history_region_checked_today(
+                state_by_region_id.get(region.id),
+                cursor=self.bulk_imports.get_cursor(
+                    session,
+                    import_kind=self.IMPORT_KIND_ESI_HISTORY,
+                    scope_key=f"region:{region.id}",
+                ),
+                today_utc=today_utc,
+            )
         ]
 
     def _history_sync_since_date(self, session: Session, region_id: int) -> date | None:
+        cursor = self.bulk_imports.get_cursor(
+            session,
+            import_kind=self.IMPORT_KIND_ESI_HISTORY,
+            scope_key=f"region:{region_id}",
+        )
+        if cursor is not None and cursor.synced_through_date is not None:
+            return cursor.synced_through_date
         state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
         if state is not None and state.synced_through_date is not None:
             return state.synced_through_date
@@ -1168,8 +1220,11 @@ class SyncService:
         self,
         state: EsiHistorySyncState | None,
         *,
+        cursor,
         today_utc: date,
     ) -> bool:
+        if cursor is not None and cursor.last_checked_at is not None:
+            return self._ensure_utc(cursor.last_checked_at).date() >= today_utc
         if state is None or state.last_checked_at is None:
             return False
         return self._ensure_utc(state.last_checked_at).date() >= today_utc
@@ -1194,6 +1249,12 @@ class SyncService:
                 else synced_through_date
             )
         state.last_checked_at = datetime.now(UTC)
+        self.bulk_imports.mark_cursor(
+            session,
+            import_kind=self.IMPORT_KIND_ESI_HISTORY,
+            scope_key=f"region:{region_id}",
+            synced_through_date=state.synced_through_date,
+        )
         session.commit()
 
     def _max_persisted_history_date(self, session: Session, *, region_id: int) -> date | None:
@@ -1219,7 +1280,6 @@ class SyncService:
         *,
         job_id: int,
         regions: list[Region],
-        period_days: int,
     ) -> tuple[int, int, int, int]:
         items_by_region_id = {
             region.id: self._history_sync_items(session, region_ids=[region.id])
@@ -1255,6 +1315,7 @@ class SyncService:
                 region.region_id,
                 [item.type_id for item in region_items],
                 since_date=since_date,
+                session=session,
             )
             history_result = EsiRegionalHistoryIngestionService().ingest_region_history(
                 session,
@@ -1268,7 +1329,7 @@ class SyncService:
                 session,
                 region_id=region.id,
                 type_ids=[item.id for item in region_items],
-                period_days=period_days,
+                period_days_list=self.MARKET_PRICE_PERIODS,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
             self._record_history_region_check(

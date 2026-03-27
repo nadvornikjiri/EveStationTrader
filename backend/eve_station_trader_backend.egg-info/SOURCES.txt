@@ -5,6 +5,7 @@ app/api/deps/auth.py
 app/api/routes/__init__.py
 app/api/routes/auth.py
 app/api/routes/characters.py
+app/api/routes/database.py
 app/api/routes/opportunities.py
 app/api/routes/settings.py
 app/api/routes/sync.py
@@ -12,6 +13,7 @@ app/api/routes/targets.py
 app/api/schemas/auth.py
 app/api/schemas/characters.py
 app/api/schemas/common.py
+app/api/schemas/database.py
 app/api/schemas/settings.py
 app/api/schemas/sync.py
 app/api/schemas/trade.py
@@ -28,6 +30,7 @@ app/models/__init__.py
 app/models/all_models.py
 app/repositories/seed_data.py
 app/repositories/trade_repository.py
+app/services/postgres_copy.py
 app/services/settings_service.py
 app/services/adam4eve/client.py
 app/services/adam4eve/ingestion.py
@@ -37,13 +40,16 @@ app/services/demand/market_demand.py
 app/services/demand/resolver.py
 app/services/esi/client.py
 app/services/esi/history_ingestion.py
+app/services/esi/orders_ingestion.py
 app/services/opportunities/aggregator.py
 app/services/opportunities/generation.py
 app/services/pricing/market_price_periods.py
 app/services/structures/demand_periods.py
 app/services/structures/inference.py
 app/services/structures/snapshots.py
+app/services/sync/bulk_imports.py
 app/services/sync/foundation_data.py
+app/services/sync/foundation_import.py
 app/services/sync/service.py
 app/workers/scheduler/runner.py
 app/workers/tasks/sync_tasks.py
@@ -52,3 +58,4 @@ eve_station_trader_backend.egg-info/SOURCES.txt
 eve_station_trader_backend.egg-info/dependency_links.txt
 eve_station_trader_backend.egg-info/requires.txt
 eve_station_trader_backend.egg-info/top_level.txt
+tests/test_backend_entrypoint.py

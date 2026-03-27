@@ -6,10 +6,12 @@ from datetime import date
 from io import StringIO
 
 import httpx
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.services.adam4eve.ingestion import AdamNpcDemandRecord
 from app.services.esi.history_ingestion import EsiRegionalHistoryRecord
+from app.services.sync.bulk_imports import BulkImportService
 
 
 ADAM4EVE_STATIC_BASE_URL = "https://static.adam4eve.eu"
@@ -28,8 +30,9 @@ class AdamMarketOrdersExport:
 
 
 class Adam4EveClient:
-    def __init__(self) -> None:
+    def __init__(self, *, import_service: BulkImportService | None = None) -> None:
         self.settings = get_settings()
+        self.import_service = import_service or BulkImportService()
 
     def get_headers(self) -> dict[str, str]:
         return {"User-Agent": self.settings.a4e_user_agent}
@@ -45,6 +48,7 @@ class Adam4EveClient:
         *,
         export_path: str | None = None,
         synced_through_by_region: Mapping[int, date] | None = None,
+        session: Session | None = None,
     ) -> list[AdamNpcDemandRecord]:
         requested_locations = tuple(dict.fromkeys(location_ids))
         requested_types = tuple(dict.fromkeys(type_ids))
@@ -53,10 +57,15 @@ class Adam4EveClient:
 
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
             resolved_export_path = export_path or self._resolve_latest_market_orders_export(client).path
-            response = client.get(resolved_export_path)
-            response.raise_for_status()
+            cached_file = self.import_service.cache_http_file(
+                session,
+                import_kind="adam4eve_npc_demand",
+                file_key=resolved_export_path,
+                remote_path=resolved_export_path,
+                client=client,
+            )
             return self._parse_market_orders_csv(
-                response.text,
+                cached_file.path.read_text(encoding="utf-8"),
                 requested_locations=set(requested_locations),
                 requested_types=set(requested_types),
                 synced_through_by_region=synced_through_by_region or {},
@@ -68,6 +77,7 @@ class Adam4EveClient:
         type_ids: Iterable[int],
         *,
         since_date: date | None = None,
+        session: Session | None = None,
     ) -> list[EsiRegionalHistoryRecord]:
         requested_type_ids = set(type_ids)
         if not requested_type_ids:
@@ -77,11 +87,18 @@ class Adam4EveClient:
             export_paths = self._resolve_region_price_history_exports(client, region_id=region_id, since_date=since_date)
             history: list[EsiRegionalHistoryRecord] = []
             for export_path in export_paths:
-                response = client.get(export_path)
-                response.raise_for_status()
+                export_date = self._extract_region_price_export_date(export_path)
+                cached_file = self.import_service.cache_http_file(
+                    session,
+                    import_kind="esi_history_daily",
+                    file_key=export_path,
+                    remote_path=export_path,
+                    client=client,
+                    covered_date=export_date,
+                )
                 history.extend(
                     self._parse_region_price_history_csv(
-                        response.text,
+                        cached_file.path.read_text(encoding="utf-8"),
                         region_id=region_id,
                         requested_types=requested_type_ids,
                     )
@@ -162,6 +179,14 @@ class Adam4EveClient:
                 export_paths.append((export_date, f"{_MARKET_PRICES_REGION_HISTORY_ROOT_PATH}{year}/{href}"))
 
         return [path for _, path in sorted(export_paths)]
+
+    @staticmethod
+    def _extract_region_price_export_date(export_path: str) -> date | None:
+        export_name = export_path.rsplit("/", 1)[-1]
+        match = _DAILY_REGION_PRICE_EXPORT_RE.fullmatch(export_name)
+        if match is None:
+            return None
+        return date.fromisoformat(match.group(2))
 
     def _parse_market_orders_csv(
         self,

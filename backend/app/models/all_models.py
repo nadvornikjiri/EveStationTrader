@@ -220,6 +220,32 @@ class AdamNpcDemandSyncState(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class BulkImportCursor(Base):
+    __tablename__ = "bulk_import_cursors"
+    __table_args__ = (UniqueConstraint("import_kind", "scope_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_kind: Mapped[str] = mapped_column(String(64), index=True)
+    scope_key: Mapped[str] = mapped_column(String(128))
+    synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class BulkImportFile(Base):
+    __tablename__ = "bulk_import_files"
+    __table_args__ = (UniqueConstraint("import_kind", "file_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_kind: Mapped[str] = mapped_column(String(64), index=True)
+    file_key: Mapped[str] = mapped_column(String(256))
+    remote_path: Mapped[str] = mapped_column(Text)
+    local_path: Mapped[str] = mapped_column(Text)
+    covered_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    downloaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class StructureSnapshot(Base):
     __tablename__ = "structure_snapshots"
 

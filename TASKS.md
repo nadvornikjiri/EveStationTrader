@@ -1299,7 +1299,7 @@ Priority rationale:
 
 ### T12A - Bulk Rebuild Market Price Periods
 
-- Status: `TODO`
+- Status: `PARTIAL`
 - Objective: replace the per-location, per-item, per-period market price refresh loop with a set-based rebuild that uses regional ESI history once and writes `market_price_period` rows in bulk.
 - Dependencies:
   - existing Postgres-backed `esi_history_daily`
@@ -1324,10 +1324,12 @@ Priority rationale:
   - assert bulk output matches the existing single-row service semantics on a fixed seeded dataset
   - include a timing-oriented benchmark script or reproducible measurement notes in the devlog
 - Implementation mapping:
-  - compute period aggregates once per `(region, type, period_days)` and fan them out to the region's locations
-  - bulk replace affected `market_price_period` rows instead of issuing thousands of per-row commits
+  - `MarketPricePeriodService.refresh_region_periods_from_history()` now computes `3/7/14/30` day stats from one regional history read and bulk fans the results out to all region locations in one pass
+  - `SyncService` now rebuilds market-price periods through that bulk multi-period path instead of repeatedly refreshing one period scope at a time
+  - the sync layer now persists generic `bulk_import_cursors` and `bulk_import_files` records so dated Adam/ESI-style bulk files can be cached forever and skipped on reruns when already downloaded
 - Mismatches:
-  - current implementation still recomputes identical regional history per location and commits one row at a time
+  - full repo `pytest` could not be completed on this machine because the local `psycopg-binary` DLL is blocked by application-control policy and the pure-Python fallback lacks `libpq`
+  - no benchmark evidence has been recorded yet, so the task is not ready to mark `DONE`
 
 ### T12B - Fix Adam4EVE Demand Completion Semantics And Bulk Demand Refresh
 
