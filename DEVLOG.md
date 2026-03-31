@@ -1,3 +1,59 @@
+## 2026-03-27
+
+- task id: `ADAM4EVE-FILE-IMPORT-LOGGING-2026-03-27`
+- title: Log Adam4EVE File Downloads And Cache Hits
+- status: `PASS`
+- summary: added explicit bulk-import logging so Adam4EVE demand/history file activity now emits one log line per file showing whether the import used a cache hit or performed a fresh download, along with the import kind, remote path, local cache path, and coverage date/byte count. SQL query logging remains in place separately through the database logger so the import's file-fetch phase and subsequent DB work are both visible in Docker logs.
+
+## 2026-03-27
+
+- task id: `DOCKER-REQUEST-SQL-LOGGING-2026-03-27`
+- title: Add Backend Request And SQL Logging For Docker
+- status: `PASS`
+- summary: implemented the backlog logging task so backend Docker logs now include one app-level HTTP request line per REST call plus SQL query logging with statement text, parameters, and duration. FastAPI request logging is installed at app startup, SQLAlchemy engine hooks emit query timing logs, and deterministic backend tests verify both logging paths are wired.
+
+## 2026-03-27
+
+- task id: `ADAM4EVE-HISTORY-BLANK-ROWS-2026-03-27`
+- title: Skip Blank Adam4EVE Regional History Price Rows
+- status: `PASS`
+- summary: investigated why `adam4eve_sync` was not populating `market_price_period` and found the regional-history client can hit live CSV rows with blank sell-price fields. The parser now skips those malformed rows instead of aborting the entire history import, which unblocks reruns after ESI market orders have populated the eligible region/type scopes used for Adam4EVE history selection.
+
+## 2026-03-27
+
+- task id: `ESI-ORDER-DELETE-BATCHING-2026-03-27`
+- title: Batch ESI Market Order Deletes For Full-Region Syncs
+- status: `PASS`
+- summary: fixed the `esi_market_orders_sync` full-region failure where PostgreSQL rejected a giant `order_id IN (...)` delete with more than 65,535 bound parameters. The ingestion path now deletes seen/stale order IDs in bounded batches and still clears the region snapshot before re-copying the downloaded rows, preserving rerun semantics without building oversized delete statements.
+
+## 2026-03-27
+
+- task id: `ADAM4EVE-DATABASE-VISIBILITY-2026-03-27`
+- title: Clarify Adam4EVE Location Coverage In Database Browser
+- status: `PASS`
+- summary: verified the live `adam_npc_demand_daily` table contains many stations, not a single location, and updated the database diagnostics endpoint to enrich Adam4EVE demand rows with resolved station and item metadata. The database page now shows internal FK values alongside EVE station IDs, location names, region/system names, and item names so imported coverage is immediately visible and no longer looks like a one-location sync.
+
+## 2026-03-27
+
+- task id: `SYNC-CLEAR-ACTIONS-2026-03-27`
+- title: Add Clear Data Actions To Sync Dashboard
+- status: `PASS`
+- summary: added a first-row set of clear-data actions above the manual sync buttons on the sync dashboard, with backend `/api/sync/clear/{job_type}` support for each sync family. The clear actions now remove the relevant persisted tables for foundation/SDE, Adam4EVE, NPC orders, structure snapshots, character sync outputs, and opportunities, and the UI surfaces pending/error feedback for those clear requests the same way it does for run/cancel actions.
+
+## 2026-03-27
+
+- task id: `ADAM4EVE-EXPORT-COVERAGE-2026-03-27`
+- title: Use Actual Adam4EVE Export Coverage Dates
+- status: `PASS`
+- summary: fixed Adam4EVE weekly export completion tracking to use the latest `scanDate` present in the CSV instead of assuming the ISO week always covers through Sunday. This resolves the live `2026-13` case where the file only contains data through 2026-03-26 even though week 13 nominally ends on 2026-03-29, which had been leaving regions falsely marked incomplete and repeatedly rechecked with zero new rows.
+
+## 2026-03-27
+
+- task id: `ADAM4EVE-SYNC-REGRESSION-2026-03-27`
+- title: Limit Adam4EVE Demand Refresh To Imported Keys
+- status: `PASS`
+- summary: fixed the Adam4EVE post-download stall by stopping `adam4eve_sync` from brute-forcing demand resolution across every NPC station and item after each import. The sync now refreshes only the `(location_id, type_id, period_days)` keys touched by imported Adam rows, while keeping the cached-file vs successful-import cursor split intact so already imported dates/exports are skipped only after successful ingestion. Added regression coverage for targeted demand refresh and updated the Adam4EVE client/cache path so session-backed syncs still use persisted bulk-file caching while direct client tests stay isolated.
+
 ## 2026-03-26
 
 - task id: `T26`
@@ -1766,3 +1822,679 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `& '.\backend\.venv\Scripts\python.exe' -m pytest backend`
   - `& '.\backend\.venv\Scripts\python.exe' -m mypy backend`
   - `& '.\backend\.venv\Scripts\python.exe' -m ruff check backend --fix`
+- task id: `DOCKER-LIVE-REQUEST-SQL-STDOUT-2026-03-27`
+- title: Make Backend Docker Logs Show Live Requests And SQL
+- status: `PASS`
+- spec refs: user-requested Docker Desktop backend observability
+- acceptance criteria covered:
+  - backend container logs show one line per live HTTP request while using the Dockerized dev stack
+  - backend container logs show SQL emitted by API-triggered database activity, not only startup probes
+  - logging configuration preserves Uvicorn access logger visibility after app logging setup runs
+- files changed:
+  - `docker-compose.yml`
+  - `backend/app/core/logging.py`
+  - `backend/app/db/session.py`
+  - `backend/tests/test_logging.py`
+- short implementation summary: Explicitly enabled Uvicorn access logging in Docker, restored `uvicorn.access` logger configuration after app logging initialization, and wrote request/SQL lines directly to container stdout so Docker Desktop shows them reliably during live backend activity.
+- important decisions:
+  - favored container-stdout visibility over relying purely on logger propagation, because Docker Desktop was not reliably surfacing normal request traffic from the existing logging stack
+  - kept the structured app loggers in place alongside stdout emission so tests and non-Docker observability paths still work
+- validation:
+  - live Docker verification with `docker compose up -d --build backend`
+  - live request check with `curl.exe -s http://localhost:8000/health`
+  - live DB-backed check with `curl.exe -s http://localhost:8000/api/database/tables`
+  - `docker logs eve-station-trader-dev-backend-1 --since 20s`
+  - `& '.\backend\.venv\Scripts\ruff.exe' check . --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy .`
+  - `& '.\backend\.venv\Scripts\python.exe' -m pytest`
+- task id: `DIRECT-DEMAND-WITHOUT-CONFIDENCE-2026-03-28`
+- title: Remove Demand Confidence Scoring From Resolved Demand
+- status: `PASS`
+- spec refs: user-requested demand simplification for Adam4EVE/static demand and resolved-demand outputs
+- acceptance criteria covered:
+  - resolved demand now treats Adam4EVE demand as a direct value instead of attaching a confidence score
+  - local structure demand now resolves from direct `buy_from_sell` units over the requested period when a structure period exists
+  - trade and fallback API/UI payloads no longer expose demand confidence fields or filters
+  - settings no longer expose the removed local-demand confidence threshold
+- files changed:
+  - `backend/app/models/all_models.py`
+  - `backend/app/services/structures/demand_periods.py`
+  - `backend/app/services/demand/market_demand.py`
+  - `backend/app/services/demand/resolver.py`
+  - `backend/app/api/schemas/trade.py`
+  - `backend/app/api/schemas/sync.py`
+  - `backend/app/api/schemas/settings.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/opportunities/aggregator.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/alembic/versions/20260328_0007_remove_demand_confidence.py`
+  - `frontend/src/api/settings.ts`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/types/sync.ts`
+  - `frontend/src/types/trade.ts`
+  - `frontend/src/components/sync/FallbackDiagnosticsTable.tsx`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - demand/trade/settings test files covering the updated contract
+- short implementation summary: Removed demand confidence columns from resolved-demand and opportunity persistence, changed structure demand periods to count only `buy_from_sell` units per period, resolved local structure demand whenever a period row exists, and removed the corresponding trade filters, diagnostics fields, and settings knob.
+- important decisions:
+  - kept fallback behavior as an explicit `regional_fallback` row when no local structure period exists, instead of using coverage/confidence thresholds
+  - left unrelated character and tracked-structure confidence fields untouched because they describe structure discovery quality rather than market demand
+- validation:
+  - `& '.\backend\.venv\Scripts\ruff.exe' check . --fix`
+  - `& '.\backend\.venv\Scripts\python.exe' -m mypy .`
+  - `npm test`
+  - `npm run build`
+  - backend `pytest` remains blocked in this session because the required Postgres test database on `localhost:5432` was unavailable and `docker compose up -d postgres` failed against the local Docker engine
+
+## RAW-ADAM-STAGING-AND-RESOLVED-METRICS-2026-03-28
+
+- files changed:
+  - `backend/app/models/all_models.py`
+  - `backend/app/models/__init__.py`
+  - `backend/app/services/postgres_copy.py`
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/app/services/adam4eve/ingestion.py`
+  - `backend/app/services/demand/market_demand.py`
+  - `backend/app/services/structures/demand_periods.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/app/api/routes/database.py`
+  - `backend/alembic/versions/20260328_0008_raw_adam_market_orders_staging.py`
+  - backend Adam/demand/sync/database test files updated to the new raw staging contract
+- short implementation summary: Replaced the transformed Adam daily-import table with a raw `adam_market_orders_trade_raw` staging table that matches the Adam4EVE CSV columns and is loaded directly through PostgreSQL `COPY`. Demand resolution now runs as a second step in code and persists explicit buy-from-sell and sell-to-buy totals for the selected period plus the latest-day values in `market_demand_resolved`.
+- important decisions:
+  - kept trade-page daily demand semantics by mapping `target_demand_day` to `market_demand_resolved.buy_from_sell_yesterday`
+  - updated structure-derived demand to emit the same four resolved metrics so NPC and structure targets share one resolved-demand shape
+  - assumed the latest Adam4EVE market-orders export contains the raw history window we need, so each sync refresh replaces the staging table with the newest export before rebuilding resolved rows
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend/app backend/tests --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests -q`
+  - backend `pytest` remains blocked in this session because the required Postgres test database on `localhost:5432` was unavailable
+
+## QUIETER-BACKEND-LOGGING-2026-03-28
+
+- files changed:
+  - `backend/app/core/logging.py`
+  - `backend/app/db/session.py`
+  - `backend/app/services/settings_service.py`
+- short implementation summary: Removed the direct stdout prints from request and SQL logging, kept normal backend request/import/application logs at `INFO` by default, and moved SQL statement logging to `DEBUG` so it only appears when debug mode is enabled.
+- important decisions:
+  - left application/request logs on `INFO` even in normal mode
+  - kept SQL timing/parameter logging instrumentation in place, but emitted it only through the debug logger instead of unconditional prints
+  - aligned runtime settings toggles so `debug_enabled` promotes SQL logging alongside the rest of the backend debug behavior
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend/app backend/tests --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+
+## SDE-ONLY-FOUNDATION-2026-03-28
+
+- files changed:
+  - `backend/app/db/session.py`
+  - `backend/app/repositories/seed_data.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/services/sync/foundation_import.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/conftest.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/services/test_foundation_data.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `frontend/src/components/sync/ManualSyncActions.tsx`
+  - `frontend/src/pages/SyncPage.test.tsx`
+- short implementation summary: Removed the built-in curated foundation seed path so startup and manual sync no longer populate universe data from hardcoded rows. Universe reference data now comes only from the SDE import flow, and trade targets are listed from imported NPC stations instead of a curated station allowlist.
+- important decisions:
+  - stopped auto-bootstrapping foundation rows during backend startup; migrations and settings initialization still run
+  - removed the `foundation_seed_sync` action from backend and frontend rather than keeping a dead alias
+  - kept the generic foundation seed-source interfaces for SDE import plumbing and tests, but removed the curated default source and constants
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend/app backend/tests --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+  - `npm test -- --run`
+  - `npm run build`
+  - `backend\.venv\Scripts\python.exe -m pytest`
+  - backend `pytest` remains blocked in this session because the required Postgres test database on `localhost:5432` was unavailable during collection
+
+## ADAM-STATION-HISTORY-STAGING-2026-03-28
+
+- files changed:
+  - `backend/app/services/adam4eve/client.py`
+  - `backend/app/services/adam4eve/history_ingestion.py`
+  - `backend/app/services/postgres_copy.py`
+  - `backend/app/services/pricing/market_price_periods.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_adam4eve_client.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_esi_history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Switched Adam station history sync to a staging-first SQL import flow. Matching weekly Adam CSVs are now cached, copied whole into SQL staging, filtered and cast inside SQL, and then transformed into the internal Adam history tables. The sync also now tolerates `price_date`, ignores repeated header rows embedded inside Adam files, and caps the rolling history window to 14 days.
+- important decisions:
+  - kept CCP ESI limited to SDE and live order data; historical price input now stays on the Adam4EVE path
+  - filtered weekly station history exports before download/import using export covered dates so the sync no longer walks the full 2022+ backlog on every run
+  - changed market price period region refresh from update-in-place with huge `OR` deletes to scoped delete-and-reinsert so large region refreshes do not hit PostgreSQL parameter limits
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests/services/test_adam4eve_client.py backend/tests/services/test_adam4eve_ingestion.py backend/tests/services/test_esi_history_ingestion.py backend/tests/services/test_market_price_periods.py backend/tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m pytest backend`
+  - full backend `pytest` still has 2 unrelated pre-existing failures in `backend/tests/services/test_structure_demand_periods.py` and `backend/tests/test_logging.py`
+  - live benchmark of `SyncService().trigger_job("adam4eve_sync")`: success in about `120.9s` with `118741` history rows created and `28712` price periods computed
+
+## ADAM-DEMAND-BULK-REFRESH-2026-03-29
+
+- files changed:
+  - `backend/app/services/demand/market_demand.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_market_demand.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Replaced the per-key Adam NPC demand refresh loop with a bulk PostgreSQL refresh. Demand keys are now staged into a temp table, latest scan dates and rolling-window aggregates are computed in SQL with grouped joins, stale resolved rows are deleted in one statement, and refreshed demand rows are bulk upserted instead of doing thousands of Python-driven round trips.
+  Added a regression test that writes a tiny Adam CSV fixture, computes the expected 14-day demand metrics manually from that fixture, stages it through the real Adam raw import path, and asserts the bulk SQL output matches exactly.
+- important decisions:
+  - kept the non-PostgreSQL fallback on the old per-key path so tests and alternate environments still work without COPY/temp-table support
+  - counted refreshed Adam demand keys inside the same transaction as the temp-key table so the bulk path stays compatible with `ON COMMIT DROP`
+  - left structure demand resolution behavior unchanged; only the Adam NPC refresh path was collapsed into set-based SQL
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check app/services/demand app/services/sync tests/services/test_market_demand.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/demand/market_demand.py app/services/sync/service.py tests/services/test_market_demand.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_market_demand.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_market_demand.py`
+  - `backend\.venv\Scripts\python.exe -m ruff check . --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy .`
+  - `backend\.venv\Scripts\python.exe -m pytest`
+  - full backend `pytest` ended at `156 passed, 3 failed`; the remaining failures were `backend/tests/services/test_adam4eve_ingestion.py`, `backend/tests/services/test_structure_demand_periods.py`, and `backend/tests/test_logging.py`
+  - live cold benchmark after clearing Adam sync data: `SyncService().trigger_job("adam4eve_sync")` completed in about `43.5s`, with `_refresh_market_demand_for_keys` down to about `0.178s` and `MarketDemandResolutionService.refresh_npc_keys_from_adam` down to about `0.176s`
+
+## ADAM-HISTORY-FILTER-STAGE-2026-03-29
+
+- files changed:
+  - `backend/app/services/adam4eve/history_ingestion.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_market_demand.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Optimized Adam station-history file ingestion by materializing the typed, region/location/type/date-filtered subset into a dedicated temp table once per file and then reusing that temp table for row counting, overlap deletes, raw inserts, and daily-history inserts. This removes repeated rescans of the large weekly stage file for the same filtered result set.
+- important decisions:
+  - kept the “copy full CSV into staging first” requirement intact; the optimization happens only after the 1:1 COPY into the raw file-stage table
+  - preserved the existing raw-history and daily-history outputs so downstream price-period generation stays unchanged
+  - left the hub-file path alone structurally even though it often produces zero kept rows, because the hot win was eliminating repeated rescans of the much larger filtered rest export
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check app/services/adam4eve/history_ingestion.py tests/services/test_adam4eve_ingestion.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/adam4eve/history_ingestion.py tests/services/test_adam4eve_ingestion.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_adam4eve_ingestion.py tests/services/test_sync_service.py`
+  - live cold benchmark after clearing Adam sync data:
+    - before this change: full `adam4eve_sync` about `37.2s`, `_sync_adam_regional_price_history` about `28.2s`, `ingest_region_history_file` about `24.8s`
+    - after this change: full `adam4eve_sync` about `26.7s`, `_sync_adam_regional_price_history` about `17.8s`, `ingest_region_history_file` about `14.5s`
+
+## ADAM-HISTORY-GLOBAL-CURSOR-2026-03-29
+
+- files changed:
+  - `backend/app/services/adam4eve/history_ingestion.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Removed the Python-side region loop from Adam station-history sync. The history path now uses one global date cursor, builds one SQL workset from live `esi_market_orders` keys, stages each Adam file once, joins staged rows to that workset in SQL, and refreshes market price periods in one pass across the affected locations and items.
+- important decisions:
+  - changed history watermarking from per-region cursor keys to a single global cursor keyed by `scope_key=\"global\"`
+  - preserved the location-to-region hierarchy in SQL by carrying both internal and external ids inside the workset temp table instead of driving region partitioning in Python
+  - added a composite primary key on the temp workset join columns after the first implementation regressed the filtered-stage materialization time
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check app/services/adam4eve/history_ingestion.py app/services/sync/service.py tests/services/test_sync_service.py tests/services/test_adam4eve_ingestion.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/adam4eve/history_ingestion.py app/services/sync/service.py tests/services/test_sync_service.py tests/services/test_adam4eve_ingestion.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_sync_service.py tests/services/test_adam4eve_ingestion.py`
+  - live cold benchmark after clearing Adam sync data:
+    - first global-cursor pass regressed badly because filtered-stage materialization became under-indexed
+    - after adding the composite workset key: full `adam4eve_sync` about `28.9s`, `_sync_adam_regional_price_history` about `19.7s`, `ingest_region_history_file` about `16.1s`, and filtered-stage materialization about `8.1s`
+
+## ESI-ORDER-BATCH-SQL-2026-03-29
+
+- files changed:
+  - `backend/app/services/esi/orders_ingestion.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_esi_orders_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Reworked ESI market-order ingestion into a staging-first SQL batch path. The sync still fetches CCP ESI per region because the API requires that, but all downloaded batches are now handed to one combined ingestion pass, staged into SQL once, filtered and counted in SQL, and inserted into `esi_market_orders` via a final set-based insert instead of a Python per-order normalization loop.
+- important decisions:
+  - removed the NPC-only gate so already-known player-owned structure locations are now included in ESI order sync results
+  - changed the skip reason from “not an NPC station” to “location could not be resolved,” which now only covers unknown locations that the local database cannot map
+  - kept station discovery limited to unresolved NPC station ids; unknown structure ids still cannot be discovered from the ESI regional orders endpoint alone
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check app/services/esi/orders_ingestion.py app/services/sync/service.py tests/services/test_esi_orders_ingestion.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/esi/orders_ingestion.py app/services/sync/service.py tests/services/test_esi_orders_ingestion.py tests/services/test_sync_service.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_esi_orders_ingestion.py tests/services/test_sync_service.py`
+  - exact `Sync NPC Orders Now` button-path benchmark after clearing ESI orders:
+    - enqueue response about `18.9 ms`
+    - background completion about `4.7s`
+    - recorded job duration about `4.6s`
+    - previous button-path baseline before the batch SQL refactor was about `46.5s`
+
+## TRADE-TARGET-RESOLVED-STATION-NAME-2026-03-29
+
+- files changed:
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/tests/services/test_trade_repository.py`
+- short implementation summary: Updated the trade repository to display the first non-placeholder market name between `Station.name` and `Location.name` so the trade target and source labels no longer fall back to `Station 600...` style ids when a resolved station name exists.
+- important decisions:
+  - kept the fix in the backend repository layer so both the target market dropdown and source market summaries inherit the same resolved naming behavior
+  - treated names beginning with `Station ` as placeholders and preferred the alternate station/location name when available
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check app/repositories/trade_repository.py tests/services/test_trade_repository.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/repositories/trade_repository.py tests/services/test_trade_repository.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_trade_repository.py -q`
+
+## FOUNDATION-STATION-NAME-REPAIR-2026-03-29
+
+- files changed:
+  - `backend/app/services/sync/foundation_data.py`
+  - `backend/app/services/sync/foundation_import.py`
+  - `backend/tests/services/test_foundation_data.py`
+  - `backend/tests/services/test_foundation_import.py`
+- short implementation summary: Changed foundation seeding so resolved station/location names can repair placeholder `Station 600...` names, while placeholder seed data can no longer overwrite already-resolved names. This protects live ESI-resolved station names from later CCP bulk imports that still omit station labels.
+- important decisions:
+  - allowed non-placeholder seed names to update existing `stations` and `locations`
+  - blocked placeholder incoming names from replacing an existing resolved station/location name
+  - applied the rule in both the ORM bootstrap path and the PostgreSQL COPY import path
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check app/services/sync/foundation_data.py app/services/sync/foundation_import.py tests/services/test_foundation_data.py tests/services/test_foundation_import.py`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/sync/foundation_data.py app/services/sync/foundation_import.py tests/services/test_foundation_data.py tests/services/test_foundation_import.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_foundation_data.py tests/services/test_foundation_import.py -q`
+  - live repair run:
+    - reran `foundation_import_sync`
+    - backfilled `5154` placeholder NPC station names from ESI station metadata into both `stations` and `locations`
+
+## ESI-MARKET-ORDERS-DUPLICATE-STAGE-DEDUPE-2026-03-30
+
+- files changed:
+  - `backend/app/services/esi/orders_ingestion.py`
+  - `backend/tests/services/test_esi_orders_ingestion.py`
+- short implementation summary: Hardened the PostgreSQL ESI market-order staging path to deduplicate repeated `order_id` rows before inserting the refreshed region snapshot into `esi_market_orders`, preventing the large March 29 import from failing on the unique `order_id` constraint.
+- important decisions:
+  - traced the live PostgreSQL failure in `sync_job_runs` id `115` to `duplicate key value violates unique constraint "esi_market_orders_order_id_key"` during the final insert from `esi_market_orders_valid_stage`
+  - kept the fix inside the PostgreSQL batch-ingestion path so the import remains a full snapshot replacement while tolerating repeated ESI rows for the same order
+  - used deterministic `DISTINCT ON (stage.order_id)` ordering so the latest staged copy of a duplicated order wins
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check . --fix`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_esi_orders_ingestion.py -q`
+  - repo-wide checks attempted:
+    - `backend\.venv\Scripts\python.exe -m mypy .`
+    - `backend\.venv\Scripts\python.exe -m pytest`
+  - repo-wide checks currently still fail for unrelated pre-existing issues in:
+    - `backend/tests/services/test_esi_history_ingestion.py`
+    - `backend/tests/services/test_structure_demand_periods.py`
+    - `backend/tests/test_logging.py`
+    - `backend/tests/api/test_endpoints.py`
+
+## FOUNDATION-SDE-FULL-TYPE-IMPORT-2026-03-30
+
+- files changed:
+  - `backend/app/services/sync/foundation_import.py`
+  - `backend/tests/services/test_foundation_import.py`
+- short implementation summary: Removed the SDE item pruning rules so foundation import now keeps all `types.jsonl` rows instead of dropping entries without `marketGroupID`, blueprint entries, or rows flagged unpublished.
+- important decisions:
+  - left the bulk source unchanged and widened only the importer behavior
+  - kept group/category metadata when present, including blueprint categorization, instead of using those fields as exclusion rules
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check app/services/sync/foundation_import.py tests/services/test_foundation_import.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_foundation_import.py -q`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/sync/foundation_import.py tests/services/test_foundation_import.py`
+
+## ESI-MARKET-ORDERS-LOCATION-RESOLUTION-2026-03-30
+
+- files changed:
+  - `backend/app/services/esi/orders_ingestion.py`
+  - `backend/tests/services/test_esi_orders_ingestion.py`
+- short implementation summary: Fixed ESI order location resolution so cross-region market orders can reuse an existing location by `location_id` alone, and public structure-like ids now get a placeholder `structure` location row instead of being dropped immediately.
+- important decisions:
+  - removed the stage-time `region_id` requirement from the `locations` join because ESI market-region ids do not always match the location’s home region
+  - created placeholder structure locations from the order payload’s `system_id` for trillion-range public structure ids when no location row exists yet
+  - kept unresolved rows unresolved when even the referenced solar system is unknown, rather than inventing partial location metadata
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check app/services/esi/orders_ingestion.py tests/services/test_esi_orders_ingestion.py`
+  - `backend\.venv\Scripts\python.exe -m pytest tests/services/test_esi_orders_ingestion.py -q`
+  - `backend\.venv\Scripts\python.exe -m mypy app/services/esi/orders_ingestion.py tests/services/test_esi_orders_ingestion.py`
+
+## TRADE-TARGET-HUBS-AND-UNIVERSE-WIDE-SOURCING-2026-03-30
+
+- files changed:
+  - `backend/app/api/routes/targets.py`
+  - `backend/app/api/schemas/settings.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `backend/tests/services/test_trade_repository.py`
+  - `frontend/src/api/settings.ts`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/pages/SettingsPage.test.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+- short implementation summary: Reworked trade opportunity generation so the selected target hub is the single destination market, profitable source stations are considered universe-wide, and `target_now_profit` now compares live minimum sell at the source station versus live minimum sell at the selected target hub. Added configurable target hubs on Settings and limited the trade target selector to that configured list.
+- important decisions:
+  - kept the trade-page target selector single-select and moved the multi-select hub curation into Settings
+  - changed target option discovery to use all known `npc_station` and `structure` locations, while the main `/targets` list is filtered by saved settings order
+  - refreshed target price history only for the chosen destination location, since source-side now-profit calculations no longer depend on historical source averages
+  - changed default ordering for source summaries and item drilldown rows to descending `target_now_profit`
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend/app/services/sync/service.py backend/app/services/opportunities/generation.py backend/app/services/settings_service.py backend/app/repositories/trade_repository.py backend/tests/services/test_opportunity_generation.py backend/tests/services/test_trade_repository.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app/services/sync/service.py backend/app/services/opportunities/generation.py backend/app/repositories/trade_repository.py backend/app/services/settings_service.py backend/tests/services/test_opportunity_generation.py backend/tests/services/test_trade_repository.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests/services/test_trade_repository.py backend/tests/api/test_endpoints.py -k "get_targets or get_target_options or get_settings or put_settings_persists_debug_flag"`
+  - `npm test -- src/pages/TradePage.test.tsx src/pages/SettingsPage.test.tsx`
+  - `npm run build`
+  - attempted broader backend pytest for touched slices:
+    - `backend\.venv\Scripts\python.exe -m pytest backend/tests/services/test_opportunity_generation.py backend/tests/services/test_trade_repository.py backend/tests/api/test_endpoints.py`
+  - broader backend pytest currently still hits a pre-existing API fixture/session teardown issue around `backend/tests/api/test_endpoints.py::test_get_auth_me`
+
+## TRADE-REFRESH-AND-MISSING-TARGET-PRICE-FALLBACK-2026-03-30
+
+- files changed:
+  - `backend/app/api/routes/opportunities.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+- short implementation summary: Fixed the empty trade page for major hub targets by allowing opportunity generation to fall back to the live target sell price when Adam station period history is missing, and made the Trade page `Refresh` button trigger a real backend rebuild for the currently selected target before refetching the tables.
+- important decisions:
+  - kept `target_now_profit` as the primary metric and reused the live target sell price as the temporary period-price fallback so rows are still generated when history has not been imported for that hub yet
+  - added a dedicated `POST /api/opportunities/refresh` endpoint instead of overloading the existing read endpoints with forced rebuild behavior
+  - kept the existing on-demand rebuild-on-miss behavior for first loads, and used the explicit refresh action for manual recomputation
+- validation:
+  - `backend\.venv\Scripts\ruff.exe check backend/app/services/opportunities/generation.py backend/app/repositories/trade_repository.py backend/app/api/routes/opportunities.py backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app/services/opportunities/generation.py backend/app/repositories/trade_repository.py backend/app/api/routes/opportunities.py backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py -k "opportunity or refresh_trade"`
+  - `npm test -- src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - broader backend validation:
+    - `backend\.venv\Scripts\ruff.exe check backend`
+    - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+    - `backend\.venv\Scripts\python.exe -m pytest backend`
+    - repo-wide `ruff` passed
+    - repo-wide `mypy` still fails in pre-existing `backend/tests/services/test_esi_history_ingestion.py`
+    - repo-wide `pytest` still has pre-existing failures in `backend/tests/services/test_esi_history_ingestion.py`, `backend/tests/services/test_structure_demand_periods.py`, `backend/tests/services/test_sync_service.py`, `backend/tests/test_logging.py`, and one API fixture/setup error in `backend/tests/api/test_endpoints.py::test_get_auth_login_returns_actionable_redirect_payload`
+  - live verification:
+    - `POST http://localhost:8000/api/opportunities/refresh?target_location_id=60003760&period_days=14`
+    - `GET http://localhost:8000/api/opportunities/source-summaries?target_location_id=60003760&period_days=14` now returns `4978` source groups
+    - `GET http://localhost:8000/api/opportunities/items?target_location_id=60003760&source_location_id=60008494&period_days=14` now returns `8726` item rows
+
+## TRADE-PAGE-LOADING-STATES-2026-03-30
+
+- files changed:
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/components/trade/ItemOpportunityTable.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Replaced the misleading trade-page empty state shown during long first-load queries with explicit loading copy in the source-summary and item-opportunity tables, so the UI no longer says `0 tracked` or `No computed...` while opportunities are still loading or being computed.
+- important decisions:
+  - only show the loading rows when the query is still running and there is not yet any data to render
+  - keep existing rows visible during background refetches instead of replacing them with a loading placeholder
+  - leave the backend-driven on-demand opportunity build behavior intact and make the frontend reflect that long-running work honestly
+- validation:
+  - `npm test -- src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - live API check for the screenshot target:
+    - `GET http://localhost:8000/api/opportunities/source-summaries?target_location_id=60008494&period_days=14` returns `4748` source groups in about `0.74s`
+
+## TRADE-GROUPED-INLINE-DRILLDOWN-2026-03-30
+
+- files changed:
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+- short implementation summary: Reworked the trade page into a single grouped opportunities table where source-market rows expand inline to show that station's item opportunities for the selected target market, and every visible column in that grouped table is now sortable.
+- important decisions:
+  - kept only one expanded source market open at a time and reused the existing per-source item query for the inline drilldown
+  - used a shared sort model for both source summary rows and expanded item rows so the same header controls work across the grouped view
+  - kept the execution-context detail panel and wired it to item clicks inside the expanded group rows
+- validation:
+  - `npm test -- src/pages/TradePage.test.tsx`
+  - `npm run build`
+
+## TRADE-GROUP-TOTAL-SORT-AND-FAST-EXPANSION-2026-03-30
+
+- files changed:
+  - `backend/app/services/opportunities/aggregator.py`
+  - `backend/tests/services/test_aggregator.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+- short implementation summary: Fixed grouped trade ordering so source-market rows now sort by total station profit for the selected target instead of a weighted per-item margin, and reduced expand-time UI work by rendering large inline item groups in batches with a `Show more` control.
+- important decisions:
+  - kept the existing summary schema field names to avoid a wider API/storage churn, but changed the stored summary profit values to represent group totals based on each item's `purchase_units`
+  - preserved full inline drilldown behavior while capping the initial expanded render to `200` rows so large stations no longer mount thousands of DOM rows at once
+  - reset the expanded render window on target, period, source, and sort changes so the grouped table stays predictable after control changes
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check backend/app/services/opportunities/aggregator.py backend/tests/services/test_aggregator.py backend/tests/services/test_opportunity_generation.py`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app/services/opportunities/aggregator.py backend/tests/services/test_aggregator.py backend/tests/services/test_opportunity_generation.py`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests/services/test_aggregator.py backend/tests/services/test_opportunity_generation.py -q`
+  - `backend\.venv\Scripts\python.exe -m ruff check backend --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+  - `backend\.venv\Scripts\python.exe -m pytest backend -q`
+  - `npm test -- src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - live verification:
+    - restarted `eve-station-trader-dev-backend-1`, `eve-station-trader-dev-frontend-1`, and `eve-station-trader-dev-worker-1`
+    - `POST http://localhost:8000/api/opportunities/refresh?target_location_id=60008494&period_days=14` completed successfully at `2026-03-30T17:03:06.458247Z`
+    - `GET http://localhost:8000/api/opportunities/source-summaries?target_location_id=60008494&period_days=14` returns `4748` Amarr source groups and now shows large total-profit summary values such as `69940660.0`
+  - broader backend checks still have pre-existing unrelated failures in:
+    - `backend/tests/services/test_esi_history_ingestion.py`
+    - `backend/tests/services/test_structure_demand_periods.py`
+    - `backend/tests/services/test_sync_service.py`
+    - `backend/tests/test_logging.py`
+
+## TRADE-EFFECTIVE-SOURCE-PRICE-AND-GROUP-PAGINATION-2026-03-30
+
+- files changed:
+  - `backend/app/domain/rules.py`
+  - `backend/app/services/opportunities/generation.py`
+  - `backend/app/api/schemas/settings.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/tests/domain/test_rules.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `frontend/src/api/settings.ts`
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/SettingsPage.test.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+- short implementation summary: Corrected trade opportunity pricing so `target_now_profit` is now `target now sell price - effective source acquisition price`, `target_period_profit` is `target period average price - effective source acquisition price`, and the source price now becomes a weighted execution price whenever the cheapest source sell order cannot fill the station's purchase quantity. Added proper grouped-source pagination on the trade page with a settings-backed default of `20` groups per page.
+- important decisions:
+  - removed sales-tax and broker-fee adjustments from the trade profit formulas to match the requested station-to-station spread view
+  - changed source-side price discovery from `MIN(source sell price)` to an execution-weighted price over the actual `purchase_units` quantity, using a SQL windowed workset instead of a per-order Python loop
+  - aligned `capital_required` with the actual purchasable quantity by multiplying the effective source acquisition price by `purchase_units`
+  - kept grouped pagination on the frontend and persisted only the page-size default in settings, so sorting and expansion still operate on the live grouped result set while rendering only one page of groups at a time
+- validation:
+  - `backend\.venv\Scripts\python.exe -m ruff check backend/app/domain/rules.py backend/app/services/opportunities/generation.py backend/app/api/schemas/settings.py backend/app/services/settings_service.py backend/tests/domain/test_rules.py backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app/domain/rules.py backend/app/services/opportunities/generation.py backend/app/api/schemas/settings.py backend/app/services/settings_service.py backend/tests/domain/test_rules.py backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py`
+  - `backend\.venv\Scripts\python.exe -m pytest backend/tests/domain/test_rules.py backend/tests/services/test_opportunity_generation.py backend/tests/api/test_endpoints.py -k "settings or opportunity or rules" -q`
+  - `backend\.venv\Scripts\python.exe -m ruff check backend --fix`
+  - `backend\.venv\Scripts\python.exe -m mypy backend/app backend/tests`
+  - `backend\.venv\Scripts\python.exe -m pytest backend -q`
+  - `npm test -- src/pages/TradePage.test.tsx src/pages/SettingsPage.test.tsx`
+  - `npm run build`
+  - live verification:
+    - restarted `eve-station-trader-dev-backend-1`, `eve-station-trader-dev-frontend-1`, and `eve-station-trader-dev-worker-1`
+    - `POST http://localhost:8000/api/opportunities/refresh?target_location_id=60008494&period_days=14` completed successfully at `2026-03-30T19:11:51.259966Z`
+    - `GET http://localhost:8000/api/opportunities/source-summaries?target_location_id=60008494&period_days=14` now returns `4609` Amarr source groups and a top total-profit summary value of `53607200907.82`
+  - broader backend checks still have pre-existing unrelated issues:
+    - repo-wide `mypy` still fails in `backend/tests/services/test_esi_history_ingestion.py`
+    - repo-wide `pytest backend -q` did not complete within the 120-second command timeout after this change
+
+## TRADE-TARGET-PRICE-VERIFICATION-2026-03-31
+
+- files changed:
+  - `backend/tests/services/test_market_price_periods.py`
+  - `backend/tests/services/test_opportunity_generation.py`
+  - `frontend/src/components/trade/SourceSummaryTable.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+  - `frontend/src/styles/global.css`
+- short implementation summary: Verified and locked down the trade pricing semantics so item-level `target_period_avg_price` comes from the target station's selected-period Adam4EVE history average, while item-level `target_station_sell_price` comes from the lowest live sell order in the target station. Clarified the grouped trade table copy so weighted grouped prices are no longer presented like literal station prices.
+- important decisions:
+  - kept the item-level pricing logic unchanged because it already matched the requested behavior
+  - added a 14-day history test to prove the period average uses the latest 14 station history rows and excludes older data
+  - added an opportunity-generation test to prove the target now price uses the lowest live target sell order even when the historical current/average prices differ
+  - left grouped summary math intact and clarified it in the UI instead of changing it to a different aggregation
+- validation:
+  - `backend\\.venv\\Scripts\\python.exe -m pytest tests/services/test_market_price_periods.py tests/services/test_opportunity_generation.py`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check tests/services/test_market_price_periods.py tests/services/test_opportunity_generation.py`
+  - `backend\\.venv\\Scripts\\python.exe -m mypy tests/services/test_market_price_periods.py tests/services/test_opportunity_generation.py`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check .`
+  - `npm test -- --run src/pages/TradePage.test.tsx`
+  - broader repo checks still have pre-existing unrelated failures:
+    - backend `mypy .` fails in `backend/tests/services/test_esi_history_ingestion.py` because the test still calls `ingest_region_history_file` with outdated keyword arguments
+    - backend `pytest` has existing unrelated failures in API/sync/logging tests
+    - frontend `npm test` has an existing unrelated `src/routes/AppRoutes.test.tsx` mock failure for `useTargetOptions`
+
+## TRADE-PAGE-FILTER-AND-PERIOD-CONTROLS-2026-03-31
+
+- files changed:
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Removed the duplicate `Min ROI` and page-level `Analysis Period` controls from the trade page. The trade page now always uses the analysis period from settings, and `Min Margin %` filters expanded items from the raw target/source price ratio so `20` means the target now price must be at least `1.20x` the source price.
+- important decisions:
+  - kept the change scoped to the trade page instead of also removing the ROI field from settings
+  - changed the margin filter to compare `target_station_sell_price / source_station_sell_price` directly so it matches the visible price columns instead of depending on the profit field
+  - left grouped source rows unfiltered and kept the existing behavior where filters apply to expanded item rows
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - broader frontend `npm test` still has a pre-existing unrelated failure in `src/routes/AppRoutes.test.tsx` because that test's trade-data mock does not provide `useTargetOptions`
+
+## TRADE-HISTORY-SAME-DAY-REFRESH-2026-03-31
+
+- files changed:
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_sync_service.py`
+- short implementation summary: Fixed Adam4EVE station-history refresh so the sync no longer skips same-day history imports when the current ESI workset is still missing 14-day target price periods. This prevents opportunity generation from falling back to `target_station_sell_price` for `target_period_avg_price` just because target station history had not been derived yet.
+- important decisions:
+  - kept the daily cursor optimization, but only skip the history refresh when the current workset already has the requested price periods
+  - used a single SQL existence check against the live ESI workset plus `MarketPricePeriod` rather than expanding the Python workset into a huge in-memory comparison
+  - repaired live trade data for the main target hubs by refreshing their derived price periods and rebuilding 14-day opportunities after the missing daily history rows were imported
+- validation:
+  - `backend\\.venv\\Scripts\\python.exe -m pytest tests/services/test_sync_service.py -k "history_sync_same_day_refreshes_missing_price_periods or history_sync_since_date_caps_to_rolling_14_day_window"`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check app/services/sync/service.py tests/services/test_sync_service.py`
+  - `backend\\.venv\\Scripts\\python.exe -m mypy app/services/sync/service.py tests/services/test_sync_service.py`
+  - live verification:
+    - confirmed `AdamMarketPriceHistoryDaily` now contains target-station history for `60003760`, `60008494`, `60011866`, `60005686`, and `60004588`
+    - refreshed derived price periods and rebuilt 14-day trade opportunities for those target hubs
+    - spot-checked Jita item rows now showing distinct values, for example:
+      - `Nuclear S`: now `11.95`, 14d avg `12.1963`
+      - `Gallente Shuttle`: now `16380.0`, 14d avg `16929.7833`
+      - `Station Vault Container`: now `325900.0`, 14d avg `325938.0`
+      - `True Sansha Warp Scrambler`: now `125000000.0`, 14d avg `122058583.3333`
+
+## TRADE-FILTER-THRESHOLDS-AND-STEPPERS-2026-03-31
+
+- files changed:
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Tightened the trade-page filter behavior so `Min Profit` filters on `target now profit`, `Min Margin %` uses the target/source now-price ratio with a strict threshold, and the numeric trade filters now expose native increment steppers. The trade page keeps analysis period out of the UI and follows settings.
+- important decisions:
+  - kept `Min ROI` removed and left `Analysis Period` off the trade page
+  - made `Min Profit` and `Min Margin %` strict greater-than thresholds to match the requested behavior
+  - used native `type="number"` inputs with `step="5"` for margin and `step="0.1"` for demand/day and D.O.S.
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx`
+  - `npm run build`
+
+## TRADE-FILTER-ROI-NOW-AND-REFRESH-SCOPE-2026-03-31
+
+- files changed:
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/sync/service.py`
+  - `backend/tests/services/test_trade_repository.py`
+- short implementation summary: Corrected `Min Margin %` to filter against `ROI Now` instead of the target/source price ratio, and narrowed manual trade refresh to prefer rebuilding the already-tracked opportunity scope before falling back to a full derived-input refresh.
+- important decisions:
+  - interpreted `Min Margin 20%` as `ROI Now > 120%`, per the requested behavior
+  - left `Min Profit` on `target_now_profit > threshold`
+  - kept the full prepare path as a fallback when target demand or target price-period inputs are missing
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check app/repositories/trade_repository.py app/services/sync/service.py tests/services/test_trade_repository.py`
+  - `backend\\.venv\\Scripts\\python.exe -m mypy app/repositories/trade_repository.py app/services/sync/service.py tests/services/test_trade_repository.py`
+  - note: a direct live target-wide refresh for Jita is still taking several minutes on the current dataset, so the refresh path likely needs a larger follow-up optimization or a UI change to refresh a narrower scope
+
+## TRADE-GROUP-FILTERED-TOTALS-2026-03-31
+
+- files changed:
+  - `backend/app/api/routes/opportunities.py`
+  - `backend/app/api/schemas/trade.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/types/trade.ts`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Reworked grouped trade filtering so the page filters against a target-wide item dataset, drops any source group with no matching item rows, and recomputes grouped totals from only the matching filtered items instead of retaining unfiltered summary totals.
+- important decisions:
+  - added a dedicated `/api/opportunities/target-items` endpoint so grouped filtering can run against all target items without repeatedly fetching one source at a time
+  - rebuilt grouped summary totals client-side from the filtered item subset to keep group values aligned with expanded rows
+  - kept the existing grouped-row sort and pagination behavior, only changing the data feeding those rows
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx`
+  - `npm run build`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check app/api/routes/opportunities.py app/api/schemas/trade.py app/repositories/trade_repository.py tests/api/test_endpoints.py tests/services/test_trade_repository.py`
+  - `backend\\.venv\\Scripts\\python.exe -m mypy app/api/routes/opportunities.py app/api/schemas/trade.py app/repositories/trade_repository.py`
+  - note: `backend\\.venv\\Scripts\\python.exe -m pytest tests/api/test_endpoints.py -k target_items` timed out in this environment before completion
+  - follow-up: fixed a source ID mismatch in `/api/opportunities/target-items` so grouped summaries and filtered item rows now join on the same internal location ID instead of dropping every group
+
+## TRADE-ROI-NOW-DEFAULT-HYDRATION-2026-03-31
+
+- files changed:
+  - `frontend/src/components/trade/TradeControls.tsx`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Renamed the trade-page threshold control to `Min ROI Now %`, changed it to compare directly against the raw item `roi_now` value so `20` means `ROI Now > 20%`, and hydrated the visible trade filters from saved settings defaults on first load.
+- important decisions:
+  - kept the grouped table filter semantics item-row based, with group visibility and totals derived from the matching item subset
+  - left server-side filtering untouched for now; the page still fetches the target-wide item dataset and filters it client-side
+  - aligned the Settings page default trade filter UI to the same percent-based `ROI Now` semantics
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx src/pages/SettingsPage.test.tsx`
+  - `npm run build`
+
+## TRADE-SERVER-SIDE-FILTERING-2026-03-31
+
+- files changed:
+  - `backend/app/api/routes/opportunities.py`
+  - `backend/app/repositories/trade_repository.py`
+  - `backend/app/services/settings_service.py`
+  - `backend/tests/api/test_endpoints.py`
+  - `frontend/src/api/trade.ts`
+  - `frontend/src/hooks/useTradeData.ts`
+  - `frontend/src/pages/TradePage.tsx`
+  - `frontend/src/pages/SettingsPage.tsx`
+  - `frontend/src/pages/TradePage.test.tsx`
+- short implementation summary: Moved visible trade filters onto the grouped summary and expanded item requests so the page no longer fetches the full target-wide item set on initial load. The first trade query now waits for settings-backed defaults, and the built-in defaults apply both `Min Profit` and `ROI Now` thresholds by default.
+- important decisions:
+  - interpreted `20` as `ROI Now > 20%`
+  - set the built-in default `roi_now` threshold to `0.20` so a default setup applies both the profit and ROI filters immediately
+  - kept backend detail loading unchanged; only grouped summaries and expanded item rows moved to server-side filtering
+- validation:
+  - `npm test -- --run src/pages/TradePage.test.tsx src/pages/SettingsPage.test.tsx`
+  - `npm run build`
+  - `backend\\.venv\\Scripts\\python.exe -m ruff check app/services/settings_service.py app/repositories/trade_repository.py app/api/routes/opportunities.py tests/api/test_endpoints.py`
+  - `backend\\.venv\\Scripts\\python.exe -m mypy app/services/settings_service.py app/repositories/trade_repository.py app/api/routes/opportunities.py`
+  - note: `backend\\.venv\\Scripts\\python.exe -m pytest tests/api/test_endpoints.py -k passes_trade_filters -q` timed out in this environment before completion

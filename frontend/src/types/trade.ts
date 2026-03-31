@@ -29,7 +29,6 @@ export type SourceSummary = {
   total_item_volume_m3: number;
   shipping_cost_total: number;
   demand_source_summary: string;
-  confidence_score_summary: number;
 };
 
 export type OpportunityItem = {
@@ -55,7 +54,21 @@ export type OpportunityItem = {
   item_volume_m3: number;
   shipping_cost: number;
   demand_source: string;
-  confidence_score: number;
+};
+
+export type TargetOpportunityItem = OpportunityItem & {
+  source_location_id: number;
+};
+
+export type TradeFilters = {
+  itemSearch: string;
+  minProfit: string;
+  minRoiNowPct: string;
+  minDemandDay: string;
+  maxDos: string;
+  sourceType: string;
+  minSecurity: string;
+  demandSource: string;
 };
 
 export type ItemOrderRow = {

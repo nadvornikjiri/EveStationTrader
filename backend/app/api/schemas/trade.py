@@ -34,7 +34,6 @@ class SourceSummary(BaseModel):
     total_item_volume_m3: float
     shipping_cost_total: float
     demand_source_summary: str
-    confidence_score_summary: float
 
 
 class OpportunityItemRow(BaseModel):
@@ -60,7 +59,10 @@ class OpportunityItemRow(BaseModel):
     item_volume_m3: float
     shipping_cost: float
     demand_source: str
-    confidence_score: float
+
+
+class TargetOpportunityItemRow(OpportunityItemRow):
+    source_location_id: int
 
 
 class ItemOrderRow(BaseModel):

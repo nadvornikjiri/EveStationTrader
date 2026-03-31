@@ -1,4 +1,4 @@
-import { apiGet } from "./client";
+import { apiGet, apiPost } from "./client";
 
 export type TargetLocation = {
   location_id: number;
@@ -31,7 +31,6 @@ export type SourceSummary = {
   total_item_volume_m3: number;
   shipping_cost_total: number;
   demand_source_summary: string;
-  confidence_score_summary: number;
 };
 
 export type OpportunityItem = {
@@ -57,7 +56,21 @@ export type OpportunityItem = {
   item_volume_m3: number;
   shipping_cost: number;
   demand_source: string;
-  confidence_score: number;
+};
+
+export type TargetOpportunityItem = OpportunityItem & {
+  source_location_id: number;
+};
+
+export type TradeFilters = {
+  itemSearch: string;
+  minProfit: string;
+  minRoiNowPct: string;
+  minDemandDay: string;
+  maxDos: string;
+  sourceType: string;
+  minSecurity: string;
+  demandSource: string;
 };
 
 export type ItemOrderRow = {
@@ -76,16 +89,47 @@ export type OpportunityItemDetail = {
   metrics: OpportunityItem;
 };
 
+export type TradeRefreshState = {
+  last_refresh_at: string;
+};
+
 export async function getTargets(): Promise<TargetLocation[]> {
   return apiGet<TargetLocation[]>("/targets");
+}
+
+export async function getTargetOptions(): Promise<TargetLocation[]> {
+  return apiGet<TargetLocation[]>("/targets/options");
 }
 
 export async function getSourceSummaries(
   targetLocationId: number,
   periodDays: number,
+  filters: TradeFilters,
 ): Promise<SourceSummary[]> {
+  const params = new URLSearchParams({
+    target_location_id: `${targetLocationId}`,
+    period_days: `${periodDays}`,
+    source_type: filters.sourceType,
+    min_security: filters.minSecurity,
+    demand_source: filters.demandSource,
+  });
+  if (filters.itemSearch.trim().length > 0) {
+    params.set("item_search", filters.itemSearch);
+  }
+  if (filters.minProfit.trim().length > 0) {
+    params.set("min_profit", filters.minProfit);
+  }
+  if (filters.minRoiNowPct.trim().length > 0) {
+    params.set("min_roi_now_pct", filters.minRoiNowPct);
+  }
+  if (filters.minDemandDay.trim().length > 0) {
+    params.set("min_demand_day", filters.minDemandDay);
+  }
+  if (filters.maxDos.trim().length > 0) {
+    params.set("max_dos", filters.maxDos);
+  }
   return apiGet<SourceSummary[]>(
-    `/opportunities/source-summaries?target_location_id=${targetLocationId}&period_days=${periodDays}`,
+    `/opportunities/source-summaries?${params.toString()}`,
   );
 }
 
@@ -93,9 +137,42 @@ export async function getOpportunityItems(
   targetLocationId: number,
   sourceLocationId: number,
   periodDays: number,
+  filters: TradeFilters,
 ): Promise<OpportunityItem[]> {
+  const params = new URLSearchParams({
+    target_location_id: `${targetLocationId}`,
+    source_location_id: `${sourceLocationId}`,
+    period_days: `${periodDays}`,
+    source_type: filters.sourceType,
+    min_security: filters.minSecurity,
+    demand_source: filters.demandSource,
+  });
+  if (filters.itemSearch.trim().length > 0) {
+    params.set("item_search", filters.itemSearch);
+  }
+  if (filters.minProfit.trim().length > 0) {
+    params.set("min_profit", filters.minProfit);
+  }
+  if (filters.minRoiNowPct.trim().length > 0) {
+    params.set("min_roi_now_pct", filters.minRoiNowPct);
+  }
+  if (filters.minDemandDay.trim().length > 0) {
+    params.set("min_demand_day", filters.minDemandDay);
+  }
+  if (filters.maxDos.trim().length > 0) {
+    params.set("max_dos", filters.maxDos);
+  }
   return apiGet<OpportunityItem[]>(
-    `/opportunities/items?target_location_id=${targetLocationId}&source_location_id=${sourceLocationId}&period_days=${periodDays}`,
+    `/opportunities/items?${params.toString()}`,
+  );
+}
+
+export async function getTargetOpportunityItems(
+  targetLocationId: number,
+  periodDays: number,
+): Promise<TargetOpportunityItem[]> {
+  return apiGet<TargetOpportunityItem[]>(
+    `/opportunities/target-items?target_location_id=${targetLocationId}&period_days=${periodDays}`,
   );
 }
 
@@ -107,5 +184,14 @@ export async function getOpportunityItemDetail(
 ): Promise<OpportunityItemDetail> {
   return apiGet<OpportunityItemDetail>(
     `/opportunities/item-detail?target_location_id=${targetLocationId}&source_location_id=${sourceLocationId}&type_id=${typeId}&period_days=${periodDays}`,
+  );
+}
+
+export async function refreshTradeOpportunities(
+  targetLocationId: number,
+  periodDays: number,
+): Promise<TradeRefreshState> {
+  return apiPost<TradeRefreshState>(
+    `/opportunities/refresh?target_location_id=${targetLocationId}&period_days=${periodDays}`,
   );
 }

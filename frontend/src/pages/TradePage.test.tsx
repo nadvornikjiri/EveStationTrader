@@ -1,21 +1,32 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 
+import * as tradeApi from "../api/trade";
 import { TradePage } from "./TradePage";
 
+const mockUseSettings = vi.fn();
 const mockUseTargets = vi.fn();
 const mockUseSourceSummaries = vi.fn();
 const mockUseOpportunityItems = vi.fn();
 const mockUseOpportunityItemDetail = vi.fn();
 
+vi.mock("../hooks/useSettingsData", () => ({
+  useSettings: () => mockUseSettings(),
+}));
+
 vi.mock("../hooks/useTradeData", () => ({
   useTargets: () => mockUseTargets(),
-  useSourceSummaries: (targetLocationId: number | null, periodDays: number) =>
-    mockUseSourceSummaries(targetLocationId, periodDays),
-  useOpportunityItems: (targetLocationId: number | null, sourceLocationId: number | null, periodDays: number) =>
-    mockUseOpportunityItems(targetLocationId, sourceLocationId, periodDays),
+  useSourceSummaries: (targetLocationId: number | null, periodDays: number, filters: unknown, enabled: boolean) =>
+    mockUseSourceSummaries(targetLocationId, periodDays, filters, enabled),
+  useOpportunityItems: (
+    targetLocationId: number | null,
+    sourceLocationId: number | null,
+    periodDays: number,
+    filters: unknown,
+    enabled: boolean,
+  ) => mockUseOpportunityItems(targetLocationId, sourceLocationId, periodDays, filters, enabled),
   useOpportunityItemDetail: (
     targetLocationId: number | null,
     sourceLocationId: number | null,
@@ -54,12 +65,9 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       total_item_volume_m3: 5,
       shipping_cost_total: 10,
       demand_source_summary: "Adam4EVE",
-      confidence_score_summary: 0.9,
     },
-  ],
-  3: [
     {
-      source_location_id: 4,
+      source_location_id: 5,
       source_market_name: "Dodixie",
       source_security_status: 0.9,
       purchase_units_total: 3,
@@ -81,63 +89,151 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       total_item_volume_m3: 2,
       shipping_cost_total: 8,
       demand_source_summary: "Local",
-      confidence_score_summary: 0.95,
+    },
+  ],
+  3: [],
+};
+
+const itemRowsBySource: Record<number, Array<Record<string, number | string>>> = {
+  2: [
+    {
+      type_id: 34,
+      item_name: "Tritanium",
+      source_security_status: 1,
+      purchase_units: 5,
+      source_units_available: 10,
+      target_demand_day: 12,
+      target_supply_units: 20,
+      target_dos: 1.5,
+      in_transit_units_item: 0,
+      assets_units_item: 0,
+      active_sell_orders_units_item: 0,
+      source_station_sell_price: 100,
+      target_station_sell_price: 120,
+      target_period_avg_price: 130,
+      target_now_profit: 12,
+      target_period_profit: 18,
+      capital_required: 500,
+      roi_now: 0.12,
+      roi_period: 0.18,
+      item_volume_m3: 0.01,
+      shipping_cost: 10,
+      demand_source: "Adam4EVE",
+    },
+    {
+      type_id: 35,
+      item_name: "Pyerite",
+      source_security_status: 1,
+      purchase_units: 9,
+      source_units_available: 15,
+      target_demand_day: 16,
+      target_supply_units: 40,
+      target_dos: 2.5,
+      in_transit_units_item: 0,
+      assets_units_item: 0,
+      active_sell_orders_units_item: 0,
+      source_station_sell_price: 90,
+      target_station_sell_price: 97,
+      target_period_avg_price: 99,
+      target_now_profit: 4,
+      target_period_profit: 6,
+      capital_required: 810,
+      roi_now: 0.03,
+      roi_period: 0.05,
+      item_volume_m3: 0.01,
+      shipping_cost: 12,
+      demand_source: "Fallback",
+    },
+  ],
+  5: [
+    {
+      type_id: 36,
+      item_name: "Mexallon",
+      source_security_status: 0.9,
+      purchase_units: 7,
+      source_units_available: 25,
+      target_demand_day: 14,
+      target_supply_units: 18,
+      target_dos: 1.3,
+      in_transit_units_item: 0,
+      assets_units_item: 0,
+      active_sell_orders_units_item: 0,
+      source_station_sell_price: 75,
+      target_station_sell_price: 120,
+      target_period_avg_price: 122,
+      target_now_profit: 33,
+      target_period_profit: 35,
+      capital_required: 525,
+      roi_now: 0.44,
+      roi_period: 0.46,
+      item_volume_m3: 0.01,
+      shipping_cost: 7,
+      demand_source: "Local",
     },
   ],
 };
 
-const itemRows = [
-  {
-    type_id: 34,
-    item_name: "Tritanium",
-    source_security_status: 1,
-    purchase_units: 5,
-    source_units_available: 10,
-    target_demand_day: 12,
-    target_supply_units: 20,
-    target_dos: 1.5,
-    in_transit_units_item: 0,
-    assets_units_item: 0,
-    active_sell_orders_units_item: 0,
-    source_station_sell_price: 100,
-    target_station_sell_price: 120,
-    target_period_avg_price: 130,
-    target_now_profit: 12,
-    target_period_profit: 18,
-    capital_required: 500,
-    roi_now: 0.12,
-    roi_period: 0.18,
-    item_volume_m3: 0.01,
-    shipping_cost: 10,
-    demand_source: "Adam4EVE",
-    confidence_score: 0.9,
-  },
-  {
-    type_id: 35,
-    item_name: "Pyerite",
-    source_security_status: 1,
-    purchase_units: 9,
-    source_units_available: 15,
-    target_demand_day: 16,
-    target_supply_units: 40,
-    target_dos: 2.5,
-    in_transit_units_item: 0,
-    assets_units_item: 0,
-    active_sell_orders_units_item: 0,
-    source_station_sell_price: 90,
-    target_station_sell_price: 97,
-    target_period_avg_price: 99,
-    target_now_profit: 4,
-    target_period_profit: 6,
-    capital_required: 810,
-    roi_now: 0.03,
-    roi_period: 0.05,
-    item_volume_m3: 0.01,
-    shipping_cost: 12,
-    demand_source: "Fallback",
-    confidence_score: 0.5,
-  },
-];
+const targetItemsByTarget: Record<number, Array<Record<string, number | string>>> = {
+  1: [
+    { source_location_id: 2, ...itemRowsBySource[2][0] },
+    { source_location_id: 2, ...itemRowsBySource[2][1] },
+    { source_location_id: 5, ...itemRowsBySource[5][0] },
+  ],
+  3: [],
+};
+
+type TestTradeFilters = {
+  itemSearch: string;
+  minProfit: string;
+  minRoiNowPct: string;
+  minDemandDay: string;
+  maxDos: string;
+  sourceType: string;
+  minSecurity: string;
+  demandSource: string;
+};
+
+function parseFilterNumber(value: string, fallback: number) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function securityThreshold(minSecurity: string) {
+  switch (minSecurity) {
+    case "highsec":
+      return 0.5;
+    case "lowsec":
+      return 0;
+    default:
+      return -10;
+  }
+}
+
+function filterTargetItems(targetLocationId: number | null, filters: TestTradeFilters) {
+  const rows = targetLocationId === null ? [] : targetItemsByTarget[targetLocationId] ?? [];
+  const searchValue = filters.itemSearch.trim().toLowerCase();
+  const minProfitValue = parseFilterNumber(filters.minProfit, 0);
+  const minRoiNowThreshold = parseFilterNumber(filters.minRoiNowPct, 0) / 100;
+  const minDemandDayValue = parseFilterNumber(filters.minDemandDay, 0);
+  const maxDosValue = filters.maxDos.trim().length === 0 ? Number.POSITIVE_INFINITY : parseFilterNumber(filters.maxDos, Number.POSITIVE_INFINITY);
+  const minSecurityValue = securityThreshold(filters.minSecurity);
+  return rows.filter((row) => {
+    const sourceSummary = (summaryRowsByTarget[targetLocationId ?? 0] ?? []).find(
+      (summary) => summary.source_location_id === row.source_location_id,
+    );
+    const sourceType = sourceSummary?.source_market_name === "Dodixie" ? "structure" : "npc";
+    return (
+      (searchValue.length === 0 || String(row.item_name).toLowerCase().includes(searchValue)) &&
+      Number(row.target_now_profit) > minProfitValue &&
+      (minRoiNowThreshold <= 0 || Number(row.roi_now) > minRoiNowThreshold) &&
+      Number(row.target_demand_day) >= minDemandDayValue &&
+      Number(row.target_dos) <= maxDosValue &&
+      Number(row.source_security_status) >= minSecurityValue &&
+      (filters.demandSource === "all" || row.demand_source === filters.demandSource) &&
+      (filters.sourceType === "all" || sourceType === filters.sourceType)
+    );
+  });
+}
 
 const itemDetailsByType = {
   34: {
@@ -146,7 +242,7 @@ const itemDetailsByType = {
     target_market_sell_orders: [{ price: 120, volume: 12, order_value: 1440, cumulative_volume: 12 }],
     source_market_sell_orders: [{ price: 100, volume: 10, order_value: 1000 }],
     source_market_buy_orders: [{ price: 95, volume: 15, order_value: 1425 }],
-    metrics: itemRows[0],
+    metrics: itemRowsBySource[2][0],
   },
   35: {
     type_id: 35,
@@ -154,7 +250,15 @@ const itemDetailsByType = {
     target_market_sell_orders: [{ price: 97, volume: 8, order_value: 776, cumulative_volume: 8 }],
     source_market_sell_orders: [{ price: 90, volume: 11, order_value: 990 }],
     source_market_buy_orders: [{ price: 87, volume: 12, order_value: 1044 }],
-    metrics: itemRows[1],
+    metrics: itemRowsBySource[2][1],
+  },
+  36: {
+    type_id: 36,
+    item_name: "Mexallon",
+    target_market_sell_orders: [{ price: 120, volume: 5, order_value: 600, cumulative_volume: 5 }],
+    source_market_sell_orders: [{ price: 75, volume: 20, order_value: 1500 }],
+    source_market_buy_orders: [{ price: 70, volume: 10, order_value: 700 }],
+    metrics: itemRowsBySource[5][0],
   },
 };
 
@@ -170,104 +274,212 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  vi.spyOn(tradeApi, "refreshTradeOpportunities").mockResolvedValue({
+    last_refresh_at: "2026-03-30T12:00:00Z",
+  });
+  mockUseSettings.mockReturnValue({
+    data: {
+      default_analysis_period_days: 14,
+      trade_groups_page_size: 20,
+      default_filters: {
+        min_item_profit: 0,
+        roi_now: 0,
+        target_demand_day: 1,
+      },
+    },
+  });
   mockUseTargets.mockReturnValue({ data: targets });
-  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null) => ({
-    data: targetLocationId === null ? [] : summaryRowsByTarget[targetLocationId] ?? [],
+  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null, _: number, filters: TestTradeFilters, enabled: boolean) => ({
+    data:
+      !enabled || targetLocationId === null
+        ? []
+        : (summaryRowsByTarget[targetLocationId] ?? []).filter((summary) =>
+            filterTargetItems(targetLocationId, filters).some((row) => row.source_location_id === summary.source_location_id),
+          ),
     refetch: vi.fn(),
   }));
-  mockUseOpportunityItems.mockImplementation(() => ({
-    data: itemRows,
-    refetch: vi.fn(),
-  }));
-  mockUseOpportunityItemDetail.mockImplementation((_: number | null, __: number | null, typeId: number | null) => ({
-    data: typeId === null ? undefined : itemDetailsByType[typeId as keyof typeof itemDetailsByType],
+  mockUseOpportunityItems.mockImplementation(
+    (targetLocationId: number | null, sourceLocationId: number | null, __: number, filters: TestTradeFilters, enabled: boolean) => ({
+      data:
+        !enabled || sourceLocationId === null
+          ? []
+          : filterTargetItems(targetLocationId, filters).filter((row) => row.source_location_id === sourceLocationId),
+      refetch: vi.fn(),
+    }),
+  );
+  mockUseOpportunityItemDetail.mockImplementation((_: number | null, sourceLocationId: number | null, typeId: number | null) => ({
+    data: sourceLocationId === null || typeId === null ? undefined : itemDetailsByType[typeId as keyof typeof itemDetailsByType],
     isLoading: false,
     refetch: vi.fn(),
   }));
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
-test("renders trade page and applies default filters to item results", () => {
+test("renders grouped opportunities collapsed by source market on first load", () => {
   renderPage();
 
-  expect(screen.getByText("Regional Day Trader")).toBeInTheDocument();
-  expect(screen.getByText("Source Markets")).toBeInTheDocument();
-  const itemTable = screen.getAllByRole("table")[1];
-  expect(within(itemTable).getByText("Tritanium")).toBeInTheDocument();
-  expect(within(itemTable).queryByText("Pyerite")).not.toBeInTheDocument();
+  expect(screen.getByText("Grouped Opportunities")).toBeInTheDocument();
+  expect(
+    screen.getByText(/Grouped source rows show purchase-unit-weighted price averages\./),
+  ).toBeInTheDocument();
+  expect(screen.queryByLabelText("Analysis Period")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Min ROI")).not.toBeInTheDocument();
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Amarr")).toBeInTheDocument();
+  expect(within(groupedTable).getByText("Dodixie")).toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Tritanium")).not.toBeInTheDocument();
+  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(
+    1,
+    14,
+    expect.objectContaining({ minProfit: "0", minRoiNowPct: "0", minDemandDay: "1" }),
+    true,
+  );
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, null, null, 14);
 });
 
-test("supports search, threshold changes, and sortable item rows", async () => {
+test("paginates grouped source markets using the configured settings page size", async () => {
+  const user = userEvent.setup();
+  const pagedSummaryRows = Array.from({ length: 25 }, (_, index) => ({
+    ...summaryRowsByTarget[1][0],
+    source_location_id: 100 + index,
+    source_market_name: `Source ${String(index + 1).padStart(2, "0")}`,
+    target_now_profit_weighted: 1_000 - index,
+  }));
+  mockUseSourceSummaries.mockImplementation(() => ({
+    data: pagedSummaryRows,
+    refetch: vi.fn(),
+  }));
+  renderPage();
+
+  expect(screen.getByText("Showing groups 1-20 of 25")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Expand Source 01" })).toBeInTheDocument();
+  expect(screen.queryByText("Source 25")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Next" }));
+
+  expect(screen.getByText("Showing groups 21-25 of 25")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Expand Source 25" })).toBeInTheDocument();
+  expect(screen.queryByText("Source 01")).not.toBeInTheDocument();
+});
+
+test("expands a source row to show inline item opportunities for that location", async () => {
   const user = userEvent.setup();
   renderPage();
 
-  await user.clear(screen.getByLabelText("Min ROI"));
-  await user.type(screen.getByLabelText("Min ROI"), "0");
-  await user.type(screen.getByLabelText("Item Search"), "pyer");
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
 
-  const filteredTable = screen.getAllByRole("table")[1];
-  expect(within(filteredTable).getByText("Pyerite")).toBeInTheDocument();
-  expect(within(filteredTable).queryByText("Tritanium")).not.toBeInTheDocument();
-
-  await user.clear(screen.getByLabelText("Item Search"));
-  await user.click(screen.getByRole("button", { name: "Sort by Item Name" }));
-
-  const table = screen.getAllByRole("table")[1];
-  const rows = within(table).getAllByRole("row");
-  expect(within(rows[1]).getByText("Pyerite")).toBeInTheDocument();
-  expect(within(rows[2]).getByText("Tritanium")).toBeInTheDocument();
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(groupedTable).getByText("Pyerite")).toBeInTheDocument();
 });
 
-test("loads item detail for the selected row and updates when a different row is clicked", async () => {
+test("renders expanded source items in batches so large groups stay responsive", async () => {
+  const user = userEvent.setup();
+  const largeSourceRows = Array.from({ length: 205 }, (_, index) => ({
+    ...itemRowsBySource[2][0],
+    type_id: 1000 + index,
+    item_name: `Large Item ${index + 1}`,
+    target_now_profit: 400 - index,
+    roi_now: 0.3,
+  }));
+  mockUseOpportunityItems.mockImplementation((_targetLocationId, sourceLocationId) => ({
+    data: sourceLocationId === 2 ? largeSourceRows : sourceLocationId === 5 ? itemRowsBySource[5] : [],
+    refetch: vi.fn(),
+  }));
+
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Large Item 1")).toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Large Item 205")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Show more item opportunities (200 of 205 shown)" }));
+
+  expect(within(groupedTable).getByText("Large Item 205")).toBeInTheDocument();
+});
+
+test("loads item detail when an expanded inline item is selected", async () => {
   const user = userEvent.setup();
   renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.click(screen.getByText("Pyerite"));
+
   const detailPanel = screen.getByText("Execution Context").closest("section");
-
-  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 34, 14);
   expect(detailPanel).not.toBeNull();
-  expect(within(detailPanel as HTMLElement).getByText("Demand Source")).toBeInTheDocument();
-  expect(within(detailPanel as HTMLElement).getByText("Adam4EVE")).toBeInTheDocument();
-
-  await user.clear(screen.getByLabelText("Min ROI"));
-  await user.type(screen.getByLabelText("Min ROI"), "0");
-  await user.click(within(screen.getAllByRole("table")[1]).getByText("Pyerite"));
-
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 35, 14);
   expect(within(detailPanel as HTMLElement).getByText("Pyerite")).toBeInTheDocument();
   expect(within(detailPanel as HTMLElement).getByText("Fallback")).toBeInTheDocument();
 });
 
-test("requeries summaries and items when target or period changes and resets source selection", async () => {
+test("sorts grouped source rows and expanded item rows by shared table columns", async () => {
   const user = userEvent.setup();
   renderPage();
 
-  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 14);
-  expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(1, 2, 14);
+  const groupedTable = screen.getByRole("table");
+  let rows = within(groupedTable).getAllByRole("row");
+  expect(within(rows[1]).getByText("Dodixie")).toBeInTheDocument();
+  expect(within(rows[2]).getByText("Amarr")).toBeInTheDocument();
 
-  const analysisPeriodInput = screen.getByLabelText("Analysis Period");
-  await user.click(analysisPeriodInput);
-  await user.keyboard("{Control>}a{/Control}30");
-  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 30);
-  expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(1, 2, 30);
+  await user.click(screen.getByRole("button", { name: "Sort by Source Market / Item" }));
+  rows = within(groupedTable).getAllByRole("row");
+  expect(within(rows[1]).getByText("Amarr")).toBeInTheDocument();
+  expect(within(rows[2]).getByText("Dodixie")).toBeInTheDocument();
 
-  await user.selectOptions(screen.getByLabelText("Target Market"), "3");
-  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(3, 30);
-  expect(mockUseOpportunityItems).toHaveBeenLastCalledWith(3, 4, 30);
-  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, 4, 34, 30);
-  expect(screen.getByText("Dodixie")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  rows = within(groupedTable).getAllByRole("row");
+  expect(within(rows[2]).getByText("Pyerite")).toBeInTheDocument();
+  expect(within(rows[3]).getByText("Tritanium")).toBeInTheDocument();
 });
 
-test("renders stable empty states when no computed opportunities exist for the selected target", async () => {
+test("changing target requeries grouped summaries using the settings analysis period", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.selectOptions(screen.getByLabelText("Target Market"), "3");
+  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(3, 14, expect.any(Object), true);
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, null, null, 14);
+});
+
+test("renders stable empty and loading states for the grouped table", async () => {
   const user = userEvent.setup();
   mockUseSourceSummaries.mockImplementation((targetLocationId: number | null) => ({
     data: targetLocationId === 3 ? [] : targetLocationId === null ? [] : summaryRowsByTarget[targetLocationId] ?? [],
     refetch: vi.fn(),
   }));
-  mockUseOpportunityItems.mockImplementation((targetLocationId: number | null, sourceLocationId: number | null) => ({
-    data: targetLocationId === 3 || sourceLocationId === null ? [] : itemRows,
+
+  renderPage();
+
+  await user.selectOptions(screen.getByLabelText("Target Market"), "3");
+  expect(screen.getByText("No computed source markets available for this target yet.")).toBeInTheDocument();
+  expect(screen.getByText("Select an item to inspect its detail.")).toBeInTheDocument();
+
+  mockUseSourceSummaries.mockImplementation(() => ({
+    data: undefined,
+    isLoading: true,
+    isFetching: true,
+    refetch: vi.fn(),
+  }));
+});
+
+test("shows loading copy instead of fake empty state while grouped summaries are still loading", () => {
+  mockUseSourceSummaries.mockImplementation(() => ({
+    data: undefined,
+    isLoading: true,
+    isFetching: true,
+    refetch: vi.fn(),
+  }));
+  mockUseOpportunityItems.mockImplementation(() => ({
+    data: undefined,
+    isLoading: false,
+    isFetching: false,
     refetch: vi.fn(),
   }));
   mockUseOpportunityItemDetail.mockImplementation(() => ({
@@ -278,95 +490,190 @@ test("renders stable empty states when no computed opportunities exist for the s
 
   renderPage();
 
-  await user.selectOptions(screen.getByLabelText("Target Market"), "3");
-
-  expect(screen.getByText("No computed source markets available for this target yet.")).toBeInTheDocument();
-  expect(screen.getByText("No computed item opportunities available for this source yet.")).toBeInTheDocument();
-  expect(screen.getByText("Select an item to inspect its detail.")).toBeInTheDocument();
-  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(3, null, null, 14);
+  expect(screen.getByText("Loading source markets for this target...")).toBeInTheDocument();
+  expect(screen.queryByText("No computed source markets available for this target yet.")).not.toBeInTheDocument();
 });
 
-test("new filters: min profit, min margin pct, min demand/day, max DOS, min confidence, demand source, and min security", async () => {
+test("filters apply to expanded inline item rows", async () => {
+  const user = userEvent.setup();
+  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null, _: number, filters: TestTradeFilters) => ({
+    data:
+      targetLocationId === 1 && filters.minRoiNowPct === "20"
+        ? [summaryRowsByTarget[1][0]]
+        : targetLocationId === null
+          ? []
+          : summaryRowsByTarget[targetLocationId] ?? [],
+    refetch: vi.fn(),
+  }));
+  mockUseOpportunityItems.mockImplementation((_targetLocationId: number | null, sourceLocationId: number | null, __: number, filters: TestTradeFilters) => ({
+    data:
+      sourceLocationId === 2 && filters.minRoiNowPct === "20"
+        ? [{ ...itemRowsBySource[2][0], roi_now: 0.21 }]
+        : sourceLocationId === 2
+          ? [
+              { ...itemRowsBySource[2][0], roi_now: 0.21 },
+              { ...itemRowsBySource[2][1], roi_now: 0.2 },
+            ]
+          : sourceLocationId === 5
+            ? [{ ...itemRowsBySource[5][0], roi_now: 0.19 }]
+            : [],
+    refetch: vi.fn(),
+  }));
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(groupedTable).getByText("Pyerite")).toBeInTheDocument();
+
+  await user.clear(screen.getByLabelText("Min ROI Now Pct"));
+  await user.type(screen.getByLabelText("Min ROI Now Pct"), "20");
+  expect(within(groupedTable).queryByText("Dodixie")).not.toBeInTheDocument();
+  expect(within(groupedTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Pyerite")).not.toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Mexallon")).not.toBeInTheDocument();
+});
+
+test("min profit filters against target now profit using a strict greater-than threshold", async () => {
   const user = userEvent.setup();
   renderPage();
 
-  // Clear default min ROI so both items appear
-  await user.clear(screen.getByLabelText("Min ROI"));
-  await user.type(screen.getByLabelText("Min ROI"), "0");
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(groupedTable).getByText("Pyerite")).toBeInTheDocument();
 
-  const itemTable = screen.getAllByRole("table")[1];
-  expect(within(itemTable).getByText("Tritanium")).toBeInTheDocument();
-  expect(within(itemTable).getByText("Pyerite")).toBeInTheDocument();
+  await user.type(screen.getByLabelText("Min Profit"), "12");
 
-  // Min Profit filter — Tritanium has profit 12, Pyerite has profit 4
-  await user.type(screen.getByLabelText("Min Profit"), "10");
-  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
-  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
-  await user.clear(screen.getByLabelText("Min Profit"));
-
-  // Min Demand/Day filter — Tritanium 12, Pyerite 16
-  await user.clear(screen.getByLabelText("Min Demand Day"));
-  await user.type(screen.getByLabelText("Min Demand Day"), "15");
-  expect(within(screen.getAllByRole("table")[1]).queryByText("Tritanium")).not.toBeInTheDocument();
-  expect(within(screen.getAllByRole("table")[1]).getByText("Pyerite")).toBeInTheDocument();
-  await user.clear(screen.getByLabelText("Min Demand Day"));
-
-  // Max DOS filter — Tritanium 1.5, Pyerite 2.5
-  await user.type(screen.getByLabelText("Max DOS"), "2");
-  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
-  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
-  await user.clear(screen.getByLabelText("Max DOS"));
-
-  // Min Confidence filter — Tritanium 0.9, Pyerite 0.5
-  await user.type(screen.getByLabelText("Min Confidence"), "0.8");
-  expect(within(screen.getAllByRole("table")[1]).getByText("Tritanium")).toBeInTheDocument();
-  expect(within(screen.getAllByRole("table")[1]).queryByText("Pyerite")).not.toBeInTheDocument();
-  await user.clear(screen.getByLabelText("Min Confidence"));
-
-  // Source Type, Min Security, Demand Source selects render
-  expect(screen.getByLabelText("Source Type")).toBeInTheDocument();
-  expect(screen.getByLabelText("Min Security")).toBeInTheDocument();
-  expect(screen.getByLabelText("Demand Source")).toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Amarr")).not.toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Tritanium")).not.toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Pyerite")).not.toBeInTheDocument();
+  expect(within(groupedTable).getByText("Dodixie")).toBeInTheDocument();
 });
 
-test("source summary and item tables display all spec-required columns", () => {
+test("numeric filter inputs expose step controls for the configured increments", () => {
   renderPage();
 
-  const tables = screen.getAllByRole("table");
-  const summaryTable = tables[0];
-  const itemTable = tables[1];
+  expect(screen.getByLabelText("Min ROI Now Pct")).toHaveAttribute("step", "5");
+  expect(screen.getByLabelText("Min Demand Day")).toHaveAttribute("step", "0.1");
+  expect(screen.getByLabelText("Max DOS")).toHaveAttribute("step", "0.1");
+});
 
-  // Source summary table columns
-  const summaryHeaders = within(summaryTable).getAllByRole("columnheader").map((th) => th.textContent);
-  for (const col of [
-    "Source Market", "Sec", "Purchase Units", "Source Units Avail",
-    "Target Demand / Day", "Target Supply Units", "Target D.O.S",
-    "In Transit", "Assets", "Active Sell Orders",
-    "Source Avg Price", "Target Now Price", "Target Period Avg Price",
-    "Target Now Profit", "Target Period Profit", "Capital Required",
-    "ROI Now", "ROI Period", "Item Volume", "Shipping Cost",
-    "Demand Source", "Confidence",
+test("uses the settings analysis period for data queries and refreshes", async () => {
+  const user = userEvent.setup();
+  mockUseSettings.mockReturnValue({
+    data: {
+      default_analysis_period_days: 21,
+      trade_groups_page_size: 20,
+      default_filters: {
+        min_item_profit: 0,
+        roi_now: 0,
+        target_demand_day: 1,
+      },
+    },
+  });
+
+  renderPage();
+
+  expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 21, expect.any(Object), true);
+  expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, null, null, 21);
+
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+  expect(tradeApi.refreshTradeOpportunities).toHaveBeenCalledWith(1, 21);
+});
+
+test("hydrates visible trade filter defaults from settings on first load", () => {
+  mockUseSettings.mockReturnValue({
+    data: {
+      default_analysis_period_days: 14,
+      trade_groups_page_size: 20,
+      default_filters: {
+        min_item_profit: 15000000,
+        roi_now: 0.2,
+        target_demand_day: 3.5,
+      },
+    },
+  });
+
+  renderPage();
+
+  expect(screen.getByLabelText("Min Profit")).toHaveValue(15000000);
+  expect(screen.getByLabelText("Min ROI Now Pct")).toHaveValue(20);
+  expect(screen.getByLabelText("Min Demand Day")).toHaveValue(3.5);
+});
+
+test("renders sortable headers for the grouped opportunity table", () => {
+  renderPage();
+
+  for (const label of [
+    "Source Market / Item",
+    "Sec",
+    "Purchase Units",
+    "Source Units Avail",
+    "Target Demand / Day",
+    "Target Supply Units",
+    "Target D.O.S",
+    "In Transit",
+    "Assets",
+    "Active Sell Orders",
+    "Source Avg Price",
+    "Target Now Price",
+    "Target Period Avg Price",
+    "Target Now Profit",
+    "Target Period Profit",
+    "Capital Required",
+    "ROI Now",
+    "ROI Period",
+    "Item Volume",
+    "Shipping Cost",
+    "Demand Source",
   ]) {
-    expect(summaryHeaders).toContain(col);
+    expect(screen.getByRole("button", { name: `Sort by ${label}` })).toBeInTheDocument();
   }
+});
 
-  // Item table columns (sortable columns have button text)
-  const itemHeaders = within(itemTable).getAllByRole("columnheader").map((th) => th.textContent);
-  for (const col of [
-    "Sec", "Source Units Avail",
-    "Target Demand / Day", "Target Supply Units", "Target D.O.S",
-    "In Transit", "Assets", "Active Sell Orders",
-    "Source Avg Price", "Target Now Price", "Target Period Avg Price",
-    "Target Now Profit", "Target Period Profit", "Capital Required",
-    "ROI Period", "Item Volume", "Shipping Cost", "Demand Source",
-  ]) {
-    expect(itemHeaders).toContain(col);
-  }
+test("refresh button triggers a backend rebuild before refetching grouped summaries", async () => {
+  const user = userEvent.setup();
+  const summaryRefetch = vi.fn().mockResolvedValue(undefined);
+  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null) => ({
+    data: targetLocationId === null ? [] : summaryRowsByTarget[targetLocationId] ?? [],
+    refetch: summaryRefetch,
+  }));
 
-  // Verify data renders in source summary row
-  expect(within(summaryTable).getByText("Amarr")).toBeInTheDocument();
-  expect(within(summaryTable).getByText("Adam4EVE")).toBeInTheDocument();
+  renderPage();
 
-  // Verify data renders in item row (Tritanium visible with default ROI filter)
-  expect(within(itemTable).getByText("Tritanium")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+  expect(tradeApi.refreshTradeOpportunities).toHaveBeenCalledWith(1, 14);
+  expect(summaryRefetch).toHaveBeenCalled();
+});
+
+test("group totals are rebuilt from only the matching filtered records", async () => {
+  const user = userEvent.setup();
+  mockUseSourceSummaries.mockImplementation((targetLocationId: number | null, _: number, filters: TestTradeFilters) => ({
+    data:
+      targetLocationId === 1 && filters.minProfit === "20"
+        ? [
+            {
+              ...summaryRowsByTarget[1][1],
+              source_units_available_total: 231,
+              capital_required_total: 525,
+            },
+          ]
+        : targetLocationId === null
+          ? []
+          : summaryRowsByTarget[targetLocationId] ?? [],
+    refetch: vi.fn(),
+  }));
+  renderPage();
+
+  await user.type(screen.getByLabelText("Min Profit"), "20");
+
+  const groupedTable = screen.getByRole("table");
+  const rows = within(groupedTable).getAllByRole("row");
+  expect(within(rows[1]).getByText("Dodixie")).toBeInTheDocument();
+  expect(within(rows[1]).getByText("231")).toBeInTheDocument();
+  expect(within(rows[1]).getByText("525")).toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Amarr")).not.toBeInTheDocument();
 });

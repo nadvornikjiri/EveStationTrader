@@ -1,12 +1,13 @@
 from datetime import UTC, datetime
 
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 
 from app.api.schemas.sync import SyncJobRunResponse
 from app.core.security import build_esi_scopes
 from app.db.session import SessionLocal
 from app.models.all_models import (
+    AdamMarketOrdersTradeRaw,
     CharacterAccessibleStructure,
     EsiCharacter,
     EsiCharacterSyncState,
@@ -85,7 +86,6 @@ def seed_trade_opportunity_rows() -> None:
                 total_item_volume_m3=5.0,
                 shipping_cost_total=20.0,
                 demand_source_summary="adam4eve",
-                confidence_score_summary=1.0,
                 computed_at=datetime(2026, 3, 20, tzinfo=UTC),
             )
         )
@@ -115,7 +115,6 @@ def seed_trade_opportunity_rows() -> None:
                 item_volume_m3=0.01,
                 shipping_cost=15.0,
                 demand_source="adam4eve",
-                confidence_score=1.0,
                 computed_at=datetime(2026, 3, 20, tzinfo=UTC),
             )
         )
@@ -126,6 +125,12 @@ def seed_trade_opportunity_rows() -> None:
 
 def test_get_targets(client) -> None:
     response = client.get("/api/targets")
+    assert response.status_code == 200
+    assert len(response.json()) >= 1
+
+
+def test_get_target_options(client) -> None:
+    response = client.get("/api/targets/options")
     assert response.status_code == 200
     assert len(response.json()) >= 1
 
@@ -152,6 +157,28 @@ def test_get_source_summaries(client) -> None:
     assert response.json()[0]["source_market_name"]
 
 
+def test_post_refresh_trade_opportunities(client, monkeypatch) -> None:
+    from app.repositories.trade_repository import TradeRepository
+
+    refresh_calls: list[tuple[int, int]] = []
+
+    def fake_refresh(self, target_location_id: int, period_days: int, **_: object) -> None:
+        refresh_calls.append((target_location_id, period_days))
+
+    monkeypatch.setattr(TradeRepository, "refresh_opportunities", fake_refresh)
+    monkeypatch.setattr(
+        TradeRepository,
+        "get_last_refresh",
+        lambda self: datetime(2026, 3, 30, 12, 0, tzinfo=UTC),
+    )
+
+    response = client.post("/api/opportunities/refresh", params={"target_location_id": 60003760, "period_days": 14})
+
+    assert response.status_code == 200
+    assert refresh_calls == [(60003760, 14)]
+    assert response.json()["last_refresh_at"] == "2026-03-30T12:00:00Z"
+
+
 def test_get_items(client) -> None:
     seed_trade_opportunity_rows()
     response = client.get(
@@ -160,6 +187,126 @@ def test_get_items(client) -> None:
     )
     assert response.status_code == 200
     assert response.json()[0]["item_name"] == "Tritanium"
+
+
+def test_get_target_items(client) -> None:
+    seed_trade_opportunity_rows()
+    session = SessionLocal()
+    try:
+        source_location = session.scalar(select(Location).where(Location.location_id == 60008494))
+        assert source_location is not None
+        expected_source_location_id = source_location.id
+    finally:
+        session.close()
+
+    response = client.get(
+        "/api/opportunities/target-items",
+        params={"target_location_id": 60003760},
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["item_name"] == "Tritanium"
+    assert response.json()[0]["source_location_id"] == expected_source_location_id
+
+
+def test_get_source_summaries_passes_trade_filters(client, monkeypatch) -> None:
+    from app.repositories.trade_repository import TradeRepository
+
+    captured: dict[str, object] = {}
+
+    def fake_list_source_summaries(self, target_location_id: int, period_days: int, **filters: object) -> list[dict[str, object]]:
+        captured["target_location_id"] = target_location_id
+        captured["period_days"] = period_days
+        captured["filters"] = filters
+        return []
+
+    monkeypatch.setattr(TradeRepository, "list_source_summaries", fake_list_source_summaries)
+
+    response = client.get(
+        "/api/opportunities/source-summaries",
+        params={
+            "target_location_id": 60003760,
+            "period_days": 14,
+            "item_search": "trit",
+            "min_profit": 15000000,
+            "min_roi_now_pct": 20,
+            "min_demand_day": 2.5,
+            "max_dos": 7.5,
+            "source_type": "npc",
+            "min_security": "highsec",
+            "demand_source": "adam4eve",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "target_location_id": 60003760,
+        "period_days": 14,
+        "filters": {
+            "item_search": "trit",
+            "min_profit": 15000000.0,
+            "min_roi_now_pct": 20.0,
+            "min_demand_day": 2.5,
+            "max_dos": 7.5,
+            "source_type": "npc",
+            "min_security": "highsec",
+            "demand_source": "adam4eve",
+        },
+    }
+
+
+def test_get_items_passes_trade_filters(client, monkeypatch) -> None:
+    from app.repositories.trade_repository import TradeRepository
+
+    captured: dict[str, object] = {}
+
+    def fake_list_items(
+        self,
+        target_location_id: int,
+        source_location_id: int,
+        period_days: int,
+        **filters: object,
+    ) -> list[dict[str, object]]:
+        captured["target_location_id"] = target_location_id
+        captured["source_location_id"] = source_location_id
+        captured["period_days"] = period_days
+        captured["filters"] = filters
+        return []
+
+    monkeypatch.setattr(TradeRepository, "list_items", fake_list_items)
+
+    response = client.get(
+        "/api/opportunities/items",
+        params={
+            "target_location_id": 60003760,
+            "source_location_id": 60008494,
+            "period_days": 14,
+            "item_search": "trit",
+            "min_profit": 15000000,
+            "min_roi_now_pct": 20,
+            "min_demand_day": 2.5,
+            "max_dos": 7.5,
+            "source_type": "npc",
+            "min_security": "highsec",
+            "demand_source": "adam4eve",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "target_location_id": 60003760,
+        "source_location_id": 60008494,
+        "period_days": 14,
+        "filters": {
+            "item_search": "trit",
+            "min_profit": 15000000.0,
+            "min_roi_now_pct": 20.0,
+            "min_demand_day": 2.5,
+            "max_dos": 7.5,
+            "source_type": "npc",
+            "min_security": "highsec",
+            "demand_source": "adam4eve",
+        },
+    }
 
 
 def test_get_opportunity_lists_return_empty_when_no_computed_rows_exist(client) -> None:
@@ -183,6 +330,13 @@ def test_get_opportunity_lists_return_empty_when_no_computed_rows_exist(client) 
     )
     assert item_response.status_code == 200
     assert item_response.json() == []
+
+    target_item_response = client.get(
+        "/api/opportunities/target-items",
+        params={"target_location_id": 60003760, "period_days": 999},
+    )
+    assert target_item_response.status_code == 200
+    assert target_item_response.json() == []
 
 
 def test_get_sync_status(client) -> None:
@@ -234,10 +388,70 @@ def test_get_database_table_rows(client) -> None:
     assert isinstance(payload["rows"], list)
 
 
-def test_run_foundation_seed_sync(client) -> None:
-    response = client.post("/api/sync/run/foundation_seed_sync")
+def test_get_database_table_rows_enriches_adam_demand_references(client) -> None:
+    session = SessionLocal()
+    try:
+        location = session.scalar(select(Location).where(Location.location_id == 60003760))
+        item = session.scalar(select(Item).where(Item.type_id == 34))
+        if location is None or item is None:
+            raise AssertionError("Expected seeded location and item to exist.")
+
+        session.execute(delete(AdamMarketOrdersTradeRaw))
+        session.execute(
+            insert(AdamMarketOrdersTradeRaw).values(
+                location_id=location.location_id,
+                region_id=10000002,
+                type_id=item.type_id,
+                is_buy_order=0,
+                has_gone=0,
+                scanDate=datetime(2026, 3, 26, tzinfo=UTC).date(),
+                amount=12.5,
+                high=5.0,
+                low=5.0,
+                avg=5.0,
+                orderNum=1,
+                iskValue=62.5,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get("/api/database/tables/adam_market_orders_trade_raw")
     assert response.status_code == 200
-    assert "Seeded foundation data" in response.json()["message"]
+    payload = response.json()
+    assert payload["table_name"] == "adam_market_orders_trade_raw"
+    assert "location_eve_id" in payload["columns"]
+    assert "location_name" in payload["columns"]
+    assert "type_eve_id" in payload["columns"]
+    assert "item_name" in payload["columns"]
+    assert any(
+        row["location_eve_id"] == 60003760 and row["type_eve_id"] == 34 and row["item_name"]
+        for row in payload["rows"]
+    )
+
+
+def test_run_foundation_import_sync(client) -> None:
+    response = client.post("/api/sync/run/foundation_import_sync")
+    assert response.status_code == 200
+    assert response.json()["job_type"] == "foundation_import_sync"
+
+
+def test_clear_opportunity_rebuild_data(client) -> None:
+    seed_trade_opportunity_rows()
+
+    response = client.post("/api/sync/clear/opportunity_rebuild")
+
+    assert response.status_code == 200
+    assert response.json()["job_type"] == "opportunity_rebuild"
+    assert response.json()["records_deleted"] >= 2
+
+    session = SessionLocal()
+    try:
+        assert session.scalars(select(OpportunityItem)).all() == []
+        assert session.scalars(select(OpportunitySourceSummary)).all() == []
+    finally:
+        session.close()
 
 
 def test_run_sync_returns_failed_job_payload_when_job_fails_immediately(client, monkeypatch) -> None:
@@ -258,7 +472,7 @@ def test_run_sync_returns_failed_job_payload_when_job_fails_immediately(client, 
             error_details="Synthetic immediate failure for API coverage.",
         )
 
-    monkeypatch.setattr(SyncService, "trigger_job", fail_job)
+    monkeypatch.setattr(SyncService, "enqueue_job", fail_job)
 
     response = client.post("/api/sync/run/foundation_import_sync")
 
@@ -538,7 +752,9 @@ def test_get_settings(client) -> None:
     response = client.get("/api/settings")
     assert response.status_code == 200
     assert response.json()["default_analysis_period_days"] == 14
+    assert response.json()["trade_groups_page_size"] == 20
     assert response.json()["debug_enabled"] is False
+    assert response.json()["target_market_location_ids"]
 
 
 def test_put_settings_persists_debug_flag(client) -> None:
@@ -546,14 +762,15 @@ def test_put_settings_persists_debug_flag(client) -> None:
         "/api/settings",
         json={
             "default_analysis_period_days": 14,
+            "trade_groups_page_size": 30,
             "debug_enabled": True,
             "sales_tax_rate": 0.036,
             "broker_fee_rate": 0.03,
-            "min_confidence_for_local_structure_demand": 0.75,
             "default_user_structure_poll_interval_minutes": 30,
             "snapshot_retention_days": 30,
             "fallback_policy": "regional_fallback",
             "shipping_cost_per_m3": 350.0,
+            "target_market_location_ids": [60003760, 60008494],
             "default_filters": {
                 "min_item_profit": 15_000_000,
                 "min_order_margin_pct": 0.20,
@@ -565,12 +782,15 @@ def test_put_settings_persists_debug_flag(client) -> None:
 
     assert response.status_code == 200
     assert response.json()["debug_enabled"] is True
+    assert response.json()["trade_groups_page_size"] == 30
 
     session = SessionLocal()
     try:
         row = session.scalar(select(UserSetting).where(UserSetting.user_id.is_(None), UserSetting.key == "defaults"))
         assert row is not None
         assert row.value["debug_enabled"] is True
+        assert row.value["trade_groups_page_size"] == 30
+        assert row.value["target_market_location_ids"] == [60003760, 60008494]
     finally:
         session.close()
 

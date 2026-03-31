@@ -1,23 +1,37 @@
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 
+import { refreshTradeOpportunities } from "../api/trade";
+import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
 import {
-  useOpportunityItemDetail,
+  SourceSummaryTable,
+  type GroupedSortDirection,
+  type GroupedSortKey,
+  sortOpportunityItems,
+  sortSummaries,
+} from "../components/trade/SourceSummaryTable";
+import { useSettings } from "../hooks/useSettingsData";
+import { TradeControls } from "../components/trade/TradeControls";
+import {
   useOpportunityItems,
+  useOpportunityItemDetail,
   useSourceSummaries,
   useTargets,
 } from "../hooks/useTradeData";
-import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
-import { ItemOpportunityTable } from "../components/trade/ItemOpportunityTable";
-import { SourceSummaryTable } from "../components/trade/SourceSummaryTable";
-import { TradeControls } from "../components/trade/TradeControls";
-import type { OpportunityItem } from "../types/trade";
+import type { OpportunityItem, TradeFilters } from "../types/trade";
 
-type SortKey = "item_name" | "purchase_units" | "roi_now" | "confidence_score";
-type SortDirection = "asc" | "desc";
+const INITIAL_EXPANDED_ROW_RENDER_LIMIT = 200;
+const EXPANDED_ROW_RENDER_INCREMENT = 200;
+const DEFAULT_MIN_PROFIT = "15000000";
+const DEFAULT_MIN_ROI_NOW_PCT = "20";
+const DEFAULT_MIN_DEMAND_DAY = "1";
 
 function parseNumberInput(value: string, fallback: number) {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatFilterValue(value: number, fallback: string) {
+  return Number.isFinite(value) ? `${value}` : fallback;
 }
 
 function securityThreshold(minSecurity: string): number {
@@ -33,36 +47,52 @@ function securityThreshold(minSecurity: string): number {
   }
 }
 
-function sortItems(rows: OpportunityItem[], sortKey: SortKey, sortDirection: SortDirection) {
-  const sortedRows = [...rows].sort((left, right) => {
-    if (sortKey === "item_name") {
-      return left.item_name.localeCompare(right.item_name);
-    }
-
-    return left[sortKey] - right[sortKey];
-  });
-
-  return sortDirection === "asc" ? sortedRows : sortedRows.reverse();
-}
-
 export function TradePage() {
   const { data: targets = [] } = useTargets();
+  const settings = useSettings();
   const [targetId, setTargetId] = useState<number | null>(null);
   const [sourceId, setSourceId] = useState<number | null>(null);
-  const [periodDays, setPeriodDays] = useState(14);
   const [itemSearch, setItemSearch] = useState("");
-  const [minRoi, setMinRoi] = useState("0.05");
-  const [minProfit, setMinProfit] = useState("");
-  const [minMarginPct, setMinMarginPct] = useState("");
-  const [minDemandDay, setMinDemandDay] = useState("1");
+  const [minProfit, setMinProfit] = useState(DEFAULT_MIN_PROFIT);
+  const [minRoiNowPct, setMinRoiNowPct] = useState(DEFAULT_MIN_ROI_NOW_PCT);
+  const [minDemandDay, setMinDemandDay] = useState(DEFAULT_MIN_DEMAND_DAY);
   const [maxDos, setMaxDos] = useState("");
-  const [minConfidence, setMinConfidence] = useState("");
   const [sourceType, setSourceType] = useState("all");
   const [minSecurity, setMinSecurity] = useState("all");
   const [demandSource, setDemandSource] = useState("all");
-  const [sortKey, setSortKey] = useState<SortKey>("roi_now");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortKey, setSortKey] = useState<GroupedSortKey>("target_now_profit");
+  const [sortDirection, setSortDirection] = useState<GroupedSortDirection>("desc");
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
+  const [currentGroupPage, setCurrentGroupPage] = useState(1);
+  const [expandedRowRenderLimit, setExpandedRowRenderLimit] = useState(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [filtersInitialized, setFiltersInitialized] = useState(false);
+  const periodDays = useMemo(() => {
+    const configuredPeriod = Number(settings.data?.default_analysis_period_days ?? 14);
+    if (!Number.isFinite(configuredPeriod)) {
+      return 14;
+    }
+    return Math.max(Math.floor(configuredPeriod), 1);
+  }, [settings.data?.default_analysis_period_days]);
+  const groupsPerPage = useMemo(() => {
+    const configuredSize = Number(settings.data?.trade_groups_page_size ?? 20);
+    if (!Number.isFinite(configuredSize)) {
+      return 20;
+    }
+    return Math.max(Math.floor(configuredSize), 1);
+  }, [settings.data?.trade_groups_page_size]);
+  const defaultFilterSettings = useMemo(() => {
+    const rawFilters = settings.data?.default_filters ?? {};
+    const minItemProfit = Number(rawFilters.min_item_profit);
+    const roiNow = Number(rawFilters.roi_now);
+    const targetDemandDay = Number(rawFilters.target_demand_day);
+    return {
+      minProfit: formatFilterValue(minItemProfit, DEFAULT_MIN_PROFIT),
+      minRoiNowPct: formatFilterValue(roiNow * 100, DEFAULT_MIN_ROI_NOW_PCT),
+      minDemandDay: formatFilterValue(targetDemandDay, DEFAULT_MIN_DEMAND_DAY),
+    };
+  }, [settings.data?.default_filters]);
 
   useEffect(() => {
     if (targetId === null && targets.length > 0) {
@@ -70,10 +100,54 @@ export function TradePage() {
     }
   }, [targetId, targets]);
 
-  const summaries = useSourceSummaries(targetId, periodDays);
+  useEffect(() => {
+    if (!settings.data || filtersInitialized) {
+      return;
+    }
+
+    setMinProfit(defaultFilterSettings.minProfit);
+    setMinRoiNowPct(defaultFilterSettings.minRoiNowPct);
+    setMinDemandDay(defaultFilterSettings.minDemandDay);
+    setFiltersInitialized(true);
+  }, [defaultFilterSettings, filtersInitialized, settings.data]);
+
+  const filters = useMemo<TradeFilters>(
+    () => ({
+      itemSearch,
+      minProfit,
+      minRoiNowPct,
+      minDemandDay,
+      maxDos,
+      sourceType,
+      minSecurity,
+      demandSource,
+    }),
+    [demandSource, itemSearch, maxDos, minDemandDay, minProfit, minRoiNowPct, minSecurity, sourceType],
+  );
+
+  const queriesEnabled = targetId !== null && filtersInitialized;
+  const summaries = useSourceSummaries(targetId, periodDays, filters, queriesEnabled);
+  const filteredSummaries = summaries.data ?? [];
+  const sortedSummaries = useMemo(
+    () => sortSummaries(filteredSummaries, sortKey, sortDirection),
+    [filteredSummaries, sortDirection, sortKey],
+  );
+  const totalGroupPages = Math.max(Math.ceil(sortedSummaries.length / groupsPerPage), 1);
+  const pagedSummaries = useMemo(() => {
+    const pageStart = (currentGroupPage - 1) * groupsPerPage;
+    return sortedSummaries.slice(pageStart, pageStart + groupsPerPage);
+  }, [currentGroupPage, groupsPerPage, sortedSummaries]);
+  const firstVisibleGroupIndex = sortedSummaries.length === 0 ? 0 : (currentGroupPage - 1) * groupsPerPage + 1;
+  const lastVisibleGroupIndex = Math.min(currentGroupPage * groupsPerPage, sortedSummaries.length);
 
   useEffect(() => {
-    const availableSummaries = summaries.data ?? [];
+    if (currentGroupPage > totalGroupPages) {
+      setCurrentGroupPage(totalGroupPages);
+    }
+  }, [currentGroupPage, totalGroupPages]);
+
+  useEffect(() => {
+    const availableSummaries = pagedSummaries;
     if (availableSummaries.length === 0) {
       if (sourceId !== null) {
         setSourceId(null);
@@ -81,80 +155,78 @@ export function TradePage() {
       return;
     }
 
-    const hasSelectedSource = availableSummaries.some((summary) => summary.source_location_id === sourceId);
-    if (!hasSelectedSource) {
-      setSourceId(availableSummaries[0].source_location_id);
+    const hasExpandedSource = availableSummaries.some((summary) => summary.source_location_id === sourceId);
+    if (sourceId !== null && !hasExpandedSource) {
+      setSourceId(null);
     }
-  }, [sourceId, summaries.data]);
+  }, [pagedSummaries, sourceId]);
 
-  const items = useOpportunityItems(targetId, sourceId, periodDays);
-
-  const filteredItems = useMemo(() => {
-    const searchValue = itemSearch.trim().toLowerCase();
-    const minRoiValue = parseNumberInput(minRoi, 0);
-    const minProfitValue = parseNumberInput(minProfit, 0);
-    const minMarginPctValue = parseNumberInput(minMarginPct, 0) / 100;
-    const minDemandDayValue = parseNumberInput(minDemandDay, 0);
-    const maxDosValue = parseNumberInput(maxDos, Infinity);
-    const minConfidenceValue = parseNumberInput(minConfidence, 0);
-    const secThreshold = securityThreshold(minSecurity);
-
-    return (items.data ?? []).filter((row) => {
-      const matchesSearch = searchValue.length === 0 || row.item_name.toLowerCase().includes(searchValue);
-      const meetsRoi = row.roi_now >= minRoiValue;
-      const meetsProfit = row.target_now_profit >= minProfitValue;
-      const meetsMargin =
-        minMarginPctValue <= 0 ||
-        (row.source_station_sell_price > 0 &&
-          row.target_now_profit / row.source_station_sell_price >= minMarginPctValue);
-      const meetsDemand = row.target_demand_day >= minDemandDayValue;
-      const meetsDos = row.target_dos <= maxDosValue;
-      const meetsConfidence = row.confidence_score >= minConfidenceValue;
-      const meetsSecurity = row.source_security_status >= secThreshold;
-      const meetsDemandSource = demandSource === "all" || row.demand_source === demandSource;
-      return (
-        matchesSearch &&
-        meetsRoi &&
-        meetsProfit &&
-        meetsMargin &&
-        meetsDemand &&
-        meetsDos &&
-        meetsConfidence &&
-        meetsSecurity &&
-        meetsDemandSource
-      );
-    });
-  }, [itemSearch, items.data, minRoi, minProfit, minMarginPct, minDemandDay, maxDos, minConfidence, minSecurity, demandSource]);
-
-  const sortedItems = useMemo(
-    () => sortItems(filteredItems, sortKey, sortDirection),
-    [filteredItems, sortDirection, sortKey],
+  const items = useOpportunityItems(targetId, sourceId, periodDays, filters, sourceId !== null && queriesEnabled);
+  const expandedItems = useMemo(() => items.data ?? [], [items.data]);
+  const sortedFilteredItems = useMemo(
+    () => sortOpportunityItems(expandedItems, sortKey, sortDirection),
+    [expandedItems, sortDirection, sortKey],
+  );
+  const visibleExpandedItems = useMemo(
+    () => sortedFilteredItems.slice(0, expandedRowRenderLimit),
+    [expandedRowRenderLimit, sortedFilteredItems],
   );
 
   useEffect(() => {
-    if (sortedItems.length === 0) {
+    if (visibleExpandedItems.length === 0) {
       if (selectedTypeId !== null) {
         setSelectedTypeId(null);
       }
       return;
     }
 
-    const hasSelectedItem = sortedItems.some((row) => row.type_id === selectedTypeId);
+    const hasSelectedItem = visibleExpandedItems.some((row) => row.type_id === selectedTypeId);
     if (!hasSelectedItem) {
-      setSelectedTypeId(sortedItems[0].type_id);
+      setSelectedTypeId(visibleExpandedItems[0].type_id);
     }
-  }, [selectedTypeId, sortedItems]);
+  }, [selectedTypeId, visibleExpandedItems]);
 
   const itemDetail = useOpportunityItemDetail(targetId, sourceId, selectedTypeId, periodDays);
+  const sourceSummariesLoading = Boolean(
+    !filtersInitialized || summaries.isLoading || (summaries.isFetching && filteredSummaries.length === 0),
+  );
+  const itemRowsLoading = Boolean(sourceId !== null && (items.isLoading || items.isFetching) && expandedItems.length === 0);
 
-  const handleSortChange = (nextSortKey: SortKey) => {
+  const handleSortChange = (nextSortKey: GroupedSortKey) => {
+    setCurrentGroupPage(1);
+    setExpandedRowRenderLimit(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
     if (nextSortKey === sortKey) {
-      setSortDirection((currentDirection) => (currentDirection === "desc" ? "asc" : "desc"));
+      startTransition(() => {
+        setSortDirection((currentDirection) => (currentDirection === "desc" ? "asc" : "desc"));
+      });
       return;
     }
 
-    setSortKey(nextSortKey);
-    setSortDirection(nextSortKey === "item_name" ? "asc" : "desc");
+    startTransition(() => {
+      setSortKey(nextSortKey);
+      setSortDirection(nextSortKey === "name" || nextSortKey === "demand_source" ? "asc" : "desc");
+    });
+  };
+
+  const handleRefresh = async () => {
+    if (targetId === null || isRefreshing) {
+      return;
+    }
+
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      await refreshTradeOpportunities(targetId, periodDays);
+      await summaries.refetch();
+      await items.refetch();
+      if (sourceId !== null && selectedTypeId !== null) {
+        await itemDetail.refetch();
+      }
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "Trade refresh failed.");
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   return (
@@ -166,57 +238,128 @@ export function TradePage() {
         </div>
         <button
           className="refresh-button"
+          type="button"
+          disabled={targetId === null || isRefreshing}
           onClick={() => {
-            void summaries.refetch();
-            void items.refetch();
+            void handleRefresh();
           }}
         >
-          Refresh
+          {isRefreshing ? "Refreshing..." : "Refresh"}
         </button>
       </header>
+      {refreshError ? <p role="alert">{refreshError}</p> : null}
       <TradeControls
         targets={targets}
         targetId={targetId}
-        periodDays={periodDays}
         itemSearch={itemSearch}
-        minRoi={minRoi}
         minProfit={minProfit}
-        minMarginPct={minMarginPct}
+        minRoiNowPct={minRoiNowPct}
         minDemandDay={minDemandDay}
         maxDos={maxDos}
-        minConfidence={minConfidence}
         sourceType={sourceType}
         minSecurity={minSecurity}
         demandSource={demandSource}
-        onTargetChange={setTargetId}
-        onPeriodChange={setPeriodDays}
+        onTargetChange={(nextTargetId) => {
+                setTargetId(nextTargetId);
+                setSourceId(null);
+                setSelectedTypeId(null);
+                setCurrentGroupPage(1);
+                setExpandedRowRenderLimit(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
+        }}
         onItemSearchChange={setItemSearch}
-        onMinRoiChange={setMinRoi}
         onMinProfitChange={setMinProfit}
-        onMinMarginPctChange={setMinMarginPct}
+        onMinRoiNowPctChange={setMinRoiNowPct}
         onMinDemandDayChange={setMinDemandDay}
         onMaxDosChange={setMaxDos}
-        onMinConfidenceChange={setMinConfidence}
         onSourceTypeChange={setSourceType}
         onMinSecurityChange={setMinSecurity}
         onDemandSourceChange={setDemandSource}
       />
       <SourceSummaryTable
-        rows={summaries.data ?? []}
-        selectedSourceId={sourceId}
-        onSelectSource={setSourceId}
+        rows={pagedSummaries}
+        totalRowCount={sortedSummaries.length}
+        expandedSourceId={sourceId}
+        expandedRows={expandedItems}
+        expandedRowRenderLimit={expandedRowRenderLimit}
+        selectedTypeId={selectedTypeId}
+        isLoading={sourceSummariesLoading}
+        isExpandedRowsLoading={itemRowsLoading}
+        sortKey={sortKey}
+        sortDirection={sortDirection}
+        onSortChange={handleSortChange}
+        onToggleSource={(nextSourceId) => {
+          startTransition(() => {
+            setSourceId((currentSourceId) => (currentSourceId === nextSourceId ? null : nextSourceId));
+            setSelectedTypeId(null);
+            setExpandedRowRenderLimit(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
+          });
+        }}
+        onShowMoreExpandedRows={() => {
+          setExpandedRowRenderLimit((currentLimit) => currentLimit + EXPANDED_ROW_RENDER_INCREMENT);
+        }}
+        onSelectItem={setSelectedTypeId}
       />
-      <div className="trade-lower-grid">
-        <ItemOpportunityTable
-          rows={sortedItems}
-          sortKey={sortKey}
-          sortDirection={sortDirection}
-          selectedTypeId={selectedTypeId}
-          onSortChange={handleSortChange}
-          onSelectItem={setSelectedTypeId}
-        />
-        <ItemDetailPanel detail={itemDetail.data} isLoading={itemDetail.isLoading} />
-      </div>
+      {sortedSummaries.length > 0 ? (
+        <div className="panel pagination-panel" aria-label="Grouped source market pagination">
+          <span>
+            Showing groups {firstVisibleGroupIndex}-{lastVisibleGroupIndex} of {sortedSummaries.length}
+          </span>
+          <div className="pagination-controls">
+            <button
+              type="button"
+              className="inline-more-button"
+              disabled={currentGroupPage === 1}
+              onClick={() => {
+                setCurrentGroupPage(1);
+                setSourceId(null);
+                setSelectedTypeId(null);
+              }}
+            >
+              First
+            </button>
+            <button
+              type="button"
+              className="inline-more-button"
+              disabled={currentGroupPage === 1}
+              onClick={() => {
+                setCurrentGroupPage((currentPage) => Math.max(currentPage - 1, 1));
+                setSourceId(null);
+                setSelectedTypeId(null);
+              }}
+            >
+              Previous
+            </button>
+            <span>
+              Page {currentGroupPage} / {totalGroupPages}
+            </span>
+            <button
+              type="button"
+              className="inline-more-button"
+              disabled={currentGroupPage === totalGroupPages}
+              onClick={() => {
+                setCurrentGroupPage((currentPage) => Math.min(currentPage + 1, totalGroupPages));
+                setSourceId(null);
+                setSelectedTypeId(null);
+              }}
+            >
+              Next
+            </button>
+            <button
+              type="button"
+              className="inline-more-button"
+              disabled={currentGroupPage === totalGroupPages}
+              onClick={() => {
+                setCurrentGroupPage(totalGroupPages);
+                setSourceId(null);
+                setSelectedTypeId(null);
+              }}
+            >
+              Last
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <ItemDetailPanel detail={itemDetail.data} isLoading={itemDetail.isLoading} />
     </div>
   );
 }

@@ -4,7 +4,9 @@ import {
   getOpportunityItemDetail,
   getOpportunityItems,
   getSourceSummaries,
+  getTargetOptions,
   getTargets,
+  type TradeFilters,
 } from "../api/trade";
 
 export function useTargets() {
@@ -14,11 +16,18 @@ export function useTargets() {
   });
 }
 
-export function useSourceSummaries(targetLocationId: number | null, periodDays: number) {
+export function useTargetOptions() {
   return useQuery({
-    queryKey: ["sourceSummaries", targetLocationId, periodDays],
-    queryFn: () => getSourceSummaries(targetLocationId ?? 0, periodDays),
-    enabled: targetLocationId !== null,
+    queryKey: ["targetOptions"],
+    queryFn: getTargetOptions,
+  });
+}
+
+export function useSourceSummaries(targetLocationId: number | null, periodDays: number, filters: TradeFilters, enabled = true) {
+  return useQuery({
+    queryKey: ["sourceSummaries", targetLocationId, periodDays, filters],
+    queryFn: () => getSourceSummaries(targetLocationId ?? 0, periodDays, filters),
+    enabled: targetLocationId !== null && enabled,
     refetchInterval: 60_000,
   });
 }
@@ -27,11 +36,13 @@ export function useOpportunityItems(
   targetLocationId: number | null,
   sourceLocationId: number | null,
   periodDays: number,
+  filters: TradeFilters,
+  enabled = true,
 ) {
   return useQuery({
-    queryKey: ["opportunityItems", targetLocationId, sourceLocationId, periodDays],
-    queryFn: () => getOpportunityItems(targetLocationId ?? 0, sourceLocationId ?? 0, periodDays),
-    enabled: targetLocationId !== null && sourceLocationId !== null,
+    queryKey: ["opportunityItems", targetLocationId, sourceLocationId, periodDays, filters],
+    queryFn: () => getOpportunityItems(targetLocationId ?? 0, sourceLocationId ?? 0, periodDays, filters),
+    enabled: targetLocationId !== null && sourceLocationId !== null && enabled,
     refetchInterval: 60_000,
   });
 }

@@ -5,26 +5,20 @@ import type { TargetLocation } from "../../types/trade";
 type Props = {
   targets: TargetLocation[];
   targetId: number | null;
-  periodDays: number;
   itemSearch: string;
-  minRoi: string;
   minProfit: string;
-  minMarginPct: string;
+  minRoiNowPct: string;
   minDemandDay: string;
   maxDos: string;
-  minConfidence: string;
   sourceType: string;
   minSecurity: string;
   demandSource: string;
   onTargetChange: (targetId: number) => void;
-  onPeriodChange: (periodDays: number) => void;
   onItemSearchChange: (value: string) => void;
-  onMinRoiChange: (value: string) => void;
   onMinProfitChange: (value: string) => void;
-  onMinMarginPctChange: (value: string) => void;
+  onMinRoiNowPctChange: (value: string) => void;
   onMinDemandDayChange: (value: string) => void;
   onMaxDosChange: (value: string) => void;
-  onMinConfidenceChange: (value: string) => void;
   onSourceTypeChange: (value: string) => void;
   onMinSecurityChange: (value: string) => void;
   onDemandSourceChange: (value: string) => void;
@@ -38,26 +32,20 @@ function readNumericValue(event: ChangeEvent<HTMLSelectElement | HTMLInputElemen
 export function TradeControls({
   targets,
   targetId,
-  periodDays,
   itemSearch,
-  minRoi,
   minProfit,
-  minMarginPct,
+  minRoiNowPct,
   minDemandDay,
   maxDos,
-  minConfidence,
   sourceType,
   minSecurity,
   demandSource,
   onTargetChange,
-  onPeriodChange,
   onItemSearchChange,
-  onMinRoiChange,
   onMinProfitChange,
-  onMinMarginPctChange,
+  onMinRoiNowPctChange,
   onMinDemandDayChange,
   onMaxDosChange,
-  onMinConfidenceChange,
   onSourceTypeChange,
   onMinSecurityChange,
   onDemandSourceChange,
@@ -79,17 +67,6 @@ export function TradeControls({
         </select>
       </label>
       <label>
-        <span>Analysis Period</span>
-        <input
-          aria-label="Analysis Period"
-          type="number"
-          min={1}
-          step={1}
-          value={periodDays}
-          onChange={(event) => onPeriodChange(readNumericValue(event))}
-        />
-      </label>
-      <label>
         <span>Item Search</span>
         <input
           aria-label="Item Search"
@@ -99,31 +76,37 @@ export function TradeControls({
         />
       </label>
       <label>
-        <span>Min ROI</span>
-        <input aria-label="Min ROI" value={minRoi} onChange={(event) => onMinRoiChange(event.target.value)} />
-      </label>
-      <label>
         <span>Min Profit (ISK)</span>
         <input
           aria-label="Min Profit"
+          type="number"
+          inputMode="decimal"
           value={minProfit}
           placeholder="15000000"
           onChange={(event) => onMinProfitChange(event.target.value)}
         />
       </label>
       <label>
-        <span>Min Margin %</span>
+        <span>Min ROI Now %</span>
         <input
-          aria-label="Min Margin Pct"
-          value={minMarginPct}
+          aria-label="Min ROI Now Pct"
+          type="number"
+          inputMode="decimal"
+          step="5"
+          min="0"
+          value={minRoiNowPct}
           placeholder="20"
-          onChange={(event) => onMinMarginPctChange(event.target.value)}
+          onChange={(event) => onMinRoiNowPctChange(event.target.value)}
         />
       </label>
       <label>
         <span>Min Demand/Day</span>
         <input
           aria-label="Min Demand Day"
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          min="0"
           value={minDemandDay}
           placeholder="1"
           onChange={(event) => onMinDemandDayChange(event.target.value)}
@@ -133,18 +116,13 @@ export function TradeControls({
         <span>Max D.O.S</span>
         <input
           aria-label="Max DOS"
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          min="0"
           value={maxDos}
           placeholder=""
           onChange={(event) => onMaxDosChange(event.target.value)}
-        />
-      </label>
-      <label>
-        <span>Min Confidence</span>
-        <input
-          aria-label="Min Confidence"
-          value={minConfidence}
-          placeholder=""
-          onChange={(event) => onMinConfidenceChange(event.target.value)}
         />
       </label>
       <label>
@@ -183,7 +161,8 @@ export function TradeControls({
         </select>
       </label>
       <div className="trade-filter-note" role="status">
-        Filters apply to the item table using live query results for the selected target and analysis period.
+        Analysis period follows settings. Min Profit filters `target now profit`, and Min ROI Now % filters `ROI Now`,
+        so `20` means `ROI Now` must be above `20%`. Expand a source market row to inspect its item opportunities inline.
       </div>
     </section>
   );
