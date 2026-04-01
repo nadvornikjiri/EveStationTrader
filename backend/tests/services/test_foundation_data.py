@@ -7,9 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.all_models import Item, Location, Region, Station, System, TrackedStructure, UserSetting
 from app.repositories.seed_data import (
-    CuratedFoundationSeedSource,
     ItemSeed,
-    DEFAULT_FOUNDATION_SEED_SOURCE,
     FileFoundationSeedSource,
     FoundationSnapshotError,
     RegionSeed,
@@ -63,35 +61,13 @@ def build_session() -> Session:
 
 def test_foundation_data_bootstrap_is_idempotent() -> None:
     session = build_session()
-    service = FoundationDataService()
+    service = FoundationDataService(seed_source=MockFoundationSeedSource())
 
     first = service.bootstrap(session)
     second = service.bootstrap(session)
 
     assert first.records_processed > 0
     assert second.records_processed == 0
-
-
-def test_foundation_data_service_defaults_to_curated_source() -> None:
-    service = FoundationDataService()
-
-    assert service.seed_source is DEFAULT_FOUNDATION_SEED_SOURCE
-    assert isinstance(service.seed_source, CuratedFoundationSeedSource)
-
-
-def test_foundation_data_bootstrap_seeds_core_entities() -> None:
-    session = build_session()
-    FoundationDataService().bootstrap(session)
-
-    assert session.scalar(select(Region).where(Region.region_id == 10000002)) is not None
-    assert session.scalar(select(System).where(System.system_id == 30000142)) is not None
-    assert session.scalar(select(Station).where(Station.station_id == 60003760)) is not None
-    assert session.scalar(select(Item).where(Item.type_id == 34)) is not None
-    assert session.scalar(select(Location).where(Location.location_id == 60003760)) is not None
-    assert session.scalar(select(TrackedStructure).where(TrackedStructure.structure_id == 1022734985679)) is not None
-    defaults = session.scalar(select(UserSetting).where(UserSetting.user_id.is_(None)))
-    assert defaults is not None
-    assert defaults.key == "defaults"
 
 
 def test_file_foundation_seed_source_loads_minimal_snapshot() -> None:
@@ -146,6 +122,66 @@ def test_foundation_data_bootstrap_with_file_snapshot_is_idempotent() -> None:
     defaults = session.scalar(select(UserSetting).where(UserSetting.user_id.is_(None)))
     assert defaults is not None
     assert defaults.value["default_analysis_period_days"] == 21
+
+
+def test_foundation_data_bootstrap_backfills_placeholder_station_names() -> None:
+    session = build_session()
+    service = FoundationDataService(seed_source=MockFoundationSeedSource())
+    service.bootstrap(session)
+
+    station = session.scalar(select(Station).where(Station.station_id == 99920001))
+    location = session.scalar(select(Location).where(Location.location_id == 99920001))
+    assert station is not None
+    assert location is not None
+
+    station.name = "Station 99920001"
+    location.name = "Station 99920001"
+    session.commit()
+
+    result = service.bootstrap(session)
+
+    repaired_station = session.scalar(select(Station).where(Station.station_id == 99920001))
+    repaired_location = session.scalar(select(Location).where(Location.location_id == 99920001))
+    assert repaired_station is not None
+    assert repaired_location is not None
+    assert result.records_processed == 0
+    assert repaired_station.name == "Mock Station"
+    assert repaired_location.name == "Mock Station"
+
+
+def test_foundation_data_bootstrap_preserves_resolved_station_name_when_seed_is_placeholder() -> None:
+    session = build_session()
+    service = FoundationDataService(seed_source=MockFoundationSeedSource())
+    service.bootstrap(session)
+
+    station = session.scalar(select(Station).where(Station.station_id == 99920001))
+    location = session.scalar(select(Location).where(Location.location_id == 99920001))
+    assert station is not None
+    assert location is not None
+
+    station.name = "Resolved Mock Station"
+    location.name = "Resolved Mock Station"
+    session.commit()
+
+    class PlaceholderSeedSource(MockFoundationSeedSource):
+        def stations(self) -> Sequence[StationSeed]:
+            return (
+                StationSeed(
+                    station_id=99920001,
+                    system_id=99910001,
+                    region_id=99900001,
+                    name="Station 99920001",
+                ),
+            )
+
+    FoundationDataService(seed_source=PlaceholderSeedSource()).bootstrap(session)
+
+    repaired_station = session.scalar(select(Station).where(Station.station_id == 99920001))
+    repaired_location = session.scalar(select(Location).where(Location.location_id == 99920001))
+    assert repaired_station is not None
+    assert repaired_location is not None
+    assert repaired_station.name == "Resolved Mock Station"
+    assert repaired_location.name == "Resolved Mock Station"
 
 
 @pytest.mark.parametrize(

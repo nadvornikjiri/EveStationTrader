@@ -191,6 +191,10 @@ export function TradePage() {
     !filtersInitialized || summaries.isLoading || (summaries.isFetching && filteredSummaries.length === 0),
   );
   const itemRowsLoading = Boolean(sourceId !== null && (items.isLoading || items.isFetching) && expandedItems.length === 0);
+  const sourceSummariesError =
+    summaries.error instanceof Error ? `Grouped opportunities failed to load: ${summaries.error.message}` : null;
+  const itemRowsError =
+    items.error instanceof Error ? `Item opportunities failed to load: ${items.error.message}` : null;
 
   const handleSortChange = (nextSortKey: GroupedSortKey) => {
     setCurrentGroupPage(1);
@@ -283,7 +287,9 @@ export function TradePage() {
         expandedRowRenderLimit={expandedRowRenderLimit}
         selectedTypeId={selectedTypeId}
         isLoading={sourceSummariesLoading}
+        errorMessage={sourceSummariesError}
         isExpandedRowsLoading={itemRowsLoading}
+        expandedRowsErrorMessage={itemRowsError}
         sortKey={sortKey}
         sortDirection={sortDirection}
         onSortChange={handleSortChange}

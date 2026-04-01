@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router as api_router
 from app.core.config import get_settings
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, install_request_logging
 from app.db.session import ensure_database
 
 configure_logging()
@@ -20,6 +20,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="EVE Station Trader API", version="0.1.0", lifespan=lifespan)
+install_request_logging(app)
 
 app.add_middleware(
     CORSMiddleware,

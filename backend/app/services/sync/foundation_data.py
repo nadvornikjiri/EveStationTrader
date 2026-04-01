@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.enums import LocationType
 from app.models.all_models import Item, Location, Region, Station, System, TrackedStructure, UserSetting
-from app.repositories.seed_data import DEFAULT_FOUNDATION_SEED_SOURCE, FoundationSeedSource, StationSeed
+from app.repositories.seed_data import FoundationSeedSource, StationSeed
 
 
 @dataclass
@@ -35,7 +35,7 @@ class FoundationSeedResult:
 class FoundationDataService:
     CHECKPOINT_INTERVAL = 100
 
-    def __init__(self, seed_source: FoundationSeedSource = DEFAULT_FOUNDATION_SEED_SOURCE) -> None:
+    def __init__(self, *, seed_source: FoundationSeedSource) -> None:
         self.seed_source = seed_source
 
     def bootstrap(self, session: Session, cancellation_check: Callable[[], None] | None = None) -> FoundationSeedResult:
@@ -153,6 +153,13 @@ class FoundationDataService:
                 )
             )
             result.stations += 1
+        else:
+            if station_instance.system_id != system_lookup[station.system_id]:
+                station_instance.system_id = system_lookup[station.system_id]
+            if station_instance.region_id != region_lookup[station.region_id]:
+                station_instance.region_id = region_lookup[station.region_id]
+            if self._should_replace_name(existing_name=station_instance.name, incoming_name=station.name):
+                station_instance.name = station.name
 
         location = session.scalar(select(Location).where(Location.location_id == station.station_id))
         if location is None:
@@ -166,6 +173,25 @@ class FoundationDataService:
                 )
             )
             result.locations += 1
+        else:
+            if location.location_type != LocationType.NPC_STATION.value:
+                location.location_type = LocationType.NPC_STATION.value
+            if location.system_id != system_lookup[station.system_id]:
+                location.system_id = system_lookup[station.system_id]
+            if location.region_id != region_lookup[station.region_id]:
+                location.region_id = region_lookup[station.region_id]
+            if self._should_replace_name(existing_name=location.name, incoming_name=station.name):
+                location.name = station.name
+
+    @staticmethod
+    def _should_replace_name(*, existing_name: str, incoming_name: str) -> bool:
+        if existing_name == incoming_name:
+            return False
+        incoming_is_placeholder = incoming_name.startswith("Station ")
+        existing_is_placeholder = existing_name.startswith("Station ")
+        if incoming_is_placeholder and not existing_is_placeholder:
+            return False
+        return True
 
     def _seed_items(
         self,

@@ -108,6 +108,36 @@ Priority rationale:
 - Mismatches:
   - coverage is good for the baseline formulas, but not exhaustive across all future business scenarios
 
+### T02A - Backend Request Logging In Docker
+
+- Status: `MISSING`
+- Objective: make individual backend HTTP requests visible in `docker logs` so sync/API troubleshooting does not rely only on app-level failures after the fact.
+- Dependencies:
+  - T02
+- Acceptance criteria:
+  - backend container logs show one line per incoming HTTP request during normal app runtime
+  - request log lines include at least method, path, response status, and request duration or equivalent timing signal
+  - logging works in the Dockerized backend path used by local development, not only in ad hoc non-Docker runs
+  - request logging does not duplicate each request multiple times per call
+  - deterministic backend coverage or a Docker-oriented smoke check proves the logging path is enabled
+- Likely files/modules:
+  - `backend/app/main.py`
+  - `backend/app/core/`
+  - `backend/Dockerfile`
+  - `docker-compose.yml`
+- Out of scope:
+  - structured distributed tracing
+  - request/response body logging
+  - frontend logging changes
+- Test hints:
+  - prefer a single clear access-log path, either via ASGI middleware or the server logging configuration, instead of stacking both
+  - verify the current container entrypoint does not suppress the chosen logging output
+  - keep noisy health-check filtering explicit if needed rather than silently dropping all access logs
+- Implementation mapping:
+  - none yet
+- Mismatches:
+  - current backend Docker logs do not expose the individual REST calls needed to diagnose sync behavior live
+
 ## T04 - Foundation Data Bootstrap
 
 - Status: `DONE`
@@ -619,7 +649,7 @@ Priority rationale:
   - per-toggle sync preferences persistence
   - structure discovery from ESI assets/orders
 - Test hints:
-  - seed `EsiCharacter`, `EsiCharacterSyncState`, and `CharacterAccessibleStructure` rows directly in SQLite fixtures
+  - seed `EsiCharacter`, `EsiCharacterSyncState`, and `CharacterAccessibleStructure` rows directly in the Postgres-backed test database fixtures
   - verify public `character_id` values are preserved at the service/API boundary
   - verify empty-structure characters still return stable defaults
 - Implementation mapping:
@@ -881,7 +911,7 @@ Priority rationale:
   - opportunity row generation
   - frontend changes
 - Test hints:
-  - use in-memory SQLite fixtures
+  - use the Postgres-backed test harness fixtures
   - verify exact `current_price`, `period_avg_price`, `price_min`, `price_max`, `risk_pct`, and `warning_flag`
   - include empty-history and threshold-boundary tests
 - Implementation mapping:
@@ -914,7 +944,7 @@ Priority rationale:
   - opportunity row generation
   - frontend changes
 - Test hints:
-  - use in-memory SQLite fixtures
+  - use the Postgres-backed test harness fixtures
   - verify exact persisted values and duplicate update behavior
   - assert the sync path feeds `T10A` successfully
 - Implementation mapping:
@@ -1009,7 +1039,7 @@ Priority rationale:
   - structure-local demand inference
   - frontend trade filter/sort/search completion
 - Test hints:
-  - seed `market_price_period` and `market_demand_resolved` rows directly in SQLite fixtures
+  - seed `market_price_period` and `market_demand_resolved` rows directly in the Postgres-backed test database fixtures
   - verify exact generated profit, ROI, capital, and warning fields
   - verify reruns replace prior persisted opportunity rows
 - Implementation mapping:

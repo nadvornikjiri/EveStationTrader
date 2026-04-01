@@ -99,6 +99,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
     {
       type_id: 34,
       item_name: "Tritanium",
+      market_browser_url: "https://evemarketbrowser.com/region/10000002/type/34",
       source_security_status: 1,
       purchase_units: 5,
       source_units_available: 10,
@@ -123,6 +124,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
     {
       type_id: 35,
       item_name: "Pyerite",
+      market_browser_url: "https://evemarketbrowser.com/region/10000002/type/35",
       source_security_status: 1,
       purchase_units: 9,
       source_units_available: 15,
@@ -149,6 +151,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
     {
       type_id: 36,
       item_name: "Mexallon",
+      market_browser_url: "https://evemarketbrowser.com/region/10000002/type/36",
       source_security_status: 0.9,
       purchase_units: 7,
       source_units_available: 25,
@@ -341,6 +344,62 @@ test("renders grouped opportunities collapsed by source market on first load", (
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, null, null, 14);
 });
 
+test("applies semantic metric colors to grouped and expanded trade cells", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  const groupedRow = screen.getByText("Amarr").closest("tr");
+  expect(groupedRow).not.toBeNull();
+  const groupedCells = groupedRow?.querySelectorAll("td") ?? [];
+  expect(groupedCells[10]).toHaveClass("metric-cell-source-price");
+  expect(groupedCells[13]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[14]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[15]).toHaveClass("metric-cell-capital");
+  expect(groupedCells[16]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[17]).toHaveClass("metric-cell-positive");
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+
+  const expandedRow = screen.getAllByText("Tritanium")[0].closest("tr");
+  expect(expandedRow).not.toBeNull();
+  const expandedCells = expandedRow?.querySelectorAll("td") ?? [];
+  expect(expandedCells[10]).toHaveClass("metric-cell-source-price");
+  expect(expandedCells[13]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[14]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[15]).toHaveClass("metric-cell-capital");
+  expect(expandedCells[16]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[17]).toHaveClass("metric-cell-positive");
+});
+
+test("formats item volume cells as whole-number m3 values", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  const groupedRow = screen.getByText("Amarr").closest("tr");
+  expect(groupedRow).toHaveTextContent("5 m3");
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+
+  const expandedRow = screen.getAllByText("Tritanium")[0].closest("tr");
+  expect(expandedRow).toHaveTextContent("0 m3");
+});
+
+test("shows source summary query errors instead of the generic empty-state message", () => {
+  mockUseSourceSummaries.mockReturnValue({
+    data: [],
+    error: new Error("API request failed: 500"),
+    isLoading: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  });
+
+  renderPage();
+
+  expect(screen.getByText("Load failed")).toBeInTheDocument();
+  expect(screen.getByText("Grouped opportunities failed to load: API request failed: 500")).toBeInTheDocument();
+  expect(screen.queryByText("No computed source markets available for this target yet.")).not.toBeInTheDocument();
+});
+
 test("paginates grouped source markets using the configured settings page size", async () => {
   const user = userEvent.setup();
   const pagedSummaryRows = Array.from({ length: 25 }, (_, index) => ({
@@ -416,6 +475,31 @@ test("loads item detail when an expanded inline item is selected", async () => {
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 35, 14);
   expect(within(detailPanel as HTMLElement).getByText("Pyerite")).toBeInTheDocument();
   expect(within(detailPanel as HTMLElement).getByText("Fallback")).toBeInTheDocument();
+});
+
+test("shows a MarketBrowser context menu for expanded item rows", async () => {
+  const user = userEvent.setup();
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.pointer([
+    {
+      target: screen.getAllByText("Tritanium")[0],
+      keys: "[MouseRight]",
+    },
+  ]);
+
+  const menu = screen.getByRole("menu", { name: "Tritanium actions" });
+  expect(within(menu).getByRole("menuitem", { name: "Open MarketBrowser" })).toBeInTheDocument();
+
+  await user.click(within(menu).getByRole("menuitem", { name: "Open MarketBrowser" }));
+
+  expect(openSpy).toHaveBeenCalledWith(
+    "https://evemarketbrowser.com/region/10000002/type/34",
+    "_blank",
+    "noopener,noreferrer",
+  );
 });
 
 test("sorts grouped source rows and expanded item rows by shared table columns", async () => {

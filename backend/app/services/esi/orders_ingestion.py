@@ -1,10 +1,10 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.domain.enums import LocationType
@@ -31,7 +31,75 @@ class EsiMarketOrderIngestionResult:
     skipped_non_npc_locations: int
 
 
+@dataclass(frozen=True)
+class EsiRegionOrderBatch:
+    region_id: int
+    eve_region_id: int
+    records: list[EsiRegionalOrderRecord]
+
+
 class EsiRegionalOrderIngestionService:
+    DELETE_BATCH_SIZE = 5_000
+
+    def ingest_order_batches(
+        self,
+        session: Session,
+        *,
+        region_batches: Sequence[EsiRegionOrderBatch],
+        universe_client: OrderMetadataCapableUniverseClient,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> EsiMarketOrderIngestionResult:
+        if not region_batches:
+            return EsiMarketOrderIngestionResult(
+                region_id=0,
+                records_processed=0,
+                created=0,
+                updated=0,
+                deleted=0,
+                stations_created=0,
+                items_created=0,
+                skipped_missing_items=0,
+                skipped_non_npc_locations=0,
+            )
+        if session.get_bind().dialect.name != "postgresql":
+            aggregate = EsiMarketOrderIngestionResult(
+                region_id=0,
+                records_processed=0,
+                created=0,
+                updated=0,
+                deleted=0,
+                stations_created=0,
+                items_created=0,
+                skipped_missing_items=0,
+                skipped_non_npc_locations=0,
+            )
+            for batch in region_batches:
+                result = self._ingest_via_orm(
+                    session,
+                    eve_region_id=batch.eve_region_id,
+                    records=batch.records,
+                    universe_client=universe_client,
+                    cancellation_check=cancellation_check,
+                )
+                aggregate = EsiMarketOrderIngestionResult(
+                    region_id=0,
+                    records_processed=aggregate.records_processed + result.records_processed,
+                    created=aggregate.created + result.created,
+                    updated=aggregate.updated + result.updated,
+                    deleted=aggregate.deleted + result.deleted,
+                    stations_created=aggregate.stations_created + result.stations_created,
+                    items_created=aggregate.items_created + result.items_created,
+                    skipped_missing_items=aggregate.skipped_missing_items + result.skipped_missing_items,
+                    skipped_non_npc_locations=aggregate.skipped_non_npc_locations + result.skipped_non_npc_locations,
+                )
+            return aggregate
+        return self._ingest_batches_via_postgres_copy(
+            session,
+            region_batches=region_batches,
+            universe_client=universe_client,
+            cancellation_check=cancellation_check,
+        )
+
     def ingest_region_orders(
         self,
         session: Session,
@@ -41,20 +109,206 @@ class EsiRegionalOrderIngestionService:
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
     ) -> EsiMarketOrderIngestionResult:
-        if session.get_bind().dialect.name != "postgresql":
-            return self._ingest_via_orm(
-                session,
-                eve_region_id=eve_region_id,
-                records=records,
-                universe_client=universe_client,
-                cancellation_check=cancellation_check,
-            )
-        return self._ingest_via_postgres_copy(
+        return self.ingest_order_batches(
             session,
-            eve_region_id=eve_region_id,
-            records=records,
+            region_batches=[EsiRegionOrderBatch(region_id=self._require_region_id(session, eve_region_id), eve_region_id=eve_region_id, records=records)],
             universe_client=universe_client,
             cancellation_check=cancellation_check,
+        )
+
+    def _require_region_id(self, session: Session, eve_region_id: int) -> int:
+        region = session.scalar(select(Region).where(Region.region_id == eve_region_id))
+        if region is None:
+            raise ValueError(f"Cannot ingest regional orders for unknown region {eve_region_id}.")
+        return region.id
+
+    def _ingest_batches_via_postgres_copy(
+        self,
+        session: Session,
+        *,
+        region_batches: Sequence[EsiRegionOrderBatch],
+        universe_client: OrderMetadataCapableUniverseClient,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> EsiMarketOrderIngestionResult:
+        region_ids = sorted({batch.region_id for batch in region_batches})
+        if not region_ids:
+            return EsiMarketOrderIngestionResult(
+                region_id=0,
+                records_processed=0,
+                created=0,
+                updated=0,
+                deleted=0,
+                stations_created=0,
+                items_created=0,
+                skipped_missing_items=0,
+                skipped_non_npc_locations=0,
+            )
+
+        total_records = sum(len(batch.records) for batch in region_batches)
+        self._prepare_stage_tables(session)
+        station_rows = self._collect_unique_station_rows(region_batches)
+        stations_created = self._ensure_station_locations_for_batches(
+            session,
+            station_rows=station_rows,
+            universe_client=universe_client,
+            cancellation_check=cancellation_check,
+        )
+        copy_rows(
+            session,
+            table_name="esi_market_orders_stage",
+            columns=(
+                "region_id",
+                "eve_region_id",
+                "order_id",
+                "external_type_id",
+                "external_location_id",
+                "external_system_id",
+                "is_buy_order",
+                "price",
+                "volume_total",
+                "volume_remain",
+                "min_volume",
+                "order_range",
+                "issued",
+                "duration",
+            ),
+            rows=(
+                (
+                    batch.region_id,
+                    batch.eve_region_id,
+                    record["order_id"],
+                    record["type_id"],
+                    record["location_id"],
+                    record["system_id"],
+                    record["is_buy_order"],
+                    record["price"],
+                    record["volume_total"],
+                    record["volume_remain"],
+                    record["min_volume"],
+                    record["range"],
+                    datetime.fromisoformat(record["issued"]).astimezone(UTC),
+                    record["duration"],
+                )
+                for batch in region_batches
+                for record in batch.records
+            ),
+        )
+        self._materialize_valid_stage(session)
+
+        skipped_missing_items = int(
+            session.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM esi_market_orders_stage AS stage
+                    LEFT JOIN items ON items.type_id = stage.external_type_id
+                    WHERE items.id IS NULL
+                    """
+                )
+            )
+            or 0
+        )
+        skipped_non_npc_locations = int(
+            session.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM esi_market_orders_stage AS stage
+                    JOIN items ON items.type_id = stage.external_type_id
+                    LEFT JOIN locations
+                      ON locations.location_id = stage.external_location_id
+                    WHERE locations.id IS NULL
+                    """
+                ),
+            )
+            or 0
+        )
+        valid_count = int(session.scalar(text("SELECT COUNT(*) FROM esi_market_orders_valid_stage")) or 0)
+        updated = int(
+            session.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM esi_market_orders_valid_stage AS valid
+                    JOIN esi_market_orders AS existing
+                      ON existing.order_id = valid.order_id
+                    """
+                )
+            )
+            or 0
+        )
+        created = valid_count - updated
+        deleted = int(
+            session.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM esi_market_orders AS existing
+                    WHERE existing.region_id IN (
+                        SELECT DISTINCT region_id FROM esi_market_orders_stage
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM esi_market_orders_valid_stage AS valid
+                        WHERE valid.order_id = existing.order_id
+                    )
+                    """
+                )
+            )
+            or 0
+        )
+
+        session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.region_id.in_(region_ids)))
+        session.execute(
+            text(
+                """
+                INSERT INTO esi_market_orders (
+                    order_id,
+                    region_id,
+                    location_id,
+                    type_id,
+                    system_id,
+                    is_buy_order,
+                    price,
+                    volume_total,
+                    volume_remain,
+                    min_volume,
+                    order_range,
+                    issued,
+                    duration,
+                    updated_at
+                )
+                SELECT
+                    order_id,
+                    region_id,
+                    location_id,
+                    type_id,
+                    system_id,
+                    is_buy_order,
+                    price,
+                    volume_total,
+                    volume_remain,
+                    min_volume,
+                    order_range,
+                    issued,
+                    duration,
+                    updated_at
+                FROM esi_market_orders_valid_stage
+                """
+            )
+        )
+
+        session.commit()
+        return EsiMarketOrderIngestionResult(
+            region_id=0,
+            records_processed=total_records,
+            created=created,
+            updated=updated,
+            deleted=deleted,
+            stations_created=stations_created,
+            items_created=0,
+            skipped_missing_items=skipped_missing_items,
+            skipped_non_npc_locations=skipped_non_npc_locations,
         )
 
     def _ingest_via_postgres_copy(
@@ -138,13 +392,8 @@ class EsiRegionalOrderIngestionService:
         deleted = len(existing_order_ids - seen_order_ids)
 
         if seen_order_ids:
-            session.execute(
-                delete(EsiMarketOrder).where(
-                    (EsiMarketOrder.region_id == region.id) | EsiMarketOrder.order_id.in_(seen_order_ids)
-                )
-            )
-        else:
-            session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.region_id == region.id))
+            self._delete_orders_by_ids(session, order_ids=seen_order_ids)
+        session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.region_id == region.id))
 
         if normalized_rows:
             copy_rows(
@@ -275,6 +524,185 @@ class EsiRegionalOrderIngestionService:
             skipped_non_npc_locations=skipped_non_npc_locations,
         )
 
+    def _prepare_stage_tables(self, session: Session) -> None:
+        session.execute(
+            text(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS esi_market_orders_stage (
+                    region_id INTEGER NOT NULL,
+                    eve_region_id INTEGER NOT NULL,
+                    order_id BIGINT NOT NULL,
+                    external_type_id INTEGER NOT NULL,
+                    external_location_id BIGINT NOT NULL,
+                    external_system_id INTEGER NOT NULL,
+                    is_buy_order BOOLEAN NOT NULL,
+                    price DOUBLE PRECISION NOT NULL,
+                    volume_total INTEGER NOT NULL,
+                    volume_remain INTEGER NOT NULL,
+                    min_volume INTEGER NOT NULL,
+                    order_range TEXT NOT NULL,
+                    issued TIMESTAMP WITH TIME ZONE NOT NULL,
+                    duration INTEGER NOT NULL
+                ) ON COMMIT DROP
+                """
+            )
+        )
+        session.execute(text("TRUNCATE TABLE esi_market_orders_stage"))
+        session.execute(
+            text(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS esi_market_orders_valid_stage (
+                    order_id BIGINT NOT NULL,
+                    region_id INTEGER NOT NULL,
+                    location_id INTEGER NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    system_id INTEGER NOT NULL,
+                    is_buy_order BOOLEAN NOT NULL,
+                    price DOUBLE PRECISION NOT NULL,
+                    volume_total INTEGER NOT NULL,
+                    volume_remain INTEGER NOT NULL,
+                    min_volume INTEGER NOT NULL,
+                    order_range TEXT NOT NULL,
+                    issued TIMESTAMP WITH TIME ZONE NOT NULL,
+                    duration INTEGER NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+                ) ON COMMIT DROP
+                """
+            )
+        )
+        session.execute(text("TRUNCATE TABLE esi_market_orders_valid_stage"))
+
+    def _materialize_valid_stage(self, session: Session) -> None:
+        session.execute(
+            text(
+                """
+                INSERT INTO esi_market_orders_valid_stage (
+                    order_id,
+                    region_id,
+                    location_id,
+                    type_id,
+                    system_id,
+                    is_buy_order,
+                    price,
+                    volume_total,
+                    volume_remain,
+                    min_volume,
+                    order_range,
+                    issued,
+                    duration,
+                    updated_at
+                )
+                SELECT DISTINCT ON (stage.order_id)
+                    stage.order_id,
+                    stage.region_id,
+                    locations.id,
+                    items.id,
+                    locations.system_id,
+                    stage.is_buy_order,
+                    stage.price,
+                    stage.volume_total,
+                    stage.volume_remain,
+                    stage.min_volume,
+                    stage.order_range,
+                    stage.issued,
+                    stage.duration,
+                    :updated_at
+                FROM esi_market_orders_stage AS stage
+                JOIN items
+                  ON items.type_id = stage.external_type_id
+                JOIN locations
+                  ON locations.location_id = stage.external_location_id
+                ORDER BY stage.order_id, stage.issued DESC, stage.region_id DESC, locations.id DESC
+                """
+            ),
+            {
+                "updated_at": datetime.now(UTC),
+            },
+        )
+
+    @staticmethod
+    def _collect_unique_station_rows(
+        region_batches: Sequence[EsiRegionOrderBatch],
+    ) -> list[tuple[int, int, int]]:
+        unique_rows: dict[int, tuple[int, int, int]] = {}
+        for batch in region_batches:
+            for record in batch.records:
+                location_id = record["location_id"]
+                if location_id in unique_rows:
+                    continue
+                unique_rows[location_id] = (batch.eve_region_id, location_id, record["system_id"])
+        return list(unique_rows.values())
+
+    def _ensure_station_locations_for_batches(
+        self,
+        session: Session,
+        *,
+        station_rows: Sequence[tuple[int, int, int]],
+        universe_client: OrderMetadataCapableUniverseClient,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> int:
+        if not station_rows:
+            return 0
+
+        existing_locations = {
+            location.location_id: location
+            for location in session.scalars(
+                select(Location).where(Location.location_id.in_([station_id for _, station_id, _ in station_rows]))
+            ).all()
+        }
+        created = 0
+        for eve_region_id, station_id, system_id in station_rows:
+            if cancellation_check is not None:
+                cancellation_check()
+            if station_id in existing_locations:
+                continue
+            if station_id >= 1_000_000_000_000:
+                location = self._ensure_structure_location(
+                    session,
+                    structure_id=station_id,
+                    system_id=system_id,
+                )
+                if location is not None:
+                    existing_locations[station_id] = location
+                continue
+            location, station_was_created = self._ensure_station_location(
+                session,
+                eve_region_id=eve_region_id,
+                station_id=station_id,
+                system_id=system_id,
+                universe_client=universe_client,
+            )
+            if location is not None:
+                existing_locations[station_id] = location
+            created += int(station_was_created)
+        return created
+
+    def _ensure_structure_location(
+        self,
+        session: Session,
+        *,
+        structure_id: int,
+        system_id: int,
+    ) -> Location | None:
+        existing_location = session.scalar(select(Location).where(Location.location_id == structure_id))
+        if existing_location is not None:
+            return existing_location
+
+        system = session.scalar(select(System).where(System.system_id == system_id))
+        if system is None:
+            return None
+
+        location = Location(
+            location_id=structure_id,
+            location_type=LocationType.STRUCTURE.value,
+            system_id=system.id,
+            region_id=system.region_id,
+            name=f"Structure {structure_id}",
+        )
+        session.add(location)
+        session.flush()
+        return location
+
     def _delete_stale_orders(self, session: Session, *, region_id: int, seen_order_ids: set[int]) -> int:
         existing_order_ids = list(
             session.scalars(select(EsiMarketOrder.order_id).where(EsiMarketOrder.region_id == region_id)).all()
@@ -283,8 +711,14 @@ class EsiRegionalOrderIngestionService:
         if not stale_order_ids:
             return 0
 
-        session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.order_id.in_(stale_order_ids)))
+        self._delete_orders_by_ids(session, order_ids=stale_order_ids)
         return len(stale_order_ids)
+
+    def _delete_orders_by_ids(self, session: Session, *, order_ids: set[int] | list[int]) -> None:
+        normalized_ids = list(order_ids)
+        for start in range(0, len(normalized_ids), self.DELETE_BATCH_SIZE):
+            batch = normalized_ids[start : start + self.DELETE_BATCH_SIZE]
+            session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.order_id.in_(batch)))
 
     def _ensure_station_location(
         self,
@@ -297,8 +731,6 @@ class EsiRegionalOrderIngestionService:
     ) -> tuple[Location | None, bool]:
         existing_location = session.scalar(select(Location).where(Location.location_id == station_id))
         if existing_location is not None:
-            if existing_location.location_type != LocationType.NPC_STATION.value:
-                return None, False
             return existing_location, False
 
         if station_id >= 1_000_000_000_000:

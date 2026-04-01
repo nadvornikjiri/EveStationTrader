@@ -26,6 +26,7 @@ class StructureDemandPeriodService:
     ) -> StructureDemandPeriodResult:
         computed_at = self._ensure_utc(as_of or datetime.now(UTC))
         window_start = computed_at - timedelta(days=period_days)
+        yesterday_start = computed_at - timedelta(days=1)
         deltas = session.scalars(
             select(StructureOrderDelta)
             .where(
@@ -37,32 +38,37 @@ class StructureDemandPeriodService:
             .order_by(StructureOrderDelta.to_snapshot_time.desc(), StructureOrderDelta.id.desc())
         ).all()
 
-        certain_units = float(sum(delta.inferred_trade_units for delta in deltas if not delta.disappeared))
-        max_units = float(sum(delta.inferred_trade_units for delta in deltas))
-        demand_min = certain_units / period_days
-        demand_max = max_units / period_days
-        demand_chosen = demand_max if demand_max == demand_min else (demand_min + demand_max) / 2
+        buy_from_sell_period = float(
+            sum(
+                delta.inferred_trade_units
+                for delta in deltas
+                if delta.inferred_trade_side == "buy_from_sell" and delta.inferred_trade_units > 0
+            )
+        )
+        sell_to_buy_period = float(
+            sum(
+                delta.inferred_trade_units
+                for delta in deltas
+                if delta.inferred_trade_side == "sell_to_buy" and delta.inferred_trade_units > 0
+            )
+        )
+        yesterday_deltas = [delta for delta in deltas if delta.to_snapshot_time >= yesterday_start]
+        buy_from_sell_yesterday = float(
+            sum(
+                delta.inferred_trade_units
+                for delta in yesterday_deltas
+                if delta.inferred_trade_side == "buy_from_sell" and delta.inferred_trade_units > 0
+            )
+        )
+        sell_to_buy_yesterday = float(
+            sum(
+                delta.inferred_trade_units
+                for delta in yesterday_deltas
+                if delta.inferred_trade_side == "sell_to_buy" and delta.inferred_trade_units > 0
+            )
+        )
 
         coverage_pct = min(len(deltas) / max(period_days, 1), 1.0)
-        latest_delta_time = max((self._ensure_utc(delta.to_snapshot_time) for delta in deltas), default=None)
-        earliest_delta_time = min((self._ensure_utc(delta.to_snapshot_time) for delta in deltas), default=None)
-
-        # Recency factor: 1.0 if latest delta within 24h, 0.5 if older, 0.0 if none
-        if latest_delta_time is None:
-            recency_factor = 0.0
-        elif latest_delta_time >= computed_at - timedelta(hours=24):
-            recency_factor = 1.0
-        else:
-            recency_factor = 0.5
-
-        # Observation window factor: require >= 72h of observation (MVP gate)
-        if earliest_delta_time is not None and latest_delta_time is not None:
-            observation_window_hours = (latest_delta_time - earliest_delta_time).total_seconds() / 3600
-            observation_factor = min(observation_window_hours / 72.0, 1.0)
-        else:
-            observation_factor = 0.0
-
-        confidence_score = coverage_pct * recency_factor * observation_factor
 
         record = session.scalar(
             select(StructureDemandPeriod).where(
@@ -78,20 +84,20 @@ class StructureDemandPeriodService:
                 type_id=type_id,
                 period_days=period_days,
                 computed_at=computed_at,
-                demand_min=demand_min,
-                demand_max=demand_max,
-                demand_chosen=demand_chosen,
+                buy_from_sell_period=buy_from_sell_period,
+                sell_to_buy_period=sell_to_buy_period,
+                buy_from_sell_yesterday=buy_from_sell_yesterday,
+                sell_to_buy_yesterday=sell_to_buy_yesterday,
                 coverage_pct=coverage_pct,
-                confidence_score=confidence_score,
             )
             session.add(record)
         else:
             record.computed_at = computed_at
-            record.demand_min = demand_min
-            record.demand_max = demand_max
-            record.demand_chosen = demand_chosen
+            record.buy_from_sell_period = buy_from_sell_period
+            record.sell_to_buy_period = sell_to_buy_period
+            record.buy_from_sell_yesterday = buy_from_sell_yesterday
+            record.sell_to_buy_yesterday = sell_to_buy_yesterday
             record.coverage_pct = coverage_pct
-            record.confidence_score = confidence_score
 
         session.commit()
         session.refresh(record)

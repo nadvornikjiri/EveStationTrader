@@ -33,6 +33,7 @@ app/repositories/trade_repository.py
 app/services/postgres_copy.py
 app/services/settings_service.py
 app/services/adam4eve/client.py
+app/services/adam4eve/history_ingestion.py
 app/services/adam4eve/ingestion.py
 app/services/auth/service.py
 app/services/characters/service.py
@@ -59,3 +60,4 @@ eve_station_trader_backend.egg-info/dependency_links.txt
 eve_station_trader_backend.egg-info/requires.txt
 eve_station_trader_backend.egg-info/top_level.txt
 tests/test_backend_entrypoint.py
+tests/test_logging.py

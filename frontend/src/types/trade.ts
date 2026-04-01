@@ -34,6 +34,7 @@ export type SourceSummary = {
 export type OpportunityItem = {
   type_id: number;
   item_name: string;
+  market_browser_url?: string | null;
   source_security_status: number;
   purchase_units: number;
   source_units_available: number;

@@ -2498,3 +2498,34 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `backend\\.venv\\Scripts\\python.exe -m ruff check app/services/settings_service.py app/repositories/trade_repository.py app/api/routes/opportunities.py tests/api/test_endpoints.py`
   - `backend\\.venv\\Scripts\\python.exe -m mypy app/services/settings_service.py app/repositories/trade_repository.py app/api/routes/opportunities.py`
   - note: `backend\\.venv\\Scripts\\python.exe -m pytest tests/api/test_endpoints.py -k passes_trade_filters -q` timed out in this environment before completion
+
+## 2026-04-01 - OPPORTUNITY-REBUILD-TARGET-SCOPING
+- Restricted global opportunity rebuilds to configured 	arget_market_location_ids instead of every resolved-demand location in the database.
+- Added a sync-service regression test proving non-configured targets are skipped during _rebuild_opportunities.
+
+
+## 2026-04-01 - PRE-REBUILD-ESI-ORDER-REFRESH
+- Opportunity rebuild now refreshes NPC ESI market orders immediately beforehand when the last successful esi_market_orders_sync is older than 10 minutes or missing.
+- Refactored the ESI market order sync path into a shared helper so standalone syncs and pre-rebuild refreshes use the same ingestion flow and messaging.
+- Added sync-service tests covering stale-refresh and fresh-skip behavior before rebuild.
+
+## 2026-04-01 - TRADE-MARKETBROWSER-CONTEXT-MENU
+- Added a prebuilt `market_browser_url` to trade opportunity item responses so the frontend can open EveMarketBrowser without reconstructing region or type identifiers client-side.
+- Added a right-click context menu on grouped item opportunity rows with an `Open MarketBrowser` action that opens the target-region item page in a new tab.
+- Added backend repository coverage for generated MarketBrowser URLs and frontend interaction coverage for the context menu action.
+
+## 2026-04-01 - TARGET-DEMAND-DAY-PERIOD-AVERAGE
+- Changed opportunity generation to compute `target_demand_day` from the selected-period demand average (`buy_from_sell_period / period_days`) instead of the latest-day snapshot (`buy_from_sell_yesterday`).
+- Aligned source acquisition sizing with the same period-average demand so purchase units, D.O.S., and demand/day all reflect the analysis window consistently.
+- Added opportunity-generation regression coverage for period-average demand/day behavior and updated existing expectations for purchase sizing and summary totals.
+
+## 2026-04-01 - OPPORTUNITY-REBUILD-STALE-SCOPE-PRUNING
+- Fixed full target-scope opportunity rebuilds to replace the entire stored target scope for that period instead of leaving stale source rows behind when a source fell out of the regenerated set.
+- Re-ran the live `opportunity_rebuild` job so old whole-number demand/day rows were purged and replaced with period-average demand/day values.
+- Added regression coverage proving full-scope generation prunes stale opportunity item and summary rows.
+
+
+## 2026-04-01 - ADAM4EVE-MULTI-WEEK-DEMAND-IMPORT
+- Expanded Adam4EVE market-order demand sync from a single latest weekly CSV to a rolling multi-export import that covers the active analysis-window lookback instead of collapsing the raw staging table to one scan date.
+- Added multi-file Adam market-order ingestion, client export resolution for all weekly demand files after a since-date, and sync guards that only skip demand downloads when the raw table already covers the required history window.
+- Added regression coverage for multi-export Adam resolution/import behavior and for the stale-one-week raw-window case that must force a fresh demand download even when the latest export key is already marked synced.

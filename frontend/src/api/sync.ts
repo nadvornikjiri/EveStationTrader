@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from "./client";
-import type { FallbackDiagnostic, SyncJobRun, SyncStatusCard } from "../types/sync";
+import type { ClearSyncDataResponse, FallbackDiagnostic, SyncJobRun, SyncStatusCard } from "../types/sync";
 
 export function getSyncStatus() {
   return apiGet<SyncStatusCard[]>("/sync/status");
@@ -15,6 +15,10 @@ export function getFallbackDiagnostics() {
 
 export function runSyncJob(jobType: string) {
   return apiPost<SyncJobRun>(`/sync/run/${jobType}`);
+}
+
+export function clearSyncData(jobType: string) {
+  return apiPost<ClearSyncDataResponse>(`/sync/clear/${jobType}`);
 }
 
 export function cancelSyncJob(jobId: number) {

@@ -10,21 +10,44 @@ const hookState = vi.hoisted(() => ({
     isLoading: false,
     data: {
       default_analysis_period_days: 14,
+      trade_groups_page_size: 20,
       debug_enabled: false,
       sales_tax_rate: 0.036,
       broker_fee_rate: 0.03,
-      min_confidence_for_local_structure_demand: 0.75,
       default_user_structure_poll_interval_minutes: 30,
       snapshot_retention_days: 30,
       fallback_policy: "regional_fallback",
       shipping_cost_per_m3: 350,
+      target_market_location_ids: [60003760],
       default_filters: {},
     },
+  },
+  targetOptions: {
+    data: [
+      {
+        location_id: 60003760,
+        name: "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+        location_type: "npc_station",
+        region_name: "The Forge",
+        system_name: "Jita",
+      },
+      {
+        location_id: 60008494,
+        name: "Amarr VIII (Oris) - Emperor Family Academy",
+        location_type: "npc_station",
+        region_name: "Domain",
+        system_name: "Amarr",
+      },
+    ],
   },
   updateSettings: {
     isPending: false,
     mutate: vi.fn(),
   },
+}));
+
+vi.mock("../hooks/useTradeData", () => ({
+  useTargetOptions: () => hookState.targetOptions,
 }));
 
 vi.mock("../hooks/useSettingsData", () => ({
@@ -59,9 +82,26 @@ test("submits updated debug setting", async () => {
   renderSettingsPage();
 
   await user.click(screen.getByLabelText("Debug Mode"));
+  await user.click(screen.getByLabelText("Trade Groups per Page"));
+  await user.keyboard("{Control>}a{/Control}30");
+  await user.click(screen.getByLabelText("Amarr VIII (Oris) - Emperor Family Academy"));
   await user.click(screen.getByRole("button", { name: "Save Settings" }));
 
   expect(hookState.updateSettings.mutate).toHaveBeenCalledWith(
-    expect.objectContaining({ debug_enabled: true }),
+    expect.objectContaining({
+      debug_enabled: true,
+      trade_groups_page_size: 30,
+      target_market_location_ids: [60003760, 60008494],
+    }),
+    expect.objectContaining({ onSuccess: expect.any(Function) }),
   );
+});
+
+test("save button stays enabled when settings data is present", () => {
+  hookState.settings.isLoading = true;
+  renderSettingsPage();
+
+  expect(screen.getByRole("button", { name: "Save Settings" })).toBeEnabled();
+
+  hookState.settings.isLoading = false;
 });

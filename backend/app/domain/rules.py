@@ -4,23 +4,19 @@ from app.domain.constants import EPSILON
 def calculate_target_now_profit(
     target_station_sell_price: float,
     source_station_sell_price: float,
-    sales_tax_rate: float,
-    broker_fee_rate: float,
 ) -> float:
-    return target_station_sell_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
+    return target_station_sell_price - source_station_sell_price
 
 
 def calculate_target_period_profit(
     target_period_avg_price: float,
     source_station_sell_price: float,
-    sales_tax_rate: float,
-    broker_fee_rate: float,
 ) -> float:
-    return target_period_avg_price * (1 - sales_tax_rate - broker_fee_rate) - source_station_sell_price
+    return target_period_avg_price - source_station_sell_price
 
 
-def calculate_capital_required(source_station_sell_price: float, target_demand_day: float) -> float:
-    return source_station_sell_price * target_demand_day
+def calculate_capital_required(source_station_sell_price: float, purchase_units: float) -> float:
+    return source_station_sell_price * purchase_units
 
 
 def calculate_roi(profit: float, source_station_sell_price: float) -> float:

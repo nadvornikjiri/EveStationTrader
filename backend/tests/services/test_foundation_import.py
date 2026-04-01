@@ -3,8 +3,13 @@ import json
 import zipfile
 
 import pytest
+from sqlalchemy import select
 
+from app.models.all_models import Location, Region, Station, System
+from app.repositories.seed_data import RegionSeed, StaticFoundationSeedSource, StationSeed, SystemSeed
 from app.services.sync.foundation_import import CcpSdeClient
+from app.services.sync.foundation_import import FoundationImportService
+from tests.db_test_utils import build_test_session
 
 
 def _build_fixture_zip(*, include_station_names: bool) -> bytes:
@@ -84,9 +89,11 @@ def test_ccp_sde_client_builds_seed_source_from_bulk_jsonl_zip() -> None:
     assert source.systems()[0].system_id == 30000142
     assert source.stations()[0].station_id == 60003760
     assert source.stations()[0].name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
-    assert [item.type_id for item in source.items()] == [34]
+    assert [item.type_id for item in source.items()] == [34, 35, 28503]
     assert source.items()[0].group_name == "Mineral"
     assert source.items()[0].category_name == "Material"
+    assert source.items()[1].name == "Pyerite"
+    assert source.items()[2].category_name == "Blueprint"
 
 
 def test_ccp_sde_client_uses_plain_jsonl_zip_without_station_names() -> None:
@@ -102,3 +109,103 @@ def test_ccp_sde_client_surfaces_download_failures() -> None:
 
     with pytest.raises(ValueError, match="Unable to download CCP SDE zip"):
         client.build_seed_source()
+
+
+def test_foundation_import_service_backfills_placeholder_station_names() -> None:
+    session = build_test_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    session.add(
+        Station(
+            station_id=60003760,
+            system_id=system.id,
+            region_id=region.id,
+            name="Station 60003760",
+        )
+    )
+    session.add(
+        Location(
+            location_id=60003760,
+            location_type="npc_station",
+            system_id=system.id,
+            region_id=region.id,
+            name="Station 60003760",
+        )
+    )
+    session.commit()
+
+    seed_source = StaticFoundationSeedSource(
+        regions_data=(RegionSeed(region_id=10000002, name="The Forge"),),
+        systems_data=(SystemSeed(system_id=30000142, region_id=10000002, name="Jita", security_status=0.9),),
+        stations_data=(
+            StationSeed(
+                station_id=60003760,
+                system_id=30000142,
+                region_id=10000002,
+                name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+            ),
+        ),
+    )
+
+    FoundationImportService().import_from_seed_source(session, seed_source=seed_source)
+
+    station = session.scalar(select(Station).where(Station.station_id == 60003760))
+    location = session.scalar(select(Location).where(Location.location_id == 60003760))
+    assert station is not None
+    assert location is not None
+    assert station.name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+    assert location.name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+
+
+def test_foundation_import_service_preserves_resolved_station_name_when_seed_is_placeholder() -> None:
+    session = build_test_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    session.add(
+        Station(
+            station_id=60003760,
+            system_id=system.id,
+            region_id=region.id,
+            name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+        )
+    )
+    session.add(
+        Location(
+            location_id=60003760,
+            location_type="npc_station",
+            system_id=system.id,
+            region_id=region.id,
+            name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+        )
+    )
+    session.commit()
+
+    seed_source = StaticFoundationSeedSource(
+        regions_data=(RegionSeed(region_id=10000002, name="The Forge"),),
+        systems_data=(SystemSeed(system_id=30000142, region_id=10000002, name="Jita", security_status=0.9),),
+        stations_data=(
+            StationSeed(
+                station_id=60003760,
+                system_id=30000142,
+                region_id=10000002,
+                name="Station 60003760",
+            ),
+        ),
+    )
+
+    FoundationImportService().import_from_seed_source(session, seed_source=seed_source)
+
+    station = session.scalar(select(Station).where(Station.station_id == 60003760))
+    location = session.scalar(select(Location).where(Location.location_id == 60003760))
+    assert station is not None
+    assert location is not None
+    assert station.name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+    assert location.name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"

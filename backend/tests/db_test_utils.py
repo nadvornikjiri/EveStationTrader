@@ -100,21 +100,9 @@ def reset_schema(engine: Engine) -> None:
     close_all_sessions()
     engine.dispose()
     with engine.begin() as connection:
+        connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+        connection.exec_driver_sql("CREATE SCHEMA public")
         Base.metadata.create_all(connection)
-        # `TRUNCATE ... CASCADE` doesn't need dependency ordering, so avoid
-        # `sorted_tables` here and skip SQLAlchemy's cycle warning for the
-        # mutually dependent `users` / `esi_characters` schema.
-        table_names = [
-            f'{_quote_identifier(table.schema)}.{_quote_identifier(table.name)}'
-            if table.schema
-            else _quote_identifier(table.name)
-            for table in sorted(
-                Base.metadata.tables.values(),
-                key=lambda table: ((table.schema or ""), table.name),
-            )
-        ]
-        if table_names:
-            connection.exec_driver_sql(f"TRUNCATE TABLE {', '.join(table_names)} RESTART IDENTITY CASCADE")
 
 
 @lru_cache(maxsize=1)

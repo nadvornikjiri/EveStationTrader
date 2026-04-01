@@ -34,6 +34,11 @@ export type FallbackDiagnostic = {
   structure_name: string;
   structure_id: number;
   demand_source: string;
-  confidence_score: number;
   coverage_pct: number;
+};
+
+export type ClearSyncDataResponse = {
+  job_type: string;
+  records_deleted: number;
+  message: string;
 };

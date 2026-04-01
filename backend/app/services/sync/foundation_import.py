@@ -11,9 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.repositories.seed_data import (
-    CURATED_DEFAULT_USER_SETTINGS,
-    CURATED_STRUCTURE_LOCATIONS,
-    CURATED_TRACKED_STRUCTURES,
     FoundationSeedSource,
     ItemSeed,
     RegionSeed,
@@ -61,9 +58,6 @@ class CcpSdeClient:
                 systems_data=systems,
                 stations_data=stations,
                 items_data=items,
-                structure_locations_data=CURATED_STRUCTURE_LOCATIONS,
-                tracked_structures_data=CURATED_TRACKED_STRUCTURES,
-                default_user_settings_data=CURATED_DEFAULT_USER_SETTINGS,
             )
 
     def _read_jsonl_records(self, archive: zipfile.ZipFile, filename: str) -> list[dict[str, object]]:
@@ -162,15 +156,9 @@ class CcpSdeClient:
     ) -> tuple[ItemSeed, ...]:
         rows = []
         for record in records:
-            if not self._is_truthy(record.get("published")):
-                continue
-            if record.get("marketGroupID") is None:
-                continue
             type_id = self._require_int(record, "_key")
             group_id = self._require_int(record, "groupID")
             group_name, category_name = groups.get(group_id, (None, None))
-            if category_name == "Blueprint":
-                continue
             rows.append(
                 ItemSeed(
                     type_id=type_id,
@@ -363,7 +351,16 @@ class FoundationImportService:
                 FROM tmp_foundation_stations AS staging
                 JOIN systems ON systems.system_id = staging.system_id
                 JOIN regions ON regions.region_id = staging.region_id
-                ON CONFLICT (station_id) DO NOTHING
+                ON CONFLICT (station_id) DO UPDATE
+                SET
+                    system_id = EXCLUDED.system_id,
+                    region_id = EXCLUDED.region_id,
+                    name = CASE
+                        WHEN EXCLUDED.name LIKE 'Station %%'
+                         AND stations.name NOT LIKE 'Station %%'
+                        THEN stations.name
+                        ELSE EXCLUDED.name
+                    END
                 RETURNING 1
             )
             SELECT count(*) FROM inserted
@@ -378,7 +375,17 @@ class FoundationImportService:
                 FROM tmp_foundation_stations AS staging
                 JOIN systems ON systems.system_id = staging.system_id
                 JOIN regions ON regions.region_id = staging.region_id
-                ON CONFLICT (location_id) DO NOTHING
+                ON CONFLICT (location_id) DO UPDATE
+                SET
+                    location_type = EXCLUDED.location_type,
+                    system_id = EXCLUDED.system_id,
+                    region_id = EXCLUDED.region_id,
+                    name = CASE
+                        WHEN EXCLUDED.name LIKE 'Station %%'
+                         AND locations.name NOT LIKE 'Station %%'
+                        THEN locations.name
+                        ELSE EXCLUDED.name
+                    END
                 RETURNING 1
             )
             SELECT count(*) FROM inserted

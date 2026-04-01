@@ -1,6 +1,6 @@
 import type { OpportunityItem } from "../../types/trade";
 
-type SortKey = "item_name" | "purchase_units" | "roi_now" | "confidence_score";
+type SortKey = "item_name" | "purchase_units" | "target_now_profit" | "roi_now";
 type SortDirection = "asc" | "desc";
 
 type Props = {
@@ -8,6 +8,7 @@ type Props = {
   sortKey: SortKey;
   sortDirection: SortDirection;
   selectedTypeId: number | null;
+  isLoading?: boolean;
   onSortChange: (sortKey: SortKey) => void;
   onSelectItem: (typeId: number) => void;
 };
@@ -15,8 +16,8 @@ type Props = {
 const SORTABLE_COLUMNS: Array<{ key: SortKey; label: string }> = [
   { key: "item_name", label: "Item Name" },
   { key: "purchase_units", label: "Purchase Units" },
+  { key: "target_now_profit", label: "Target Now Profit" },
   { key: "roi_now", label: "ROI Now" },
-  { key: "confidence_score", label: "Confidence" },
 ];
 
 function getSortIndicator(columnKey: SortKey, activeKey: SortKey, direction: SortDirection) {
@@ -32,6 +33,7 @@ export function ItemOpportunityTable({
   sortKey,
   sortDirection,
   selectedTypeId,
+  isLoading = false,
   onSortChange,
   onSelectItem,
 }: Props) {
@@ -39,7 +41,7 @@ export function ItemOpportunityTable({
     <section className="panel">
       <div className="panel-header">
         <h2>Item Opportunities</h2>
-        <span>{rows.length} items</span>
+        <span>{rows.length > 0 ? `${rows.length} items` : isLoading ? "Loading..." : "0 items"}</span>
       </div>
       <div className="table-scroll">
         <table className="data-table">
@@ -79,9 +81,13 @@ export function ItemOpportunityTable({
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {rows.length === 0 && isLoading ? (
               <tr>
-                <td colSpan={22}>No computed item opportunities available for this source yet.</td>
+                <td colSpan={21}>Loading item opportunities for this source...</td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={21}>No computed item opportunities available for this source yet.</td>
               </tr>
             ) : (
               rows.map((row) => (
@@ -94,7 +100,6 @@ export function ItemOpportunityTable({
                   <td>{row.item_name}</td>
                   <td>{row.purchase_units}</td>
                   <td>{(row.roi_now * 100).toFixed(1)}%</td>
-                  <td>{(row.confidence_score * 100).toFixed(0)}%</td>
                   <td>{row.source_units_available}</td>
                   <td>{row.target_demand_day.toFixed(1)}</td>
                   <td>{row.target_supply_units}</td>

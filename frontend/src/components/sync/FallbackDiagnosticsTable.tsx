@@ -16,7 +16,6 @@ export function FallbackDiagnosticsTable({ rows }: Props) {
           <tr>
             <th>Structure</th>
             <th>Demand Source</th>
-            <th>Confidence</th>
             <th>Coverage</th>
           </tr>
         </thead>
@@ -25,7 +24,6 @@ export function FallbackDiagnosticsTable({ rows }: Props) {
             <tr key={row.structure_id}>
               <td>{row.structure_name}</td>
               <td>{row.demand_source}</td>
-              <td>{(row.confidence_score * 100).toFixed(0)}%</td>
               <td>{(row.coverage_pct * 100).toFixed(0)}%</td>
             </tr>
           ))}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.all_models import BulkImportCursor, BulkImportFile
+
+logger = logging.getLogger("app.imports")
 
 
 @dataclass(frozen=True)
@@ -46,8 +49,22 @@ class BulkImportService:
                 local_path=destination,
                 covered_date=covered_date,
             )
+            logger.info(
+                "cache hit import_kind=%s remote_path=%s local_path=%s covered_date=%s",
+                import_kind,
+                remote_path,
+                destination,
+                covered_date.isoformat() if covered_date is not None else "-",
+            )
             return CachedImportFile(path=destination, downloaded=False)
 
+        logger.info(
+            "downloading import_kind=%s remote_path=%s local_path=%s covered_date=%s",
+            import_kind,
+            remote_path,
+            destination,
+            covered_date.isoformat() if covered_date is not None else "-",
+        )
         content = downloader()
         destination.write_bytes(content)
         self._record_cached_file(
@@ -57,6 +74,13 @@ class BulkImportService:
             remote_path=remote_path,
             local_path=destination,
             covered_date=covered_date,
+        )
+        logger.info(
+            "downloaded import_kind=%s remote_path=%s local_path=%s bytes=%s",
+            import_kind,
+            remote_path,
+            destination,
+            len(content),
         )
         return CachedImportFile(path=destination, downloaded=True)
 
@@ -161,4 +185,7 @@ class BulkImportService:
     def _download_with_client(client: httpx.Client, remote_path: str) -> bytes:
         response = client.get(remote_path)
         response.raise_for_status()
-        return response.content
+        content = getattr(response, "content", None)
+        if content is not None:
+            return content
+        return response.text.encode("utf-8")

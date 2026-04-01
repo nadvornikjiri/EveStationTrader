@@ -77,6 +77,12 @@ class TradeRepository:
             conditions.append(demand_source_column == demand_source)
         return conditions
 
+    @staticmethod
+    def _build_market_browser_url(region_id: int | None, type_id: int) -> str | None:
+        if region_id is None:
+            return None
+        return f"https://evemarketbrowser.com/region/{region_id}/type/{type_id}"
+
     def list_targets(self) -> list[TargetLocation]:
         from app.models.all_models import Location, Region, Station, System
 
@@ -375,7 +381,7 @@ class TradeRepository:
         min_security: str = "all",
         demand_source: str = "all",
     ) -> list[OpportunityItemRow]:
-        from app.models.all_models import Item, Location, OpportunityItem
+        from app.models.all_models import Item, Location, OpportunityItem, Region
         from app.services.sync.service import SyncService
 
         session = self.session_factory()
@@ -398,6 +404,11 @@ class TradeRepository:
                     source_location_id=resolved_source_location_id,
                     period_days=period_days,
                 )
+            target_region_id = session.scalar(
+                select(Region.region_id)
+                .join(Location, Location.region_id == Region.id)
+                .where(Location.id == resolved_target_location_id)
+            )
 
             conditions = self._item_filter_conditions(
                 item_name_column=Item.name,
@@ -419,7 +430,7 @@ class TradeRepository:
             )
             rows = (
                 session.execute(
-                    select(OpportunityItem, Item.name)
+                    select(OpportunityItem, Item.name, Item.type_id)
                     .join(Item, Item.id == OpportunityItem.type_id)
                     .join(Location, Location.id == OpportunityItem.source_location_id)
                     .where(
@@ -435,8 +446,9 @@ class TradeRepository:
             if rows:
                 return [
                     OpportunityItemRow(
-                        type_id=item.type_id,
+                        type_id=external_type_id,
                         item_name=item_name,
+                        market_browser_url=self._build_market_browser_url(target_region_id, external_type_id),
                         source_security_status=item.source_security_status,
                         purchase_units=item.purchase_units,
                         source_units_available=item.source_units_available,
@@ -458,14 +470,14 @@ class TradeRepository:
                         shipping_cost=item.shipping_cost,
                         demand_source=item.demand_source,
                     )
-                    for item, item_name in rows
+                    for item, item_name, external_type_id in rows
                 ]
             return []
         finally:
             session.close()
 
     def list_target_items(self, target_location_id: int, period_days: int) -> list[TargetOpportunityItemRow]:
-        from app.models.all_models import Item, OpportunityItem
+        from app.models.all_models import Item, Location, OpportunityItem, Region
         from app.services.sync.service import SyncService
 
         session = self.session_factory()
@@ -485,10 +497,15 @@ class TradeRepository:
                     target_location_id=resolved_target_location_id,
                     period_days=period_days,
                 )
+            target_region_id = session.scalar(
+                select(Region.region_id)
+                .join(Location, Location.region_id == Region.id)
+                .where(Location.id == resolved_target_location_id)
+            )
 
             rows = (
                 session.execute(
-                    select(OpportunityItem, Item.name)
+                    select(OpportunityItem, Item.name, Item.type_id)
                     .join(Item, Item.id == OpportunityItem.type_id)
                     .where(
                         OpportunityItem.target_location_id == resolved_target_location_id,
@@ -505,8 +522,9 @@ class TradeRepository:
             return [
                 TargetOpportunityItemRow(
                     source_location_id=item.source_location_id,
-                    type_id=item.type_id,
+                    type_id=external_type_id,
                     item_name=item_name,
+                    market_browser_url=self._build_market_browser_url(target_region_id, external_type_id),
                     source_security_status=item.source_security_status,
                     purchase_units=item.purchase_units,
                     source_units_available=item.source_units_available,
@@ -528,7 +546,7 @@ class TradeRepository:
                     shipping_cost=item.shipping_cost,
                     demand_source=item.demand_source,
                 )
-                for item, item_name in rows
+                for item, item_name, external_type_id in rows
             ]
         finally:
             session.close()
@@ -540,7 +558,7 @@ class TradeRepository:
         type_id: int,
         period_days: int,
     ) -> OpportunityItemDetail:
-        from app.models.all_models import Item, OpportunityItem
+        from app.models.all_models import Item, Location, OpportunityItem, Region
         from app.services.sync.service import SyncService
 
         session = self.session_factory()
@@ -592,9 +610,15 @@ class TradeRepository:
                 )
 
             item, item_name = row
+            target_region_id = session.scalar(
+                select(Region.region_id)
+                .join(Location, Location.region_id == Region.id)
+                .where(Location.id == resolved_target_location_id)
+            )
             metrics = OpportunityItemRow(
                 type_id=type_id,
                 item_name=item_name,
+                market_browser_url=self._build_market_browser_url(target_region_id, type_id),
                 source_security_status=item.source_security_status,
                 purchase_units=item.purchase_units,
                 source_units_available=item.source_units_available,

@@ -1,9 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.all_models import EsiHistoryDaily, Item, Location, MarketPricePeriod, Region, System
+from app.models.all_models import AdamMarketPriceHistoryDaily, Item, Location, MarketPricePeriod, Region, System
 from app.services.pricing.market_price_periods import MarketPricePeriodService
 from tests.db_test_utils import build_test_session
 
@@ -52,14 +52,14 @@ def seed_second_location(session: Session, *, region_id: int) -> int:
 def add_history(
     session: Session,
     *,
-    region_id: int,
+    location_id: int,
     type_id: int,
     rows: list[tuple[str, float, float, float]],
 ) -> None:
     for row_date, average, highest, lowest in rows:
         session.add(
-            EsiHistoryDaily(
-                region_id=region_id,
+            AdamMarketPriceHistoryDaily(
+                location_id=location_id,
                 type_id=type_id,
                 date=date.fromisoformat(row_date),
                 average=average,
@@ -74,10 +74,10 @@ def add_history(
 
 def test_upsert_market_price_period_from_history() -> None:
     session = build_session()
-    location_id, item_id, region_id = seed_location_and_item(session)
+    location_id, item_id, _region_id = seed_location_and_item(session)
     add_history(
         session,
-        region_id=region_id,
+        location_id=location_id,
         type_id=item_id,
         rows=[
             ("2026-03-20", 100.0, 120.0, 90.0),
@@ -104,10 +104,10 @@ def test_upsert_market_price_period_from_history() -> None:
 
 def test_upsert_market_price_period_uses_available_history_when_less_than_period() -> None:
     session = build_session()
-    location_id, item_id, region_id = seed_location_and_item(session)
+    location_id, item_id, _region_id = seed_location_and_item(session)
     add_history(
         session,
-        region_id=region_id,
+        location_id=location_id,
         type_id=item_id,
         rows=[
             ("2026-03-20", 100.0, 120.0, 90.0),
@@ -128,12 +128,46 @@ def test_upsert_market_price_period_uses_available_history_when_less_than_period
     assert result.row.current_price == 100.0
 
 
-def test_upsert_market_price_period_reuses_existing_row_without_risk_fields() -> None:
+def test_upsert_market_price_period_uses_latest_14_station_history_rows_for_period_average() -> None:
     session = build_session()
-    location_id, item_id, region_id = seed_location_and_item(session)
+    location_id, item_id, _region_id = seed_location_and_item(session)
+    newest_date = date.fromisoformat("2026-03-31")
     add_history(
         session,
-        region_id=region_id,
+        location_id=location_id,
+        type_id=item_id,
+        rows=[
+            (
+                (newest_date - timedelta(days=day_offset)).isoformat(),
+                100.0 + day_offset,
+                110.0 + day_offset,
+                95.0 + day_offset,
+            )
+            for day_offset in range(15)
+        ],
+    )
+
+    result = MarketPricePeriodService().upsert_from_history(
+        session,
+        location_id=location_id,
+        type_id=item_id,
+        period_days=14,
+    )
+
+    assert result.row is not None
+    assert result.history_points_used == 14
+    assert result.row.current_price == 100.0
+    assert result.row.period_avg_price == 106.5
+    assert result.row.price_min == 95.0
+    assert result.row.price_max == 123.0
+
+
+def test_upsert_market_price_period_reuses_existing_row_without_risk_fields() -> None:
+    session = build_session()
+    location_id, item_id, _region_id = seed_location_and_item(session)
+    add_history(
+        session,
+        location_id=location_id,
         type_id=item_id,
         rows=[
             ("2026-03-20", 100.0, 110.0, 90.0),
@@ -188,7 +222,7 @@ def test_refresh_region_from_history_computes_once_and_writes_all_locations() ->
     second_location_id = seed_second_location(session, region_id=region_id)
     add_history(
         session,
-        region_id=region_id,
+        location_id=first_location_id,
         type_id=item_id,
         rows=[
             ("2026-03-20", 100.0, 120.0, 90.0),
@@ -210,13 +244,13 @@ def test_refresh_region_from_history_computes_once_and_writes_all_locations() ->
         ).all()
     )
 
-    assert refreshed_count == 2
-    assert len(rows) == 2
-    assert [row.location_id for row in rows] == [first_location_id, second_location_id]
-    assert all(row.current_price == 100.0 for row in rows)
-    assert all(row.period_avg_price == 100.0 for row in rows)
-    assert all(row.price_min == 80.0 for row in rows)
-    assert all(row.price_max == 130.0 for row in rows)
+    assert refreshed_count == 1
+    assert len(rows) == 1
+    assert [row.location_id for row in rows] == [first_location_id]
+    assert rows[0].current_price == 100.0
+    assert rows[0].period_avg_price == 100.0
+    assert rows[0].price_min == 80.0
+    assert rows[0].price_max == 130.0
 
 
 def test_refresh_region_periods_from_history_writes_multiple_periods_in_one_pass() -> None:
@@ -225,7 +259,7 @@ def test_refresh_region_periods_from_history_writes_multiple_periods_in_one_pass
     second_location_id = seed_second_location(session, region_id=region_id)
     add_history(
         session,
-        region_id=region_id,
+        location_id=first_location_id,
         type_id=item_id,
         rows=[
             ("2026-03-20", 100.0, 120.0, 90.0),
@@ -251,9 +285,10 @@ def test_refresh_region_periods_from_history_writes_multiple_periods_in_one_pass
         ).all()
     )
 
-    assert refreshed_count == 8
-    assert len(rows) == 8
+    assert refreshed_count == 4
+    assert len(rows) == 4
     three_day_rows = [row for row in rows if row.period_days == 3]
+    assert all(row.location_id == first_location_id for row in three_day_rows)
     assert all(row.current_price == 100.0 for row in three_day_rows)
     assert all(row.period_avg_price == 100.0 for row in three_day_rows)
     seven_day_rows = [row for row in rows if row.period_days == 7]

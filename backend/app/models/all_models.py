@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
+    Column,
     JSON,
     BigInteger,
     Boolean,
     Date,
     DateTime,
+    Table,
     Float,
     ForeignKey,
     Integer,
@@ -152,14 +154,14 @@ class CharacterAccessibleStructure(Base):
     confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
 
 
-class EsiHistoryDaily(Base):
-    __tablename__ = "esi_history_daily"
-    __table_args__ = (UniqueConstraint("region_id", "type_id", "date"),)
+class AdamMarketPriceHistoryDaily(Base):
+    __tablename__ = "adam_market_price_history_daily"
+    __table_args__ = (UniqueConstraint("location_id", "type_id", "date"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
     type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
-    date: Mapped[datetime] = mapped_column(Date)
+    date: Mapped[date] = mapped_column(Date)
     average: Mapped[float] = mapped_column(Float)
     highest: Mapped[float] = mapped_column(Float)
     lowest: Mapped[float] = mapped_column(Float)
@@ -167,13 +169,18 @@ class EsiHistoryDaily(Base):
     volume: Mapped[int] = mapped_column(Integer)
 
 
-class EsiHistorySyncState(Base):
-    __tablename__ = "esi_history_sync_state"
+class AdamMarketPriceSyncState(Base):
+    __tablename__ = "adam_market_price_sync_state"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), unique=True, index=True)
     synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# Backward-compatible aliases while the rest of the codebase transitions off the old ESI naming.
+EsiHistoryDaily = AdamMarketPriceHistoryDaily
+EsiHistorySyncState = AdamMarketPriceSyncState
 
 
 class EsiMarketOrder(Base):
@@ -197,17 +204,38 @@ class EsiMarketOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
-class AdamNpcDemandDaily(Base):
-    __tablename__ = "adam_npc_demand_daily"
-    __table_args__ = (UniqueConstraint("location_id", "type_id", "date"),)
+AdamMarketOrdersTradeRaw = Table(
+    "adam_market_orders_trade_raw",
+    Base.metadata,
+    Column("location_id", BigInteger, nullable=False),
+    Column("region_id", Integer, nullable=False),
+    Column("type_id", Integer, nullable=False),
+    Column("is_buy_order", Integer, nullable=False),
+    Column("has_gone", Integer, nullable=False),
+    Column("scanDate", Date, nullable=False),
+    Column("amount", Float, nullable=False),
+    Column("high", Float, nullable=False),
+    Column("low", Float, nullable=False),
+    Column("avg", Float, nullable=False),
+    Column("orderNum", Integer, nullable=False),
+    Column("iskValue", Float, nullable=False),
+)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
-    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
-    date: Mapped[datetime] = mapped_column(Date)
-    demand_day: Mapped[float] = mapped_column(Float)
-    source_label: Mapped[str] = mapped_column(String(64), default="adam4eve")
-    raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+AdamMarketPriceHistoryRaw = Table(
+    "adam_market_price_history_raw",
+    Base.metadata,
+    Column("location_id", BigInteger, nullable=False),
+    Column("region_id", Integer, nullable=False),
+    Column("type_id", Integer, nullable=False),
+    Column("date", Date, nullable=False),
+    Column("buy_price_low", Float, nullable=True),
+    Column("buy_price_avg", Float, nullable=True),
+    Column("buy_price_high", Float, nullable=True),
+    Column("sell_price_low", Float, nullable=True),
+    Column("sell_price_avg", Float, nullable=True),
+    Column("sell_price_high", Float, nullable=True),
+)
 
 
 class AdamNpcDemandSyncState(Base):
@@ -296,11 +324,11 @@ class StructureDemandPeriod(Base):
     type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     period_days: Mapped[int] = mapped_column(Integer)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    demand_min: Mapped[float] = mapped_column(Float)
-    demand_max: Mapped[float] = mapped_column(Float)
-    demand_chosen: Mapped[float] = mapped_column(Float)
+    buy_from_sell_period: Mapped[float] = mapped_column(Float)
+    sell_to_buy_period: Mapped[float] = mapped_column(Float)
+    buy_from_sell_yesterday: Mapped[float] = mapped_column(Float)
+    sell_to_buy_yesterday: Mapped[float] = mapped_column(Float)
     coverage_pct: Mapped[float] = mapped_column(Float)
-    confidence_score: Mapped[float] = mapped_column(Float)
 
 
 class MarketPricePeriod(Base):
@@ -327,8 +355,10 @@ class MarketDemandResolved(Base):
     type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     period_days: Mapped[int] = mapped_column(Integer)
     demand_source: Mapped[str] = mapped_column(String(32))
-    confidence_score: Mapped[float] = mapped_column(Float)
-    demand_day: Mapped[float] = mapped_column(Float)
+    buy_from_sell_period: Mapped[float] = mapped_column(Float)
+    sell_to_buy_period: Mapped[float] = mapped_column(Float)
+    buy_from_sell_yesterday: Mapped[float] = mapped_column(Float)
+    sell_to_buy_yesterday: Mapped[float] = mapped_column(Float)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -361,7 +391,6 @@ class OpportunityItem(Base):
     item_volume_m3: Mapped[float] = mapped_column(Float)
     shipping_cost: Mapped[float] = mapped_column(Float, default=0.0)
     demand_source: Mapped[str] = mapped_column(String(32))
-    confidence_score: Mapped[float] = mapped_column(Float)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -393,7 +422,6 @@ class OpportunitySourceSummary(Base):
     total_item_volume_m3: Mapped[float] = mapped_column(Float)
     shipping_cost_total: Mapped[float] = mapped_column(Float)
     demand_source_summary: Mapped[str] = mapped_column(String(32))
-    confidence_score_summary: Mapped[float] = mapped_column(Float)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

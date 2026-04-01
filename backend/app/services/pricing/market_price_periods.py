@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models.all_models import EsiHistoryDaily, Location, MarketPricePeriod
+from app.models.all_models import AdamMarketPriceHistoryDaily, Location, MarketPricePeriod
 
 
 @dataclass
@@ -32,35 +32,40 @@ class MarketPricePeriodService:
         max_period_days = max(normalized_period_days)
         history_rows = list(
             session.scalars(
-                select(EsiHistoryDaily)
+                select(AdamMarketPriceHistoryDaily)
                 .where(
-                    EsiHistoryDaily.region_id == region_id,
-                    EsiHistoryDaily.type_id.in_(normalized_type_ids),
+                    AdamMarketPriceHistoryDaily.location_id.in_(location_ids),
+                    AdamMarketPriceHistoryDaily.type_id.in_(normalized_type_ids),
                 )
-                .order_by(EsiHistoryDaily.type_id.asc(), EsiHistoryDaily.date.desc())
+                .order_by(
+                    AdamMarketPriceHistoryDaily.location_id.asc(),
+                    AdamMarketPriceHistoryDaily.type_id.asc(),
+                    AdamMarketPriceHistoryDaily.date.desc(),
+                )
             ).all()
         )
 
-        history_by_type: dict[int, list[EsiHistoryDaily]] = {}
+        history_by_location_and_type: dict[tuple[int, int], list[AdamMarketPriceHistoryDaily]] = {}
         for row in history_rows:
-            rows_for_type = history_by_type.setdefault(row.type_id, [])
-            if len(rows_for_type) < max_period_days:
-                rows_for_type.append(row)
+            key = (row.location_id, row.type_id)
+            rows_for_key = history_by_location_and_type.setdefault(key, [])
+            if len(rows_for_key) < max_period_days:
+                rows_for_key.append(row)
 
-        stats_by_period_and_type: dict[tuple[int, int], dict[str, float]] = {}
-        for type_id, rows in history_by_type.items():
+        stats_by_location_type_and_period: dict[tuple[int, int, int], dict[str, float]] = {}
+        for (location_id, type_id), rows in history_by_location_and_type.items():
             for period_days in normalized_period_days:
                 sample = rows[:period_days]
                 if not sample:
                     continue
-                stats_by_period_and_type[(period_days, type_id)] = {
+                stats_by_location_type_and_period[(location_id, type_id, period_days)] = {
                     "current_price": sample[0].average,
                     "period_avg_price": sum(row.average for row in sample) / len(sample),
                     "price_min": min(row.lowest for row in sample),
                     "price_max": max(row.highest for row in sample),
                 }
 
-        if not stats_by_period_and_type:
+        if not stats_by_location_type_and_period:
             session.execute(
                 delete(MarketPricePeriod).where(
                     MarketPricePeriod.location_id.in_(location_ids),
@@ -71,51 +76,18 @@ class MarketPricePeriodService:
             session.commit()
             return 0
 
-        stale_pairs = [
-            (period_days, type_id)
-            for period_days in normalized_period_days
-            for type_id in normalized_type_ids
-            if (period_days, type_id) not in stats_by_period_and_type
-        ]
-        if stale_pairs:
-            session.execute(
-                delete(MarketPricePeriod).where(
-                    MarketPricePeriod.location_id.in_(location_ids),
-                    or_(
-                        *[
-                            and_(
-                                MarketPricePeriod.type_id == type_id,
-                                MarketPricePeriod.period_days == period_days,
-                            )
-                            for period_days, type_id in stale_pairs
-                        ]
-                    ),
-                )
-            )
-
-        existing_rows = session.execute(
-            select(
-                MarketPricePeriod.id,
-                MarketPricePeriod.location_id,
-                MarketPricePeriod.type_id,
-                MarketPricePeriod.period_days,
-            ).where(
+        session.execute(
+            delete(MarketPricePeriod).where(
                 MarketPricePeriod.location_id.in_(location_ids),
                 MarketPricePeriod.type_id.in_(normalized_type_ids),
                 MarketPricePeriod.period_days.in_(normalized_period_days),
             )
-        ).all()
-        existing_by_key = {
-            (row.location_id, row.type_id, row.period_days): row.id
-            for row in existing_rows
-        }
-
+        )
         computed_at = datetime.now(UTC)
-        update_mappings: list[dict[str, object]] = []
         insert_mappings: list[dict[str, object]] = []
-        for location_id in location_ids:
-            for (period_days, type_id), stats in stats_by_period_and_type.items():
-                mapping = {
+        for (location_id, type_id, period_days), stats in stats_by_location_type_and_period.items():
+            insert_mappings.append(
+                {
                     "location_id": location_id,
                     "type_id": type_id,
                     "period_days": period_days,
@@ -125,18 +97,11 @@ class MarketPricePeriodService:
                     "price_max": stats["price_max"],
                     "computed_at": computed_at,
                 }
-                existing_id = existing_by_key.get((location_id, type_id, period_days))
-                if existing_id is None:
-                    insert_mappings.append(mapping)
-                else:
-                    update_mappings.append({"id": existing_id, **mapping})
-
-        if update_mappings:
-            session.bulk_update_mappings(MarketPricePeriod.__mapper__, update_mappings)
+            )
         if insert_mappings:
             session.bulk_insert_mappings(MarketPricePeriod.__mapper__, insert_mappings)
         session.commit()
-        return len(location_ids) * len(stats_by_period_and_type)
+        return len(stats_by_location_type_and_period)
 
     def refresh_region_from_history(
         self,
@@ -169,9 +134,12 @@ class MarketPricePeriodService:
 
         history_rows = (
             session.execute(
-                select(EsiHistoryDaily)
-                .where(EsiHistoryDaily.region_id == location.region_id, EsiHistoryDaily.type_id == type_id)
-                .order_by(EsiHistoryDaily.date.desc())
+                select(AdamMarketPriceHistoryDaily)
+                .where(
+                    AdamMarketPriceHistoryDaily.location_id == location_id,
+                    AdamMarketPriceHistoryDaily.type_id == type_id,
+                )
+                .order_by(AdamMarketPriceHistoryDaily.date.desc())
                 .limit(period_days)
             )
             .scalars()

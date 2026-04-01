@@ -39,5 +39,10 @@ class FallbackDiagnostic(BaseModel):
     structure_name: str
     structure_id: int
     demand_source: str
-    confidence_score: float
     coverage_pct: float
+
+
+class ClearSyncDataResponse(BaseModel):
+    job_type: str
+    records_deleted: int
+    message: str

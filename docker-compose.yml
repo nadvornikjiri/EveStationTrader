@@ -27,7 +27,7 @@ services:
   backend:
     build:
       context: ./backend
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --access-log --log-level info
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://eve_trader:eve_trader@postgres:5432/eve_trader

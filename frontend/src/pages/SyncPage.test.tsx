@@ -7,6 +7,9 @@ import { SyncPage } from "./SyncPage";
 const hookState = vi.hoisted(() => ({
   runJob: {
     isPending: false,
+    isError: false,
+    error: null as Error | null,
+    variables: null as string | null,
     data: null as null | {
       id: number;
       started_at: string;
@@ -23,6 +26,18 @@ const hookState = vi.hoisted(() => ({
       progress_unit: string | null;
       message: string | null;
       error_details: string | null;
+    },
+    mutate: vi.fn(),
+  },
+  clearData: {
+    isPending: false,
+    isError: false,
+    error: null as Error | null,
+    variables: null as string | null,
+    data: null as null | {
+      job_type: string;
+      records_deleted: number;
+      message: string;
     },
     mutate: vi.fn(),
   },
@@ -65,7 +80,7 @@ vi.mock("../hooks/useSyncData", () => ({
         id: 1,
         started_at: "2026-03-20T09:00:00Z",
         finished_at: "2026-03-20T09:00:30Z",
-        job_type: "foundation_seed_sync",
+        job_type: "foundation_import_sync",
         status: "success",
         duration_ms: 30000,
         records_processed: 18,
@@ -75,7 +90,7 @@ vi.mock("../hooks/useSyncData", () => ({
         progress_current: null,
         progress_total: null,
         progress_unit: null,
-        message: "Seeded foundation data.",
+        message: "Imported universe foundation data.",
         error_details: null,
       },
       {
@@ -103,14 +118,16 @@ vi.mock("../hooks/useSyncData", () => ({
         structure_name: "Perimeter Market Keepstar",
         structure_id: 1,
         demand_source: "local_structure",
-        confidence_score: 0.88,
         coverage_pct: 0.82,
       },
     ],
   }),
   useRunSyncJob: () => hookState.runJob,
+  useClearSyncData: () => hookState.clearData,
   useCancelSyncJob: () => ({
     isPending: false,
+    isError: false,
+    error: null,
     data: null,
     mutate: vi.fn(),
   }),
@@ -129,8 +146,17 @@ function renderSyncPage() {
 
 afterEach(() => {
   hookState.runJob.isPending = false;
+  hookState.runJob.isError = false;
+  hookState.runJob.error = null;
+  hookState.runJob.variables = null;
   hookState.runJob.data = null;
   hookState.runJob.mutate.mockReset();
+  hookState.clearData.isPending = false;
+  hookState.clearData.isError = false;
+  hookState.clearData.error = null;
+  hookState.clearData.variables = null;
+  hookState.clearData.data = null;
+  hookState.clearData.mutate.mockReset();
 });
 
 test("renders sync dashboard data", () => {
@@ -138,6 +164,7 @@ test("renders sync dashboard data", () => {
 
   expect(screen.getByText("Sync Dashboard")).toBeInTheDocument();
   expect(screen.getByText("Worker Health")).toBeInTheDocument();
+  expect(screen.getByText("Clear SDE Data")).toBeInTheDocument();
   expect(screen.getByText("Job History")).toBeInTheDocument();
   expect(screen.getByText("Demand Fallback Diagnostics")).toBeInTheDocument();
 });
@@ -175,4 +202,42 @@ test("shows running progress for active sync jobs", () => {
   expect(screen.getAllByText("60 / 100 downloaded records")).not.toHaveLength(0);
   expect(screen.getByLabelText("ESI market orders sync progress")).toBeInTheDocument();
   expect(screen.getByLabelText("esi_market_orders_sync progress")).toBeInTheDocument();
+});
+
+test("shows immediate pending feedback for the selected sync action", () => {
+  hookState.runJob.isPending = true;
+  hookState.runJob.variables = "adam4eve_sync";
+
+  renderSyncPage();
+
+  expect(screen.getByRole("button", { name: "Starting Sync Adam4EVE Now..." })).toBeDisabled();
+});
+
+test("shows immediate pending feedback for the selected clear action", () => {
+  hookState.clearData.isPending = true;
+  hookState.clearData.variables = "adam4eve_sync";
+
+  renderSyncPage();
+
+  expect(screen.getByRole("button", { name: "Clearing Adam4EVE Data..." })).toBeDisabled();
+});
+
+test("surfaces run-job request errors from sync buttons", () => {
+  hookState.runJob.isError = true;
+  hookState.runJob.error = new Error("API request failed: 500");
+
+  renderSyncPage();
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Unable to start sync job:");
+  expect(screen.getByRole("alert")).toHaveTextContent("API request failed: 500");
+});
+
+test("surfaces clear-data request errors from clear buttons", () => {
+  hookState.clearData.isError = true;
+  hookState.clearData.error = new Error("API request failed: 500");
+
+  renderSyncPage();
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Unable to clear sync data:");
+  expect(screen.getByRole("alert")).toHaveTextContent("API request failed: 500");
 });

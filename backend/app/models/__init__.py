@@ -1,5 +1,8 @@
 from app.models.all_models import (
-    AdamNpcDemandDaily,
+    AdamMarketPriceHistoryDaily,
+    AdamMarketPriceHistoryRaw,
+    AdamMarketOrdersTradeRaw,
+    AdamMarketPriceSyncState,
     CharacterAccessibleStructure,
     EsiCharacter,
     EsiCharacterSyncState,
@@ -25,7 +28,10 @@ from app.models.all_models import (
 )
 
 __all__ = [
-    "AdamNpcDemandDaily",
+    "AdamMarketPriceHistoryDaily",
+    "AdamMarketPriceHistoryRaw",
+    "AdamMarketPriceSyncState",
+    "AdamMarketOrdersTradeRaw",
     "CharacterAccessibleStructure",
     "EsiCharacter",
     "EsiCharacterSyncState",

@@ -39,6 +39,7 @@ class SourceSummary(BaseModel):
 class OpportunityItemRow(BaseModel):
     type_id: int
     item_name: str
+    market_browser_url: str | None = None
     source_security_status: float
     purchase_units: float
     source_units_available: float

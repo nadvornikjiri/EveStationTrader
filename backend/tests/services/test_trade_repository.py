@@ -310,6 +310,7 @@ def test_list_items_reads_computed_rows_when_present() -> None:
     assert rows[0].item_name == "Tritanium"
     assert rows[0].purchase_units == 10.0
     assert rows[0].demand_source == "adam4eve"
+    assert rows[0].market_browser_url == "https://evemarketbrowser.com/region/10000002/type/34"
 
 
 def test_list_target_items_reads_computed_rows_when_present() -> None:
@@ -352,6 +353,7 @@ def test_list_target_items_reads_computed_rows_when_present() -> None:
     assert len(rows) == 1
     assert rows[0].source_location_id == source_location_id
     assert rows[0].item_name == "Tritanium"
+    assert rows[0].market_browser_url == "https://evemarketbrowser.com/region/10000002/type/34"
 
 
 def test_repository_returns_empty_data_when_no_computed_rows_exist() -> None:
@@ -481,6 +483,7 @@ def test_get_item_detail_reads_requested_computed_row() -> None:
     assert detail.item_name == "Pyerite"
     assert detail.metrics.type_id == pyerite.type_id
     assert detail.metrics.item_name == "Pyerite"
+    assert detail.metrics.market_browser_url == "https://evemarketbrowser.com/region/10000002/type/35"
     assert detail.metrics.source_station_sell_price == 88.0
     # No EsiMarketOrder rows seeded, so order lists should be empty
     assert detail.target_market_sell_orders == []
