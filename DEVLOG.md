@@ -2529,3 +2529,8 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - Expanded Adam4EVE market-order demand sync from a single latest weekly CSV to a rolling multi-export import that covers the active analysis-window lookback instead of collapsing the raw staging table to one scan date.
 - Added multi-file Adam market-order ingestion, client export resolution for all weekly demand files after a since-date, and sync guards that only skip demand downloads when the raw table already covers the required history window.
 - Added regression coverage for multi-export Adam resolution/import behavior and for the stale-one-week raw-window case that must force a fresh demand download even when the latest export key is already marked synced.
+
+## 2026-04-02 - DATABASE-BROWSER-PAGINATION-FILTERS
+- Replaced the hand-rolled database grid with a TanStack React Table browser that supports server-driven pagination, absolute ordering, and per-column filters on the Database page.
+- Extended the diagnostics database endpoint to accept paging, sorting, global search, and `filter_<column>` query parameters while preserving Adam market order enrichment columns in the returned dataset.
+- Updated frontend and backend regression coverage for database-table browsing, plus frontend container startup/install behavior so new table dependencies are available in Docker development runs.

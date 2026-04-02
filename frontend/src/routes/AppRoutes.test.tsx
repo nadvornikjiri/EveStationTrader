@@ -6,6 +6,7 @@ import { AppRoutes } from "./AppRoutes";
 
 vi.mock("../hooks/useTradeData", () => ({
   useTargets: () => ({ data: [] }),
+  useTargetOptions: () => ({ data: [] }),
   useSourceSummaries: () => ({ data: [], refetch: vi.fn() }),
   useOpportunityItems: () => ({ data: [] }),
 }));

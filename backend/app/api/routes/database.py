@@ -1,8 +1,11 @@
 from datetime import date, datetime
 from decimal import Decimal
+from math import ceil
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import MetaData, Table, func, inspect, select
+from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy import MetaData, String, Table, and_, asc, cast, desc, func, inspect, or_, select
+from sqlalchemy.sql import ColumnElement, Select
 
 from app.api.schemas.database import DatabaseTableData, DatabaseTableSummary
 from app.db.session import SessionLocal, engine
@@ -28,8 +31,13 @@ def list_database_tables() -> list[DatabaseTableSummary]:
 
 @router.get("/tables/{table_name}", response_model=DatabaseTableData)
 def get_database_table(
+    request: Request,
     table_name: str,
-    limit: int = Query(default=200, ge=1, le=1000),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    sort_column: str | None = Query(default=None),
+    sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    filter_text: str = Query(default="", max_length=200),
 ) -> DatabaseTableData:
     inspector = inspect(engine)
     if table_name not in inspector.get_table_names():
@@ -40,20 +48,61 @@ def get_database_table(
     session = SessionLocal()
     try:
         row_count = session.execute(select(func.count()).select_from(table)).scalar_one()
+        statement, columns, selectable_columns = _build_database_statement(table_name=table_name, table=table)
+        cleaned_filter_text = filter_text.strip()
+        column_filters = _extract_column_filters(request=request, selectable_columns=selectable_columns)
+        if cleaned_filter_text:
+            statement = statement.where(
+                or_(*[cast(column, String).ilike(f"%{cleaned_filter_text}%") for column in selectable_columns.values()])
+            )
+        if column_filters:
+            statement = statement.where(
+                and_(
+                    *[
+                        cast(selectable_columns[column_name], String).ilike(f"%{filter_value}%")
+                        for column_name, filter_value in column_filters.items()
+                    ]
+                )
+            )
+        filtered_row_count = session.execute(select(func.count()).select_from(statement.subquery())).scalar_one()
 
-        statement = select(table)
-        primary_key_columns = list(table.primary_key.columns)
-        if primary_key_columns:
-            statement = statement.order_by(*[column.desc() for column in primary_key_columns])
-        rows = [{key: _serialize_value(value) for key, value in row.items()} for row in session.execute(statement.limit(limit)).mappings().all()]
-        columns, rows = _enrich_database_rows(session, table_name=table_name, columns=[column.name for column in table.columns], rows=rows)
+        resolved_sort_column, resolved_sort_direction = _resolve_sorting(
+            columns=columns,
+            selectable_columns=selectable_columns,
+            requested_sort_column=sort_column,
+            requested_sort_direction=sort_direction,
+            primary_key_columns=[column.name for column in table.primary_key.columns],
+        )
+        ordered_statement = statement.order_by(
+            _build_sort_expression(selectable_columns[resolved_sort_column], resolved_sort_direction),
+            *_build_stable_tie_breakers(
+                selectable_columns=selectable_columns,
+                primary_key_columns=[column.name for column in table.primary_key.columns],
+                sort_column=resolved_sort_column,
+                sort_direction=resolved_sort_direction,
+            ),
+        )
+        total_pages = max(ceil(filtered_row_count / page_size), 1)
+        resolved_page = min(page, total_pages)
+        offset = (resolved_page - 1) * page_size
+
+        rows = [
+            {key: _serialize_value(value) for key, value in row.items()}
+            for row in session.execute(ordered_statement.limit(page_size).offset(offset)).mappings().all()
+        ]
 
         return DatabaseTableData(
             table_name=table_name,
             columns=columns,
             rows=rows,
             row_count=row_count,
-            limit=limit,
+            filtered_row_count=filtered_row_count,
+            page=resolved_page,
+            page_size=page_size,
+            total_pages=total_pages,
+            sort_column=resolved_sort_column,
+            sort_direction=resolved_sort_direction,
+            filter_text=cleaned_filter_text,
         )
     finally:
         session.close()
@@ -73,71 +122,57 @@ def _serialize_value(value: object | None) -> object | None:
     return value
 
 
-def _enrich_database_rows(
-    session,
+def _extract_column_filters(
+    *,
+    request: Request,
+    selectable_columns: dict[str, ColumnElement[Any]],
+) -> dict[str, str]:
+    column_filters: dict[str, str] = {}
+    for key, value in request.query_params.multi_items():
+        if not key.startswith("filter_"):
+            continue
+        column_name = key.removeprefix("filter_")
+        cleaned_value = value.strip()
+        if cleaned_value and column_name in selectable_columns:
+            column_filters[column_name] = cleaned_value
+    return column_filters
+
+
+def _build_database_statement(
     *,
     table_name: str,
-    columns: list[str],
-    rows: list[dict[str, object | None]],
-) -> tuple[list[str], list[dict[str, object | None]]]:
-    if table_name != "adam_market_orders_trade_raw" or not rows:
-        return columns, rows
+    table: Table,
+) -> tuple[Select[Any], list[str], dict[str, ColumnElement[Any]]]:
+    selectable_columns: dict[str, ColumnElement[Any]] = {column.name: column for column in table.columns}
 
-    location_ids = sorted(
-        {
-            int(location_id)
-            for row in rows
-            for location_id in [row.get("location_id")]
-            if isinstance(location_id, int)
-        }
+    if table_name != "adam_market_orders_trade_raw":
+        return select(*table.columns), [column.name for column in table.columns], selectable_columns
+
+    adam_columns = [column for column in table.columns]
+    location_eve_id = Location.location_id.label("location_eve_id")
+    location_name = Location.name.label("location_name")
+    location_region = Region.name.label("location_region")
+    location_system = System.name.label("location_system")
+    type_eve_id = Item.type_id.label("type_eve_id")
+    item_name = Item.name.label("item_name")
+    statement = (
+        select(
+            *adam_columns,
+            location_eve_id,
+            location_name,
+            location_region,
+            location_system,
+            type_eve_id,
+            item_name,
+        )
+        .select_from(table)
+        .outerjoin(Location, Location.location_id == table.c.location_id)
+        .outerjoin(Region, Region.id == Location.region_id)
+        .outerjoin(System, System.id == Location.system_id)
+        .outerjoin(Item, Item.type_id == table.c.type_id)
     )
-    type_ids = sorted(
-        {
-            int(type_id)
-            for row in rows
-            for type_id in [row.get("type_id")]
-            if isinstance(type_id, int)
-        }
-    )
 
-    locations = {
-        row.eve_location_id: row
-        for row in session.execute(
-            select(
-                Location.location_id.label("eve_location_id"),
-                Location.name.label("location_name"),
-                Region.name.label("region_name"),
-                System.name.label("system_name"),
-            )
-            .outerjoin(Region, Region.id == Location.region_id)
-            .outerjoin(System, System.id == Location.system_id)
-            .where(Location.location_id.in_(location_ids))
-        ).all()
-    }
-    items = {
-        row.eve_type_id: row
-        for row in session.execute(
-            select(
-                Item.type_id.label("eve_type_id"),
-                Item.name.label("item_name"),
-            ).where(Item.type_id.in_(type_ids))
-        ).all()
-    }
-
-    enriched_rows: list[dict[str, object | None]] = []
-    for row in rows:
-        enriched_row = dict(row)
-        location = locations.get(row.get("location_id"))
-        item = items.get(row.get("type_id"))
-        enriched_row["location_eve_id"] = getattr(location, "eve_location_id", None)
-        enriched_row["location_name"] = getattr(location, "location_name", None)
-        enriched_row["location_region"] = getattr(location, "region_name", None)
-        enriched_row["location_system"] = getattr(location, "system_name", None)
-        enriched_row["type_eve_id"] = getattr(item, "eve_type_id", None)
-        enriched_row["item_name"] = getattr(item, "item_name", None)
-        enriched_rows.append(enriched_row)
-
-    enriched_columns = list(columns)
+    enriched_columns = [column.name for column in adam_columns]
     if "location_id" in enriched_columns:
         location_index = enriched_columns.index("location_id") + 1
         enriched_columns[location_index:location_index] = [
@@ -155,4 +190,53 @@ def _enrich_database_rows(
     else:
         enriched_columns.extend(["type_eve_id", "item_name"])
 
-    return enriched_columns, enriched_rows
+    selectable_columns.update(
+        {
+            "location_eve_id": location_eve_id,
+            "location_name": location_name,
+            "location_region": location_region,
+            "location_system": location_system,
+            "type_eve_id": type_eve_id,
+            "item_name": item_name,
+        }
+    )
+    return statement, enriched_columns, selectable_columns
+
+
+def _resolve_sorting(
+    *,
+    columns: list[str],
+    selectable_columns: dict[str, ColumnElement[Any]],
+    requested_sort_column: str | None,
+    requested_sort_direction: str,
+    primary_key_columns: list[str],
+) -> tuple[str, str]:
+    if requested_sort_column in selectable_columns:
+        resolved_sort_column = requested_sort_column
+        resolved_sort_direction = requested_sort_direction
+    elif primary_key_columns:
+        resolved_sort_column = primary_key_columns[0]
+        resolved_sort_direction = "desc"
+    else:
+        resolved_sort_column = columns[0]
+        resolved_sort_direction = "asc"
+    return resolved_sort_column, resolved_sort_direction
+
+
+def _build_sort_expression(column: ColumnElement[Any], direction: str) -> ColumnElement[Any]:
+    return asc(column).nulls_last() if direction == "asc" else desc(column).nulls_last()
+
+
+def _build_stable_tie_breakers(
+    *,
+    selectable_columns: dict[str, ColumnElement[Any]],
+    primary_key_columns: list[str],
+    sort_column: str,
+    sort_direction: str,
+) -> list[ColumnElement[Any]]:
+    tie_breakers: list[ColumnElement[Any]] = []
+    for primary_key in primary_key_columns:
+        if primary_key == sort_column or primary_key not in selectable_columns:
+            continue
+        tie_breakers.append(_build_sort_expression(selectable_columns[primary_key], sort_direction))
+    return tie_breakers

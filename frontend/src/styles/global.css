@@ -109,7 +109,7 @@ select {
 }
 
 .database-controls-grid {
-  grid-template-columns: minmax(260px, 360px) 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .trade-controls-grid label,
@@ -420,6 +420,10 @@ button:disabled {
   gap: 12px;
 }
 
+.database-pagination-panel {
+  margin-top: 14px;
+}
+
 .pagination-controls {
   display: inline-flex;
   align-items: center;
@@ -434,6 +438,12 @@ button:disabled {
   color: inherit;
   cursor: pointer;
   font-weight: 600;
+}
+
+.database-column-filter {
+  width: 100%;
+  min-width: 120px;
+  padding: 8px 10px;
 }
 
 .trade-filter-note {

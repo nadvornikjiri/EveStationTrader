@@ -123,6 +123,34 @@ def seed_trade_opportunity_rows() -> None:
         session.close()
 
 
+def seed_database_browser_items() -> None:
+    session = SessionLocal()
+    try:
+        if session.scalar(select(Item).where(Item.type_id == 35)) is None:
+            session.add(
+                Item(
+                    type_id=35,
+                    name="Pyerite",
+                    volume_m3=0.01,
+                    group_name="Mineral",
+                    category_name="Material",
+                )
+            )
+        if session.scalar(select(Item).where(Item.type_id == 36)) is None:
+            session.add(
+                Item(
+                    type_id=36,
+                    name="Mexallon",
+                    volume_m3=0.01,
+                    group_name="Mineral",
+                    category_name="Material",
+                )
+            )
+        session.commit()
+    finally:
+        session.close()
+
+
 def test_get_targets(client) -> None:
     response = client.get("/api/targets")
     assert response.status_code == 200
@@ -386,6 +414,72 @@ def test_get_database_table_rows(client) -> None:
     assert payload["table_name"] == "items"
     assert "name" in payload["columns"]
     assert isinstance(payload["rows"], list)
+    assert payload["filtered_row_count"] <= payload["row_count"]
+    assert payload["page"] == 1
+    assert payload["page_size"] == 50
+    assert payload["total_pages"] >= 1
+    assert payload["sort_column"]
+
+
+def test_get_database_table_rows_supports_filtering(client) -> None:
+    seed_database_browser_items()
+    response = client.get(
+        "/api/database/tables/items",
+        params={
+            "filter_text": "py",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["table_name"] == "items"
+    assert payload["filter_text"] == "py"
+    assert payload["filtered_row_count"] >= 1
+    assert all("py" in row["name"].lower() for row in payload["rows"])
+
+
+def test_get_database_table_rows_supports_per_column_filtering(client) -> None:
+    seed_database_browser_items()
+    response = client.get(
+        "/api/database/tables/items",
+        params={
+            "filter_name": "mex",
+            "filter_type_id": "36",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["table_name"] == "items"
+    assert payload["filtered_row_count"] == 1
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["name"] == "Mexallon"
+    assert payload["rows"][0]["type_id"] == 36
+
+
+def test_get_database_table_rows_supports_absolute_sort_and_pagination(client) -> None:
+    seed_database_browser_items()
+    response = client.get(
+        "/api/database/tables/items",
+        params={
+            "sort_column": "name",
+            "sort_direction": "asc",
+            "page_size": 1,
+            "page": 2,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["table_name"] == "items"
+    assert payload["sort_column"] == "name"
+    assert payload["sort_direction"] == "asc"
+    assert payload["page_size"] == 1
+    assert payload["page"] == 2
+    assert payload["filtered_row_count"] >= 2
+    assert payload["total_pages"] >= 2
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["name"] == "Pyerite"
 
 
 def test_get_database_table_rows_enriches_adam_demand_references(client) -> None:

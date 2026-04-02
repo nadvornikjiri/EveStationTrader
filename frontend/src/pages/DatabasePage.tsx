@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type ColumnFiltersState,
+  type ColumnDef,
+  type PaginationState,
+  type SortingState,
+} from "@tanstack/react-table";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { useDatabaseTable, useDatabaseTables } from "../hooks/useDatabaseData";
-
-type SortDirection = "asc" | "desc";
+import type { DatabaseTableQuery } from "../types/database";
 
 function stringifyValue(value: unknown) {
   if (value === null || value === undefined) {
@@ -14,28 +22,37 @@ function stringifyValue(value: unknown) {
   return String(value);
 }
 
-function compareValues(left: unknown, right: unknown) {
-  if (left === right) {
-    return 0;
-  }
-  if (left === null || left === undefined) {
-    return 1;
-  }
-  if (right === null || right === undefined) {
-    return -1;
-  }
-  if (typeof left === "number" && typeof right === "number") {
-    return left - right;
-  }
-  return stringifyValue(left).localeCompare(stringifyValue(right), undefined, { numeric: true });
-}
+const DEFAULT_PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 
 export function DatabasePage() {
   const tables = useDatabaseTables();
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
-  const [sortColumn, setSortColumn] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-  const tableData = useDatabaseTable(selectedTable);
+  const [filterInput, setFilterInput] = useState("");
+  const deferredFilterInput = useDeferredValue(filterInput);
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const deferredColumnFilters = useDeferredValue(columnFilters);
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+  const query = useMemo<DatabaseTableQuery>(
+    () => ({
+      page: pagination.pageIndex + 1,
+      pageSize: pagination.pageSize,
+      sortColumn: sorting[0]?.id ?? null,
+      sortDirection: sorting[0]?.desc ? "desc" : "asc",
+      filterText: deferredFilterInput.trim(),
+      columnFilters: Object.fromEntries(
+        deferredColumnFilters
+          .map((filter) => [filter.id, String(filter.value).trim()])
+          .filter(([, value]) => value.length > 0),
+      ),
+    }),
+    [deferredColumnFilters, deferredFilterInput, pagination.pageIndex, pagination.pageSize, sorting],
+  );
+  const tableData = useDatabaseTable(selectedTable, query);
 
   useEffect(() => {
     if (selectedTable === null && (tables.data?.length ?? 0) > 0) {
@@ -44,38 +61,88 @@ export function DatabasePage() {
   }, [selectedTable, tables.data]);
 
   useEffect(() => {
-    const firstColumn = tableData.data?.columns[0] ?? null;
-    if (sortColumn === null && firstColumn !== null) {
-      setSortColumn(firstColumn);
-      setSortDirection("asc");
+    const resolvedPageIndex = (tableData.data?.page ?? 1) - 1;
+    if (resolvedPageIndex !== pagination.pageIndex) {
+      setPagination((currentPagination) => ({
+        ...currentPagination,
+        pageIndex: resolvedPageIndex,
+      }));
     }
-  }, [sortColumn, tableData.data?.columns]);
+  }, [pagination.pageIndex, tableData.data?.page]);
 
-  const sortedRows = useMemo(() => {
-    const rows = tableData.data?.rows ?? [];
-    if (sortColumn === null) {
-      return rows;
+  useEffect(() => {
+    const resolvedSortColumn = tableData.data?.sort_column ?? null;
+    const resolvedSortDirection = tableData.data?.sort_direction ?? "asc";
+    const nextSorting: SortingState =
+      resolvedSortColumn === null
+        ? []
+        : [
+            {
+              id: resolvedSortColumn,
+              desc: resolvedSortDirection === "desc",
+            },
+          ];
+    const sortingChanged =
+      nextSorting.length !== sorting.length ||
+      nextSorting.some((entry, index) => entry.id !== sorting[index]?.id || entry.desc !== sorting[index]?.desc);
+    if (sortingChanged) {
+      setSorting(nextSorting);
     }
+  }, [sorting, tableData.data?.sort_column, tableData.data?.sort_direction]);
 
-    const sorted = [...rows].sort((left, right) => compareValues(left[sortColumn], right[sortColumn]));
-    return sortDirection === "asc" ? sorted : sorted.reverse();
-  }, [sortColumn, sortDirection, tableData.data?.rows]);
+  const columns = useMemo<ColumnDef<Record<string, unknown>>[]>(
+    () =>
+      (tableData.data?.columns ?? []).map((column) => ({
+        accessorKey: column,
+        id: column,
+        header: column,
+        cell: ({ getValue }) => stringifyValue(getValue()) || "-",
+      })),
+    [tableData.data?.columns],
+  );
 
-  const handleSort = (column: string) => {
-    if (sortColumn === column) {
-      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
-      return;
-    }
-    setSortColumn(column);
-    setSortDirection("asc");
-  };
+  const table = useReactTable({
+    data: tableData.data?.rows ?? [],
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    manualFiltering: true,
+    manualPagination: true,
+    manualSorting: true,
+    pageCount: tableData.data?.total_pages ?? 1,
+    state: {
+      columnFilters,
+      pagination,
+      sorting,
+    },
+    onColumnFiltersChange: (updater) => {
+      startTransition(() => {
+        const nextFilters = typeof updater === "function" ? updater(columnFilters) : updater;
+        setColumnFilters(nextFilters);
+        setPagination((currentPagination) => ({
+          ...currentPagination,
+          pageIndex: 0,
+        }));
+      });
+    },
+    onPaginationChange: setPagination,
+    onSortingChange: (updater) => {
+      startTransition(() => {
+        const nextSorting = typeof updater === "function" ? updater(sorting) : updater;
+        setSorting(nextSorting.slice(0, 1));
+        setPagination((currentPagination) => ({
+          ...currentPagination,
+          pageIndex: 0,
+        }));
+      });
+    },
+  });
 
   const tableStatusMessage = tables.error
     ? "Database table list is temporarily unavailable."
     : tableData.error
       ? "Selected table is temporarily unavailable."
       : tableData.data
-        ? `Showing ${sortedRows.length} of ${tableData.data.row_count} rows from ${tableData.data.table_name}.`
+        ? `Showing ${tableData.data.rows.length} rows on page ${tableData.data.page} of ${tableData.data.total_pages}. ${tableData.data.filtered_row_count} matching rows out of ${tableData.data.row_count} total in ${tableData.data.table_name}.`
         : "Pick a table to inspect current database rows.";
 
   return (
@@ -95,13 +162,60 @@ export function DatabasePage() {
             disabled={(tables.data?.length ?? 0) === 0}
             value={selectedTable ?? ""}
             onChange={(event) => {
-              setSelectedTable(event.target.value);
-              setSortColumn(null);
+              startTransition(() => {
+                setSelectedTable(event.target.value);
+                setFilterInput("");
+                setSorting([]);
+                setColumnFilters([]);
+                setPagination({
+                  pageIndex: 0,
+                  pageSize: pagination.pageSize,
+                });
+              });
             }}
           >
-            {(tables.data ?? []).map((table) => (
-              <option key={table.name} value={table.name}>
-                {table.name}
+            {(tables.data ?? []).map((tableSummary) => (
+              <option key={tableSummary.name} value={tableSummary.name}>
+                {tableSummary.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Filter Rows</span>
+          <input
+            aria-label="Filter Rows"
+            placeholder="Search across visible columns"
+            value={filterInput}
+            onChange={(event) => {
+              startTransition(() => {
+                setFilterInput(event.target.value);
+                setPagination((currentPagination) => ({
+                  ...currentPagination,
+                  pageIndex: 0,
+                }));
+              });
+            }}
+          />
+        </label>
+        <label>
+          <span>Rows Per Page</span>
+          <select
+            aria-label="Rows Per Page"
+            value={pagination.pageSize}
+            onChange={(event) => {
+              const nextPageSize = Number.parseInt(event.target.value, 10);
+              startTransition(() => {
+                setPagination({
+                  pageIndex: 0,
+                  pageSize: Number.isFinite(nextPageSize) ? nextPageSize : DEFAULT_PAGE_SIZE,
+                });
+              });
+            }}
+          >
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
               </option>
             ))}
           </select>
@@ -125,30 +239,104 @@ export function DatabasePage() {
         ) : tableData.data === undefined ? (
           <p className="detail-empty">No table selected.</p>
         ) : (
-          <div className="table-scroll">
-            <table className="data-table database-table">
-              <thead>
-                <tr>
-                  {tableData.data.columns.map((column) => (
-                    <th key={column}>
-                      <button className="sort-button" onClick={() => handleSort(column)} type="button">
-                        {column}
-                      </button>
-                    </th>
+          <>
+            <div className="table-scroll">
+              <table className="data-table database-table">
+                <thead>
+                  {table.getHeaderGroups().map((headerGroup) => (
+                    <tr key={headerGroup.id}>
+                      {headerGroup.headers.map((header) => {
+                        const sortedState = header.column.getIsSorted();
+                        return (
+                          <th key={header.id}>
+                            <button
+                              className="sort-button"
+                              onClick={header.column.getToggleSortingHandler()}
+                              type="button"
+                            >
+                              {flexRender(header.column.columnDef.header, header.getContext())}
+                              {sortedState === "asc" ? " ^" : sortedState === "desc" ? " v" : ""}
+                            </button>
+                          </th>
+                        );
+                      })}
+                    </tr>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedRows.map((row, index) => (
-                  <tr key={`${tableData.data?.table_name ?? "table"}-${index}`}>
-                    {tableData.data.columns.map((column) => (
-                      <td key={`${index}-${column}`}>{stringifyValue(row[column]) || "-"}</td>
+                  <tr>
+                    {table.getAllLeafColumns().map((column) => (
+                      <th key={`${column.id}-filter`}>
+                        <input
+                          aria-label={`Filter ${column.id}`}
+                          className="database-column-filter"
+                          placeholder={`Filter ${column.id}`}
+                          value={String(column.getFilterValue() ?? "")}
+                          onChange={(event) => {
+                            column.setFilterValue(event.target.value);
+                          }}
+                        />
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {table.getRowModel().rows.map((row) => (
+                    <tr key={row.id}>
+                      {row.getVisibleCells().map((cell) => (
+                        <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="panel pagination-panel database-pagination-panel" aria-label="Database table pagination">
+              <span>
+                Page {tableData.data.page} of {tableData.data.total_pages}
+              </span>
+              <div className="pagination-controls">
+                <button
+                  type="button"
+                  className="inline-more-button"
+                  disabled={tableData.data.page <= 1}
+                  onClick={() => {
+                    table.firstPage();
+                  }}
+                >
+                  First
+                </button>
+                <button
+                  type="button"
+                  className="inline-more-button"
+                  disabled={tableData.data.page <= 1}
+                  onClick={() => {
+                    table.previousPage();
+                  }}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="inline-more-button"
+                  disabled={tableData.data.page >= tableData.data.total_pages}
+                  onClick={() => {
+                    table.nextPage();
+                  }}
+                >
+                  Next
+                </button>
+                <button
+                  type="button"
+                  className="inline-more-button"
+                  disabled={tableData.data.page >= tableData.data.total_pages}
+                  onClick={() => {
+                    table.setPageIndex(Math.max(tableData.data.total_pages - 1, 0));
+                  }}
+                >
+                  Last
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </section>
     </div>
