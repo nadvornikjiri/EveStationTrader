@@ -12,6 +12,21 @@ from app.db.session import ensure_database
 configure_logging()
 settings = get_settings()
 
+PRIVATE_NETWORK_ORIGIN_REGEX = (
+    r"^https?://("
+    r"localhost|127\.0\.0\.1|"
+    r"10(?:\.\d{1,3}){3}|"
+    r"192\.168(?:\.\d{1,3}){2}|"
+    r"172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}"
+    r")(?::\d+)?$"
+)
+
+
+def build_cors_options() -> tuple[list[str], str | None]:
+    allow_origins = [settings.frontend_url, "http://localhost:5173"]
+    allow_origin_regex = PRIVATE_NETWORK_ORIGIN_REGEX if settings.app_env == "development" else None
+    return allow_origins, allow_origin_regex
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -22,9 +37,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="EVE Station Trader API", version="0.1.0", lifespan=lifespan)
 install_request_logging(app)
 
+allow_origins, allow_origin_regex = build_cors_options()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:5173"],
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import re
 
 
 from sqlalchemy import delete, insert, select, update
@@ -21,6 +22,7 @@ from app.models.all_models import (
     UserSetting,
     User,
 )
+from app.main import build_cors_options
 
 
 def reset_character_tables() -> None:
@@ -155,6 +157,27 @@ def test_get_targets(client) -> None:
     response = client.get("/api/targets")
     assert response.status_code == 200
     assert len(response.json()) >= 1
+
+
+def test_build_cors_options_allows_private_network_origins_in_development() -> None:
+    allow_origins, allow_origin_regex = build_cors_options()
+
+    assert "http://localhost:5173" in allow_origins
+    assert allow_origin_regex is not None
+    assert re.match(allow_origin_regex, "http://192.168.152.128:5173")
+
+
+def test_cors_preflight_allows_private_network_frontend_origin(client) -> None:
+    response = client.options(
+        "/api/sync/status",
+        headers={
+            "Origin": "http://192.168.152.128:5173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://192.168.152.128:5173"
 
 
 def test_get_target_options(client) -> None:

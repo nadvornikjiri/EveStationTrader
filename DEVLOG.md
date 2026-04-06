@@ -2534,3 +2534,13 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - Replaced the hand-rolled database grid with a TanStack React Table browser that supports server-driven pagination, absolute ordering, and per-column filters on the Database page.
 - Extended the diagnostics database endpoint to accept paging, sorting, global search, and `filter_<column>` query parameters while preserving Adam market order enrichment columns in the returned dataset.
 - Updated frontend and backend regression coverage for database-table browsing, plus frontend container startup/install behavior so new table dependencies are available in Docker development runs.
+
+## 2026-04-05 - SYNC-LAN-API-ACCESS
+- Fixed the frontend API client fallback so a browser opened from a LAN host like `http://192.168.x.x:5173` now targets that same host on backend port `8000` instead of incorrectly calling the viewer's local `localhost:8000`.
+- Expanded development CORS handling to allow private-network frontend origins, which unblocks `/sync` dashboard requests when the app is accessed from another machine on the same LAN.
+- Added frontend regression tests for API base resolution and backend API tests covering LAN-origin CORS preflight behavior.
+- validation:
+  - `npm test`
+  - `docker compose run --rm backend sh -lc "ruff check app/main.py tests/api/test_endpoints.py && mypy app/main.py tests/api/test_endpoints.py"`
+  - `docker compose run --rm -e TEST_DATABASE_URL=postgresql+psycopg://eve_trader:eve_trader@postgres:5432/eve_trader_test backend sh -lc "pytest tests/api/test_endpoints.py -k 'cors or targets or sync_status'"`
+  - note: full backend `mypy .` is currently blocked by pre-existing failures in `tests/services/test_esi_history_ingestion.py`
