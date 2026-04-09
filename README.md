@@ -91,6 +91,12 @@ mypy .
 pytest
 ```
 
+`pytest` now runs unit tests only. Integration tests run inside Docker so they can bring up their own service dependencies:
+
+```bash
+./scripts/run_integration_tests.sh
+```
+
 ### Frontend
 
 ```bash

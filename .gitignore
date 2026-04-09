@@ -22,3 +22,6 @@ redis-data/
 *.db
 *.sqlite3
 backend/*.log
+
+# superturtle
+.superturtle/

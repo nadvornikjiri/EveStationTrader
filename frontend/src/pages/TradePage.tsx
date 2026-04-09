@@ -60,6 +60,7 @@ export function TradePage() {
   const [sourceType, setSourceType] = useState("all");
   const [minSecurity, setMinSecurity] = useState("all");
   const [demandSource, setDemandSource] = useState("all");
+  const [minEsiDemandDay, setMinEsiDemandDay] = useState("");
   const [sortKey, setSortKey] = useState<GroupedSortKey>("target_now_profit");
   const [sortDirection, setSortDirection] = useState<GroupedSortDirection>("desc");
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -121,8 +122,9 @@ export function TradePage() {
       sourceType,
       minSecurity,
       demandSource,
+      minEsiDemandDay,
     }),
-    [demandSource, itemSearch, maxDos, minDemandDay, minProfit, minRoiNowPct, minSecurity, sourceType],
+    [demandSource, itemSearch, maxDos, minDemandDay, minEsiDemandDay, minProfit, minRoiNowPct, minSecurity, sourceType],
   );
 
   const queriesEnabled = targetId !== null && filtersInitialized;
@@ -263,6 +265,7 @@ export function TradePage() {
         sourceType={sourceType}
         minSecurity={minSecurity}
         demandSource={demandSource}
+        minEsiDemandDay={minEsiDemandDay}
         onTargetChange={(nextTargetId) => {
                 setTargetId(nextTargetId);
                 setSourceId(null);
@@ -278,6 +281,7 @@ export function TradePage() {
         onSourceTypeChange={setSourceType}
         onMinSecurityChange={setMinSecurity}
         onDemandSourceChange={setDemandSource}
+        onMinEsiDemandDayChange={setMinEsiDemandDay}
       />
       <SourceSummaryTable
         rows={pagedSummaries}

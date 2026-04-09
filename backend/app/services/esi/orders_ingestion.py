@@ -29,6 +29,7 @@ class EsiMarketOrderIngestionResult:
     items_created: int
     skipped_missing_items: int
     skipped_non_npc_locations: int
+    delta_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class EsiRegionalOrderIngestionService:
         region_batches: Sequence[EsiRegionOrderBatch],
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
+        target_location_ids: set[int] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         if not region_batches:
             return EsiMarketOrderIngestionResult(
@@ -98,6 +100,7 @@ class EsiRegionalOrderIngestionService:
             region_batches=region_batches,
             universe_client=universe_client,
             cancellation_check=cancellation_check,
+            target_location_ids=target_location_ids,
         )
 
     def ingest_region_orders(
@@ -129,6 +132,7 @@ class EsiRegionalOrderIngestionService:
         region_batches: Sequence[EsiRegionOrderBatch],
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
+        target_location_ids: set[int] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         region_ids = sorted({batch.region_id for batch in region_batches})
         if not region_ids:
@@ -258,6 +262,20 @@ class EsiRegionalOrderIngestionService:
             or 0
         )
 
+        # Compute order book deltas at target stations BEFORE deleting old orders.
+        # Both esi_market_orders (old) and esi_market_orders_valid_stage (new) are
+        # available at this point, enabling a sorted merge-diff per station.
+        delta_count = 0
+        if target_location_ids:
+            from app.services.npc_stations.deltas import NpcStationDeltaService
+
+            delta_result = NpcStationDeltaService().compute_and_persist_deltas(
+                session,
+                target_location_ids=list(target_location_ids),
+                snapshot_time=datetime.now(UTC),
+            )
+            delta_count = delta_result.delta_count
+
         session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.region_id.in_(region_ids)))
         session.execute(
             text(
@@ -309,6 +327,7 @@ class EsiRegionalOrderIngestionService:
             items_created=0,
             skipped_missing_items=skipped_missing_items,
             skipped_non_npc_locations=skipped_non_npc_locations,
+            delta_count=delta_count,
         )
 
     def _ingest_via_postgres_copy(

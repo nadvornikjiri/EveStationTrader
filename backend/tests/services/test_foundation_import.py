@@ -11,6 +11,8 @@ from app.services.sync.foundation_import import CcpSdeClient
 from app.services.sync.foundation_import import FoundationImportService
 from tests.db_test_utils import build_test_session
 
+pytestmark = pytest.mark.integration
+
 
 def _build_fixture_zip(*, include_station_names: bool) -> bytes:
     payloads = {

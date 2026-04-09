@@ -18,6 +18,8 @@ from app.models.all_models import (
 from app.services.opportunities.generation import OpportunityGenerationService
 from tests.db_test_utils import build_test_session
 
+pytestmark = pytest.mark.integration
+
 
 def build_session() -> Session:
     return build_test_session()

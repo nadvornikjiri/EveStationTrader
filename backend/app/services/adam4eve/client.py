@@ -4,6 +4,8 @@ from csv import DictReader
 from dataclasses import dataclass
 from datetime import date
 from io import StringIO
+import logging
+from time import perf_counter
 
 import httpx
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.services.adam4eve.history_ingestion import AdamStationPriceHistoryRecord
 from app.services.sync.bulk_imports import BulkImportService, CachedImportFile
+
+logger = logging.getLogger(__name__)
 
 
 ADAM4EVE_STATIC_BASE_URL = "https://static.adam4eve.eu"
@@ -44,7 +48,7 @@ class Adam4EveClient:
         return {"User-Agent": self.settings.a4e_user_agent}
 
     def resolve_latest_market_orders_export(self) -> AdamMarketOrdersExport:
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             return self._resolve_latest_market_orders_export(client)
 
     def resolve_market_orders_exports(
@@ -55,7 +59,7 @@ class Adam4EveClient:
     ) -> list[AdamMarketOrdersExport]:
         if client is not None:
             return self._resolve_market_orders_exports(client, since_date=since_date)
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as http_client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as http_client:
             return self._resolve_market_orders_exports(http_client, since_date=since_date)
 
     def cache_market_orders_export(
@@ -64,7 +68,7 @@ class Adam4EveClient:
         export_path: str,
         session: Session | None = None,
     ) -> CachedImportFile:
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             return self.import_service.cache_http_file(
                 session,
                 import_kind="adam4eve_npc_demand",
@@ -79,7 +83,7 @@ class Adam4EveClient:
         since_date: date | None,
         session: Session | None = None,
     ) -> list[tuple[AdamMarketOrdersExport, CachedImportFile]]:
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self._resolve_market_orders_exports(client, since_date=since_date)
             return [
                 (
@@ -112,7 +116,7 @@ class Adam4EveClient:
         if not requested_location_ids:
             return []
 
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self.resolve_station_price_history_exports(client=client, since_date=since_date)
             history: list[AdamStationPriceHistoryRecord] = []
             for export in exports:
@@ -149,7 +153,7 @@ class Adam4EveClient:
     ) -> list[AdamStationPriceHistoryExport]:
         if client is not None:
             return self._resolve_station_price_history_exports(client, since_date=since_date)
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as http_client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as http_client:
             return self._resolve_station_price_history_exports(http_client, since_date=since_date)
 
     def cache_station_price_history_exports(
@@ -158,7 +162,7 @@ class Adam4EveClient:
         since_date: date | None,
         session: Session | None = None,
     ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]:
-        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self._resolve_station_price_history_exports(client, since_date=since_date)
             return [
                 (
@@ -176,9 +180,17 @@ class Adam4EveClient:
             ]
 
     def _resolve_latest_market_orders_export(self, client: httpx.Client) -> AdamMarketOrdersExport:
+        started_at = perf_counter()
         exports = self._resolve_market_orders_exports(client, since_date=None)
         if exports:
-            return exports[-1]
+            latest_export = exports[-1]
+            logger.info(
+                "adam4eve profile phase=resolve_latest_market_orders_export elapsed_s=%.3f export_count=%s latest_export=%s",
+                perf_counter() - started_at,
+                len(exports),
+                latest_export.export_key,
+            )
+            return latest_export
         raise ValueError("Adam4EVE market orders CSV export could not be located.")
 
     def _resolve_market_orders_exports(
@@ -187,6 +199,7 @@ class Adam4EveClient:
         *,
         since_date: date | None,
     ) -> list[AdamMarketOrdersExport]:
+        started_at = perf_counter()
         root_response = client.get(_MARKET_ORDERS_ROOT_PATH)
         root_response.raise_for_status()
         year_directories = self._extract_year_directories(root_response.text)
@@ -195,24 +208,16 @@ class Adam4EveClient:
 
         minimum_year = since_date.year if since_date is not None else min(year_directories)
         exports: list[AdamMarketOrdersExport] = []
-        for year in sorted(year for year in year_directories if year >= minimum_year):
+        selected_years = sorted(year for year in year_directories if year >= minimum_year)
+        for year in selected_years:
             year_response = client.get(f"{_MARKET_ORDERS_ROOT_PATH}{year}/")
             year_response.raise_for_status()
-            for week, export_name in self._extract_weekly_exports(year, year_response.text):
-                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
-                cached_file = self.import_service.cache_http_file(
-                    None,
-                    import_kind="adam4eve_npc_demand",
-                    file_key=export_path,
-                    remote_path=export_path,
-                    client=client,
-                )
-                csv_text = cached_file.path.read_text(encoding="utf-8")
-                covered_through_date = (
-                    self._extract_market_orders_coverage_date(csv_text) or date.fromisocalendar(year, week, 7)
-                )
+            weekly_exports = self._extract_weekly_exports(year, year_response.text)
+            for week, export_name in weekly_exports:
+                covered_through_date = date.fromisocalendar(year, week, 7)
                 if since_date is not None and covered_through_date <= since_date:
                     continue
+                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
                 exports.append(
                     AdamMarketOrdersExport(
                         path=export_path,
@@ -221,6 +226,11 @@ class Adam4EveClient:
                     )
                 )
 
+        logger.info(
+            "adam4eve profile phase=resolve_market_orders_exports elapsed_s=%.3f selected_exports=%s",
+            perf_counter() - started_at,
+            len(exports),
+        )
         return sorted(exports, key=lambda export: (export.covered_through_date, export.path))
 
     @staticmethod
@@ -285,28 +295,6 @@ class Adam4EveClient:
                 )
 
         return sorted(exports, key=lambda export: (export.covered_through_date, export.path))
-
-    @staticmethod
-    def _extract_market_orders_coverage_date(csv_text: str) -> date | None:
-        if not csv_text.strip():
-            return None
-
-        reader = DictReader(StringIO(csv_text), delimiter=";")
-        if reader.fieldnames is None or "scanDate" not in set(reader.fieldnames):
-            return None
-
-        latest_scan_date: date | None = None
-        for row in reader:
-            scan_date_value = row.get("scanDate")
-            if not isinstance(scan_date_value, str):
-                continue
-            try:
-                normalized_date = date.fromisoformat(scan_date_value)
-            except ValueError:
-                continue
-            if latest_scan_date is None or normalized_date > latest_scan_date:
-                latest_scan_date = normalized_date
-        return latest_scan_date
 
     def _parse_station_price_history_csv(
         self,

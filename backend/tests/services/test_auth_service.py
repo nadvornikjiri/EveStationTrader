@@ -1,11 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import EsiCharacter, EsiCharacterSyncState, EsiCharacterToken, SyncJobRun, User
 from app.services.auth.service import AuthService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 class MockEsiClient:

@@ -13,6 +13,7 @@ type Props = {
   sourceType: string;
   minSecurity: string;
   demandSource: string;
+  minEsiDemandDay: string;
   onTargetChange: (targetId: number) => void;
   onItemSearchChange: (value: string) => void;
   onMinProfitChange: (value: string) => void;
@@ -22,6 +23,7 @@ type Props = {
   onSourceTypeChange: (value: string) => void;
   onMinSecurityChange: (value: string) => void;
   onDemandSourceChange: (value: string) => void;
+  onMinEsiDemandDayChange: (value: string) => void;
 };
 
 function readNumericValue(event: ChangeEvent<HTMLSelectElement | HTMLInputElement>) {
@@ -40,6 +42,7 @@ export function TradeControls({
   sourceType,
   minSecurity,
   demandSource,
+  minEsiDemandDay,
   onTargetChange,
   onItemSearchChange,
   onMinProfitChange,
@@ -49,6 +52,7 @@ export function TradeControls({
   onSourceTypeChange,
   onMinSecurityChange,
   onDemandSourceChange,
+  onMinEsiDemandDayChange,
 }: Props) {
   return (
     <section className="panel controls-grid trade-controls-grid">
@@ -155,10 +159,24 @@ export function TradeControls({
         >
           <option value="all">All</option>
           <option value="adam4eve">Adam4EVE</option>
+          <option value="esi_live">ESI Live</option>
           <option value="local_structure">Local</option>
           <option value="regional_fallback">Fallback</option>
           <option value="blended">Blended</option>
         </select>
+      </label>
+      <label>
+        <span>Min ESI Vol/Day</span>
+        <input
+          aria-label="Min ESI Demand Day"
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          min="0"
+          value={minEsiDemandDay}
+          placeholder=""
+          onChange={(event) => onMinEsiDemandDayChange(event.target.value)}
+        />
       </label>
       <div className="trade-filter-note" role="status">
         Analysis period follows settings. Min Profit filters `target now profit`, and Min ROI Now % filters `ROI Now`,

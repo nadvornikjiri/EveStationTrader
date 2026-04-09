@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import logging
+from pathlib import Path
+import resource
 import signal
 from threading import Event, Lock, Thread, current_thread, main_thread
+from time import perf_counter
 from typing import Callable, Protocol, Sequence, cast
 
 from sqlalchemy import and_, delete, distinct, func, select
@@ -55,6 +59,8 @@ from app.services.structures.demand_periods import StructureDemandPeriodService
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
 from app.services.sync.bulk_imports import BulkImportService, CachedImportFile
 from app.services.sync.foundation_import import CcpSdeClient, FoundationImportService
+
+logger = logging.getLogger(__name__)
 
 
 class FoundationImportCapableClient(Protocol):
@@ -177,6 +183,44 @@ class SyncService:
     IMPORT_SCOPE_GLOBAL = "global"
     ADAM_HISTORY_MAX_LOOKBACK_DAYS = 14
     PRE_REBUILD_ESI_MARKET_ORDER_MAX_AGE_MINUTES = 10
+
+    @staticmethod
+    def _current_rss_mb() -> float | None:
+        status_path = Path("/proc/self/status")
+        if not status_path.exists():
+            return None
+        for line in status_path.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("VmRSS:"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                return None
+            try:
+                return int(parts[1]) / 1024.0
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _peak_rss_mb() -> float | None:
+        peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if peak_kb <= 0:
+            return None
+        return peak_kb / 1024.0
+
+    @classmethod
+    def _log_profile_checkpoint(cls, label: str, *, started_at: float, **metrics: object) -> None:
+        current_rss_mb = cls._current_rss_mb()
+        peak_rss_mb = cls._peak_rss_mb()
+        extra_metrics = " ".join(f"{key}={value}" for key, value in metrics.items())
+        logger.info(
+            "adam4eve profile phase=%s elapsed_s=%.3f current_rss_mb=%s peak_rss_mb=%s%s",
+            label,
+            perf_counter() - started_at,
+            f"{current_rss_mb:.1f}" if current_rss_mb is not None else "-",
+            f"{peak_rss_mb:.1f}" if peak_rss_mb is not None else "-",
+            f" {extra_metrics}" if extra_metrics else "",
+        )
 
     def __init__(
         self,
@@ -618,20 +662,35 @@ class SyncService:
             if not npc_locations or not items:
                 message = "Skipped Adam4EVE sync because reference data is missing."
             else:
+                sync_started_at = perf_counter()
                 internal_location_id_by_eve_id = {location.location_id: location.id for location in npc_locations}
                 internal_item_id_by_type_id = {item.type_id: item.id for item in items}
                 self._check_for_cancellation(session, job_id)
+                phase_started_at = perf_counter()
                 latest_demand_export = self.adam_client.resolve_latest_market_orders_export()
+                self._log_profile_checkpoint(
+                    "resolve_latest_demand_export",
+                    started_at=phase_started_at,
+                    export_key=latest_demand_export.export_key,
+                )
                 demand_since_date = self._adam_demand_sync_since_date(
                     session,
                     lookback_days=min(max(analysis_period_days, 1), self.ADAM_HISTORY_MAX_LOOKBACK_DAYS),
                 )
+                phase_started_at = perf_counter()
                 demand_regions = self._adam_demand_regions(
                     session,
                     locations=npc_locations,
                     latest_export=latest_demand_export,
                     required_since_date=demand_since_date,
                 )
+                self._log_profile_checkpoint(
+                    "resolve_demand_regions",
+                    started_at=phase_started_at,
+                    region_count=len(demand_regions),
+                    since_date=demand_since_date.isoformat() if demand_since_date is not None else "-",
+                )
+                phase_started_at = perf_counter()
                 cached_demand_exports = (
                     self.adam_client.cache_market_orders_exports(
                         since_date=demand_since_date,
@@ -640,11 +699,24 @@ class SyncService:
                     if demand_regions
                     else []
                 )
+                self._log_profile_checkpoint(
+                    "cache_demand_exports",
+                    started_at=phase_started_at,
+                    export_count=len(cached_demand_exports),
+                    downloaded_count=sum(1 for _, cached_file in cached_demand_exports if cached_file.downloaded),
+                )
+                phase_started_at = perf_counter()
                 stage_import_result = AdamMarketOrdersIngestionService().ingest_market_orders_exports(
                     session,
                     csv_file_paths=[cached_file.path for _, cached_file in cached_demand_exports],
                 )
+                self._log_profile_checkpoint(
+                    "ingest_demand_exports",
+                    started_at=phase_started_at,
+                    records_processed=stage_import_result.records_processed,
+                )
                 if demand_regions:
+                    phase_started_at = perf_counter()
                     demand_refresh_keys = self._adam_demand_refresh_keys(
                         session,
                         locations=[location for location in npc_locations if location.region_id in demand_regions],
@@ -657,26 +729,60 @@ class SyncService:
                         region_ids=sorted(demand_regions),
                         exports=[export for export, _ in cached_demand_exports] or [latest_demand_export],
                     )
+                    self._log_profile_checkpoint(
+                        "build_demand_refresh_keys",
+                        started_at=phase_started_at,
+                        key_count=len(demand_refresh_keys),
+                    )
                 else:
                     demand_refresh_keys = []
+                phase_started_at = perf_counter()
                 history_processed, history_created, history_updated, price_count = self._sync_adam_regional_price_history(
                     session,
                     job_id=job_id,
                     regions=self._all_regions(session, debug_enabled=debug_enabled),
                     lookback_days=min(max(analysis_period_days, 1), self.ADAM_HISTORY_MAX_LOOKBACK_DAYS),
                 )
+                self._log_profile_checkpoint(
+                    "sync_station_price_history",
+                    started_at=phase_started_at,
+                    history_processed=history_processed,
+                    history_created=history_created,
+                    history_updated=history_updated,
+                    price_count=price_count,
+                )
+                phase_started_at = perf_counter()
                 derived_count = self._refresh_market_demand_for_keys(
                     session,
                     demand_keys=demand_refresh_keys,
                     period_days=analysis_period_days,
                     cancellation_check=lambda: self._check_for_cancellation(session, job_id),
                 )
+                self._log_profile_checkpoint(
+                    "refresh_market_demand",
+                    started_at=phase_started_at,
+                    demand_key_count=len(demand_refresh_keys),
+                    derived_count=derived_count,
+                )
+                phase_started_at = perf_counter()
                 generated_count, scope_count = self._rebuild_opportunities(
                     session,
                     period_days=analysis_period_days,
                     cancellation_check=lambda: self._check_for_cancellation(session, job_id),
                 )
+                self._log_profile_checkpoint(
+                    "rebuild_opportunities",
+                    started_at=phase_started_at,
+                    generated_count=generated_count,
+                    scope_count=scope_count,
+                )
                 totals_now = self._adam4eve_sync_totals(session, period_days=analysis_period_days)
+                self._log_profile_checkpoint(
+                    "adam4eve_sync_total",
+                    started_at=sync_started_at,
+                    npc_location_count=len(npc_locations),
+                    item_count=len(items),
+                )
                 records_processed = (
                     stage_import_result.records_processed
                     + history_processed
@@ -846,6 +952,17 @@ class SyncService:
             progress_unit="downloaded records",
             message=f"Processing 0 / {total_downloaded_orders} downloaded ESI market orders.",
         )
+        # Resolve target station internal IDs for delta computation
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        target_eve_ids = settings.target_market_location_ids or []
+        target_internal_ids: set[int] = set()
+        if target_eve_ids:
+            target_internal_ids = set(
+                session.scalars(
+                    select(Location.id).where(Location.location_id.in_(target_eve_ids))
+                ).all()
+            )
+
         if cancellation_check is not None:
             cancellation_check()
         result = ingestion_service.ingest_order_batches(
@@ -860,6 +977,7 @@ class SyncService:
             ],
             universe_client=universe_client,
             cancellation_check=cancellation_check,
+            target_location_ids=target_internal_ids if target_internal_ids else None,
         )
         total_processed += result.records_processed
         total_created += result.created
@@ -868,6 +986,22 @@ class SyncService:
         total_stations_created += result.stations_created
         total_skipped_missing_items += result.skipped_missing_items
         total_skipped_non_npc_locations += result.skipped_non_npc_locations
+
+        # Aggregate deltas into demand periods and cleanup old deltas
+        demand_period_count = 0
+        if result.delta_count > 0 and target_internal_ids:
+            from app.services.npc_stations.demand_periods import NpcStationDemandPeriodService
+            from app.services.npc_stations.deltas import NpcStationDeltaService
+
+            analysis_period = max(settings.default_analysis_period_days, 1)
+            demand_period_count = NpcStationDemandPeriodService().refresh_for_locations(
+                session,
+                target_location_ids=list(target_internal_ids),
+                period_days=analysis_period,
+            )
+            NpcStationDeltaService.cleanup_old_deltas(session)
+            session.commit()
+
         self._update_job_progress(
             session,
             job_id,
@@ -883,7 +1017,8 @@ class SyncService:
             f"({total_processed} active orders, {total_created} created, {total_updated} updated, "
             f"{total_deleted} deleted, {total_stations_created} stations discovered, "
             f"{total_skipped_missing_items} skipped because item foundation data was missing, "
-            f"{total_skipped_non_npc_locations} skipped because the location could not be resolved across {len(regions)} regions)."
+            f"{total_skipped_non_npc_locations} skipped because the location could not be resolved across {len(regions)} regions, "
+            f"{result.delta_count} order deltas, {demand_period_count} demand periods)."
         )
         return (total_processed, "regions", str(len(regions)), message)
 
@@ -1146,36 +1281,40 @@ class SyncService:
         if not configured_target_ids:
             return (0, 0)
 
-        rebuild_demand_rows: list[MarketDemandResolved] = list(
-            session.scalars(
-                select(MarketDemandResolved).order_by(
-                    MarketDemandResolved.location_id.asc(),
-                    MarketDemandResolved.period_days.asc(),
-                    MarketDemandResolved.type_id.asc(),
-                )
-            ).all()
+        scope_query = (
+            select(
+                MarketDemandResolved.location_id,
+                MarketDemandResolved.period_days,
+            )
+            .where(MarketDemandResolved.location_id.in_(configured_target_ids))
+            .distinct()
         )
-        rebuild_demand_rows = [row for row in rebuild_demand_rows if row.location_id in configured_target_ids]
         if period_days is not None:
-            rebuild_demand_rows = [row for row in rebuild_demand_rows if row.period_days == period_days]
-        if not rebuild_demand_rows:
+            scope_query = scope_query.where(MarketDemandResolved.period_days == period_days)
+        scopes = session.execute(scope_query).all()
+        if not scopes:
             return (0, 0)
 
         scope_count = 0
         generated_count = 0
-        grouped_demands: dict[tuple[int, int], list[MarketDemandResolved]] = {}
-        for row in rebuild_demand_rows:
-            grouped_demands.setdefault((row.location_id, row.period_days), []).append(row)
-
-        for (target_location_id, period_days), rows in grouped_demands.items():
+        for target_location_id, scope_period_days in scopes:
             if cancellation_check is not None:
                 cancellation_check()
-            type_ids = [row.type_id for row in rows]
+            type_ids = list(
+                session.scalars(
+                    select(MarketDemandResolved.type_id).where(
+                        MarketDemandResolved.location_id == target_location_id,
+                        MarketDemandResolved.period_days == scope_period_days,
+                    )
+                ).all()
+            )
+            if not type_ids:
+                continue
             source_location_ids: list[int] = list(
                 session.scalars(
                     select(MarketPricePeriod.location_id)
                     .where(
-                        MarketPricePeriod.period_days == period_days,
+                        MarketPricePeriod.period_days == scope_period_days,
                         MarketPricePeriod.type_id.in_(type_ids),
                         MarketPricePeriod.location_id != target_location_id,
                     )
@@ -1190,7 +1329,7 @@ class SyncService:
                 target_location_id=target_location_id,
                 source_location_ids=source_location_ids,
                 type_ids=type_ids,
-                period_days=period_days,
+                period_days=scope_period_days,
                 replace_entire_target_scope=True,
             )
             scope_count += 1
@@ -1715,6 +1854,7 @@ class SyncService:
         total_price_rows = 0
         for file_index, (export, cached_file) in enumerate(cached_history_exports, start=1):
             self._check_for_cancellation(session, job_id)
+            file_started_at = perf_counter()
             self._update_job_progress(
                 session,
                 job_id,
@@ -1736,6 +1876,14 @@ class SyncService:
             total_history_processed += file_result.records_processed
             total_created += file_result.created
             total_updated += file_result.updated
+            self._log_profile_checkpoint(
+                "ingest_history_file",
+                started_at=file_started_at,
+                file_index=file_index,
+                file_total=len(cached_history_exports),
+                export_key=export.export_key,
+                records_processed=file_result.records_processed,
+            )
             self._update_job_progress(
                 session,
                 job_id,
@@ -1751,12 +1899,20 @@ class SyncService:
 
         all_location_ids = sorted({entry.internal_location_id for entry in workset_entries})
         all_type_ids = sorted({entry.internal_type_id for entry in workset_entries})
+        refresh_started_at = perf_counter()
         total_price_rows = MarketPricePeriodService().refresh_region_periods_from_history(
             session,
             region_id=0,
             location_ids=all_location_ids,
             type_ids=all_type_ids,
             period_days_list=list(self.MARKET_PRICE_PERIODS),
+        )
+        self._log_profile_checkpoint(
+            "refresh_price_periods_from_history",
+            started_at=refresh_started_at,
+            location_count=len(all_location_ids),
+            type_count=len(all_type_ids),
+            price_row_count=total_price_rows,
         )
         self._record_history_check(
             session,

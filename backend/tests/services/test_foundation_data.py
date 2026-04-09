@@ -19,6 +19,8 @@ from app.repositories.seed_data import (
 from app.services.sync.foundation_data import FoundationDataService
 from tests.db_test_utils import build_test_session
 
+pytestmark = pytest.mark.integration
+
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 FOUNDATION_SNAPSHOT_PATH = FIXTURES_DIR / "foundation_snapshot.json"
 

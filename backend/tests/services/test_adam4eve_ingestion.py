@@ -1,5 +1,6 @@
 from datetime import date
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,8 @@ from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
 from app.services.sync.bulk_imports import CachedImportFile
 from app.services.sync.service import SyncService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def build_session() -> Session:

@@ -8,6 +8,8 @@ from app.models.all_models import Item, StructureDemandPeriod, StructureOrderDel
 from app.services.structures.demand_periods import StructureDemandPeriodService
 from tests.db_test_utils import build_test_session
 
+pytestmark = pytest.mark.integration
+
 
 def build_session() -> Session:
     return build_test_session()

@@ -126,7 +126,50 @@ class CcpSdeClient:
                     name=self._optional_name(record.get("name")) or f"Station {station_id}",
                 )
             )
-        return tuple(sorted(rows, key=lambda row: row.station_id))
+        rows = sorted(rows, key=lambda row: row.station_id)
+        unnamed_ids = [row.station_id for row in rows if row.name.startswith("Station ")]
+        if unnamed_ids:
+            resolved_names = self._resolve_station_names_from_esi(unnamed_ids)
+            rows = [
+                StationSeed(
+                    station_id=row.station_id,
+                    system_id=row.system_id,
+                    region_id=row.region_id,
+                    name=resolved_names.get(row.station_id, row.name),
+                )
+                if row.name.startswith("Station ") and row.station_id in resolved_names
+                else row
+                for row in rows
+            ]
+        return tuple(rows)
+
+    @staticmethod
+    def _resolve_station_names_from_esi(station_ids: list[int]) -> dict[int, str]:
+        import logging
+
+        _logger = logging.getLogger(__name__)
+        names: dict[int, str] = {}
+        batch_size = 1000
+        with httpx.Client(base_url="https://esi.evetech.net/latest", timeout=30.0) as client:
+            for offset in range(0, len(station_ids), batch_size):
+                batch = station_ids[offset : offset + batch_size]
+                try:
+                    response = client.post("/universe/names/", json=batch)
+                    response.raise_for_status()
+                    for entry in response.json():
+                        names[entry["id"]] = entry["name"]
+                    _logger.info(
+                        "Resolved %d / %d station names from ESI",
+                        len(names),
+                        len(station_ids),
+                    )
+                except Exception:
+                    _logger.warning(
+                        "Failed to resolve station names for batch starting at offset %d",
+                        offset,
+                        exc_info=True,
+                    )
+        return names
 
     def _load_name_lookup(self, records: Iterable[dict[str, object]]) -> dict[int, str]:
         return {

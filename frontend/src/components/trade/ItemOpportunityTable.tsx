@@ -63,12 +63,13 @@ export function ItemOpportunityTable({
               ))}
               <th>Source Units Avail</th>
               <th>Target Demand / Day</th>
+              <th>ESI Traded Vol</th>
               <th>Target Supply Units</th>
               <th>Target D.O.S</th>
               <th>In Transit</th>
               <th>Assets</th>
               <th>Active Sell Orders</th>
-              <th>Source Avg Price</th>
+              <th>Source Now Price</th>
               <th>Target Now Price</th>
               <th>Target Period Avg Price</th>
               <th>Target Now Profit</th>
@@ -83,11 +84,11 @@ export function ItemOpportunityTable({
           <tbody>
             {rows.length === 0 && isLoading ? (
               <tr>
-                <td colSpan={21}>Loading item opportunities for this source...</td>
+                <td colSpan={22}>Loading item opportunities for this source...</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={21}>No computed item opportunities available for this source yet.</td>
+                <td colSpan={22}>No computed item opportunities available for this source yet.</td>
               </tr>
             ) : (
               rows.map((row) => (
@@ -102,6 +103,7 @@ export function ItemOpportunityTable({
                   <td>{(row.roi_now * 100).toFixed(1)}%</td>
                   <td>{row.source_units_available}</td>
                   <td>{row.target_demand_day.toFixed(1)}</td>
+                  <td>{row.esi_demand_day.toFixed(1)}</td>
                   <td>{row.target_supply_units}</td>
                   <td>{row.target_dos.toFixed(1)}</td>
                   <td>{row.in_transit_units_item}</td>

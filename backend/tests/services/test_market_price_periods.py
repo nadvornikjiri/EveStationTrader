@@ -1,11 +1,14 @@
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import AdamMarketPriceHistoryDaily, Item, Location, MarketPricePeriod, Region, System
 from app.services.pricing.market_price_periods import MarketPricePeriodService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def build_session() -> Session:

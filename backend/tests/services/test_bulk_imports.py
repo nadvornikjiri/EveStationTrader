@@ -2,12 +2,15 @@ from datetime import date
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import select
 
 from app.models.all_models import BulkImportCursor, BulkImportFile
 from app.services.sync import bulk_imports as bulk_imports_module
 from app.services.sync.bulk_imports import BulkImportService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def test_cached_import_file_is_reused_without_redownload() -> None:

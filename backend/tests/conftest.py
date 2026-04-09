@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from tests.db_test_utils import ensure_test_database, get_test_database_url, reset_schema
 
 os.environ["DATABASE_URL"] = get_test_database_url()
-ensure_test_database()
 
 from app.main import app  # noqa: E402
 from app.db.session import engine as app_engine  # noqa: E402
@@ -55,6 +54,7 @@ def _bootstrap_baseline() -> None:
 
 @pytest.fixture(scope="session")
 def _shared_client() -> Generator[TestClient, None, None]:
+    ensure_test_database()
     app_engine.dispose()
     reset_schema(app_engine)
     _bootstrap_baseline()

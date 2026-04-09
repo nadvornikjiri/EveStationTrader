@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,8 @@ from app.services.esi.history_ingestion import EsiRegionalHistoryRecord, EsiRegi
 from app.services.sync.bulk_imports import CachedImportFile
 from app.services.sync.service import SyncService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def build_session() -> Session:
@@ -208,9 +211,27 @@ class StubAdamHistoryClient:
             covered_through_date=date(2026, 3, 22),
         )
 
+    def resolve_market_orders_exports(
+        self,
+        *,
+        since_date: date | None,
+    ) -> list[AdamMarketOrdersExport]:
+        del since_date
+        return [self.resolve_latest_market_orders_export()]
+
     def cache_market_orders_export(self, *, export_path: str, session=None) -> CachedImportFile:
         del export_path, session
         return CachedImportFile(path=self.cached_file_path, downloaded=False)
+
+    def cache_market_orders_exports(
+        self,
+        *,
+        since_date: date | None,
+        session=None,
+    ) -> list[tuple[AdamMarketOrdersExport, CachedImportFile]]:
+        del since_date, session
+        export = self.resolve_latest_market_orders_export()
+        return [(export, CachedImportFile(path=self.cached_file_path, downloaded=False))]
 
     def fetch_regional_price_history(
         self,

@@ -4,7 +4,7 @@ from math import ceil
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import MetaData, String, Table, and_, asc, cast, desc, func, inspect, or_, select
+from sqlalchemy import MetaData, String, Table, and_, asc, cast, desc, func, inspect, or_, select, text
 from sqlalchemy.sql import ColumnElement, Select
 
 from app.api.schemas.database import DatabaseTableData, DatabaseTableSummary
@@ -17,12 +17,13 @@ router = APIRouter(prefix="/database", tags=["database"])
 @router.get("/tables", response_model=list[DatabaseTableSummary])
 def list_database_tables() -> list[DatabaseTableSummary]:
     inspector = inspect(engine)
+    preparer = engine.dialect.identifier_preparer
     session = SessionLocal()
     try:
         table_summaries: list[DatabaseTableSummary] = []
         for table_name in sorted(inspector.get_table_names()):
-            table = Table(table_name, MetaData(), autoload_with=engine)
-            row_count = session.execute(select(func.count()).select_from(table)).scalar_one()
+            quoted_table_name = preparer.quote(table_name)
+            row_count = session.execute(text(f"SELECT count(*) FROM {quoted_table_name}")).scalar_one()
             table_summaries.append(DatabaseTableSummary(name=table_name, row_count=row_count))
         return table_summaries
     finally:

@@ -183,9 +183,25 @@ class BulkImportService:
 
     @staticmethod
     def _download_with_client(client: httpx.Client, remote_path: str) -> bytes:
-        response = client.get(remote_path)
-        response.raise_for_status()
-        content = getattr(response, "content", None)
-        if content is not None:
-            return content
-        return response.text.encode("utf-8")
+        import time as _time
+
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.get(remote_path)
+                response.raise_for_status()
+                content = getattr(response, "content", None)
+                if content is not None:
+                    return content
+                return response.text.encode("utf-8")
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    _time.sleep(2**attempt)
+                    logger.warning(
+                        "download retry attempt=%s remote_path=%s error=%s",
+                        attempt + 1,
+                        remote_path,
+                        exc,
+                    )
+        raise last_error  # type: ignore[misc]

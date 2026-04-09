@@ -78,29 +78,38 @@ class AdamStationPriceHistoryIngestionService:
         session: Session,
         *,
         csv_file_path: str | Path,
-        workset_entries: list[AdamStationHistoryWorksetEntry],
+        workset_entries: list[AdamStationHistoryWorksetEntry] | None = None,
+        eve_region_id: int | None = None,
+        location_ids: list[int] | None = None,
+        type_ids: list[int] | None = None,
         since_date: date | None,
     ) -> AdamStationPriceHistoryIngestionResult:
+        resolved_workset_entries = workset_entries or self._build_workset_entries(
+            session,
+            eve_region_id=eve_region_id,
+            location_ids=location_ids or [],
+            type_ids=type_ids or [],
+        )
         if session.get_bind().dialect.name != "postgresql":
             records = self._records_from_csv_file(csv_file_path)
-            location_ids = {entry.external_location_id for entry in workset_entries}
-            type_ids = {entry.external_type_id for entry in workset_entries}
-            region_ids = {entry.external_region_id for entry in workset_entries}
+            resolved_location_ids = {entry.external_location_id for entry in resolved_workset_entries}
+            resolved_type_ids = {entry.external_type_id for entry in resolved_workset_entries}
+            resolved_region_ids = {entry.external_region_id for entry in resolved_workset_entries}
             filtered_records = [
                 record
                 for record in records
-                if record["region_id"] in region_ids
-                and record["location_id"] in location_ids
-                and record["type_id"] in type_ids
+                if record["region_id"] in resolved_region_ids
+                and record["location_id"] in resolved_location_ids
+                and record["type_id"] in resolved_type_ids
                 and (since_date is None or self._record_date(record) > since_date)
             ]
             return self.ingest_region_history(
                 session,
-                eve_region_id=next(iter(region_ids), 0),
+                eve_region_id=next(iter(resolved_region_ids), 0),
                 records=filtered_records,
             )
 
-        if not workset_entries:
+        if not resolved_workset_entries:
             session.commit()
             return AdamStationPriceHistoryIngestionResult(region_id=0, records_processed=0, created=0, updated=0)
         if Path(csv_file_path).stat().st_size == 0:
@@ -108,7 +117,7 @@ class AdamStationPriceHistoryIngestionService:
             return AdamStationPriceHistoryIngestionResult(region_id=0, records_processed=0, created=0, updated=0)
 
         stage_columns = self._copy_columns_for_csv(csv_file_path)
-        self._prepare_stage_tables(session, workset_entries=workset_entries)
+        self._prepare_stage_tables(session, workset_entries=resolved_workset_entries)
         copy_delimited_file(
             session,
             table_name="adam_market_price_history_file_stage",
@@ -221,11 +230,56 @@ class AdamStationPriceHistoryIngestionService:
 
         session.commit()
         return AdamStationPriceHistoryIngestionResult(
-            region_id=0,
+            region_id=resolved_workset_entries[0].internal_region_id,
             records_processed=row_count,
             created=row_count,
             updated=0,
         )
+
+    def _build_workset_entries(
+        self,
+        session: Session,
+        *,
+        eve_region_id: int | None,
+        location_ids: list[int],
+        type_ids: list[int],
+    ) -> list[AdamStationHistoryWorksetEntry]:
+        if eve_region_id is None or not location_ids or not type_ids:
+            return []
+
+        region = session.scalar(select(Region).where(Region.region_id == eve_region_id))
+        if region is None:
+            raise ValueError(f"eve_region_id {eve_region_id} was not found")
+
+        locations = {
+            location.location_id: location
+            for location in session.scalars(select(Location).where(Location.location_id.in_(location_ids))).all()
+        }
+        missing_location_ids = [location_id for location_id in location_ids if location_id not in locations]
+        if missing_location_ids:
+            missing = ", ".join(str(location_id) for location_id in missing_location_ids)
+            raise ValueError(f"locations were not found for location_ids: {missing}")
+
+        items = {
+            item.type_id: item.id for item in session.scalars(select(Item).where(Item.type_id.in_(type_ids))).all()
+        }
+        missing_type_ids = [type_id for type_id in type_ids if type_id not in items]
+        if missing_type_ids:
+            missing = ", ".join(str(type_id) for type_id in missing_type_ids)
+            raise ValueError(f"items were not found for type_ids: {missing}")
+
+        return [
+            AdamStationHistoryWorksetEntry(
+                internal_region_id=region.id,
+                external_region_id=eve_region_id,
+                internal_location_id=locations[location_id].id,
+                external_location_id=location_id,
+                internal_type_id=items[type_id],
+                external_type_id=type_id,
+            )
+            for location_id in sorted(set(location_ids))
+            for type_id in sorted(set(type_ids))
+        ]
 
     def _ingest_via_postgres_copy(
         self,

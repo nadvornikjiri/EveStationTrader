@@ -47,6 +47,7 @@ class TradeRepository:
         target_demand_day_column: Any,
         target_dos_column: Any,
         demand_source_column: Any,
+        esi_demand_day_column: Any,
         item_search: str,
         min_profit: float,
         min_roi_now_pct: float,
@@ -55,6 +56,7 @@ class TradeRepository:
         source_type: str,
         min_security: str,
         demand_source: str,
+        min_esi_demand_day: float = 0.0,
     ) -> list[ColumnElement[bool]]:
         conditions: list[ColumnElement[bool]] = []
         search_value = item_search.strip()
@@ -75,6 +77,8 @@ class TradeRepository:
             conditions.append(location_type_column == LocationType.STRUCTURE.value)
         if demand_source != "all":
             conditions.append(demand_source_column == demand_source)
+        if min_esi_demand_day > 0:
+            conditions.append(esi_demand_day_column >= min_esi_demand_day)
         return conditions
 
     @staticmethod
@@ -228,6 +232,7 @@ class TradeRepository:
         source_type: str = "all",
         min_security: str = "all",
         demand_source: str = "all",
+        min_esi_demand_day: float = 0.0,
     ) -> list[SourceSummary]:
         from app.models.all_models import Item, Location, OpportunityItem, OpportunitySourceSummary, Station
         from app.services.sync.service import SyncService
@@ -251,6 +256,108 @@ class TradeRepository:
                     period_days=period_days,
                 )
 
+            has_item_filters = any(
+                (
+                    item_search.strip(),
+                    min_profit > 0,
+                    min_roi_now_pct > 0,
+                    min_demand_day > 0,
+                    max_dos is not None,
+                    source_type != "all",
+                    min_security != "all",
+                    demand_source != "all",
+                    min_esi_demand_day > 0,
+                )
+            )
+            if not has_item_filters:
+                summary_rows = session.execute(
+                    select(
+                        OpportunitySourceSummary.source_location_id,
+                        resolved_name,
+                        OpportunitySourceSummary.source_security_status,
+                        OpportunitySourceSummary.purchase_units_total,
+                        OpportunitySourceSummary.source_units_available_total,
+                        OpportunitySourceSummary.target_demand_day_total,
+                        OpportunitySourceSummary.target_supply_units_total,
+                        OpportunitySourceSummary.target_dos_weighted,
+                        OpportunitySourceSummary.in_transit_units,
+                        OpportunitySourceSummary.assets_units,
+                        OpportunitySourceSummary.active_sell_orders_units,
+                        OpportunitySourceSummary.source_avg_price_weighted,
+                        OpportunitySourceSummary.target_now_price_weighted,
+                        OpportunitySourceSummary.target_period_avg_price_weighted,
+                        OpportunitySourceSummary.target_now_profit_weighted,
+                        OpportunitySourceSummary.target_period_profit_weighted,
+                        OpportunitySourceSummary.capital_required_total,
+                        OpportunitySourceSummary.roi_now_weighted,
+                        OpportunitySourceSummary.roi_period_weighted,
+                        OpportunitySourceSummary.total_item_volume_m3,
+                        OpportunitySourceSummary.shipping_cost_total,
+                        OpportunitySourceSummary.demand_source_summary,
+                        OpportunitySourceSummary.esi_demand_day_total,
+                    )
+                    .join(Location, Location.id == OpportunitySourceSummary.source_location_id)
+                    .outerjoin(Station, Station.station_id == Location.location_id)
+                    .where(
+                        OpportunitySourceSummary.target_location_id == resolved_target_location_id,
+                        OpportunitySourceSummary.period_days == period_days,
+                    )
+                    .order_by(OpportunitySourceSummary.target_now_profit_weighted.desc(), resolved_name.asc())
+                ).all()
+                if summary_rows:
+                    return [
+                        SourceSummary(
+                            source_location_id=source_location_id,
+                            source_market_name=location_name,
+                            source_security_status=source_security_status,
+                            purchase_units_total=purchase_units_total,
+                            source_units_available_total=source_units_available_total,
+                            target_demand_day_total=target_demand_day_total,
+                            target_supply_units_total=target_supply_units_total,
+                            target_dos_weighted=target_dos_weighted,
+                            in_transit_units=in_transit_units,
+                            assets_units=assets_units,
+                            active_sell_orders_units=active_sell_orders_units,
+                            source_avg_price_weighted=source_avg_price_weighted,
+                            target_now_price_weighted=target_now_price_weighted,
+                            target_period_avg_price_weighted=target_period_avg_price_weighted,
+                            target_now_profit_weighted=target_now_profit_weighted,
+                            target_period_profit_weighted=target_period_profit_weighted,
+                            capital_required_total=capital_required_total,
+                            roi_now_weighted=roi_now_weighted,
+                            roi_period_weighted=roi_period_weighted,
+                            total_item_volume_m3=total_item_volume_m3,
+                            shipping_cost_total=shipping_cost_total,
+                            demand_source_summary=group_demand_source_summary,
+                            esi_demand_day_total=esi_demand_day_total,
+                        )
+                        for (
+                            source_location_id,
+                            location_name,
+                            source_security_status,
+                            purchase_units_total,
+                            source_units_available_total,
+                            target_demand_day_total,
+                            target_supply_units_total,
+                            target_dos_weighted,
+                            in_transit_units,
+                            assets_units,
+                            active_sell_orders_units,
+                            source_avg_price_weighted,
+                            target_now_price_weighted,
+                            target_period_avg_price_weighted,
+                            target_now_profit_weighted,
+                            target_period_profit_weighted,
+                            capital_required_total,
+                            roi_now_weighted,
+                            roi_period_weighted,
+                            total_item_volume_m3,
+                            shipping_cost_total,
+                            group_demand_source_summary,
+                            esi_demand_day_total,
+                        ) in summary_rows
+                    ]
+
             weight = case((OpportunityItem.purchase_units > 1, OpportunityItem.purchase_units), else_=1.0)
             total_weight = func.sum(weight)
             demand_source_summary = case(
@@ -266,6 +373,7 @@ class TradeRepository:
                 target_demand_day_column=OpportunityItem.target_demand_day,
                 target_dos_column=OpportunityItem.target_dos,
                 demand_source_column=OpportunityItem.demand_source,
+                esi_demand_day_column=OpportunityItem.esi_demand_day,
                 item_search=item_search,
                 min_profit=min_profit,
                 min_roi_now_pct=min_roi_now_pct,
@@ -274,6 +382,7 @@ class TradeRepository:
                 source_type=source_type,
                 min_security=min_security,
                 demand_source=demand_source,
+                min_esi_demand_day=min_esi_demand_day,
             )
             rows = session.execute(
                 select(
@@ -299,6 +408,7 @@ class TradeRepository:
                     func.sum(OpportunityItem.item_volume_m3 * OpportunityItem.purchase_units),
                     func.sum(OpportunityItem.shipping_cost),
                     demand_source_summary,
+                    func.sum(OpportunityItem.esi_demand_day),
                 )
                 .join(Location, Location.id == OpportunityItem.source_location_id)
                 .outerjoin(Station, Station.station_id == Location.location_id)
@@ -336,6 +446,7 @@ class TradeRepository:
                         total_item_volume_m3=total_item_volume_m3,
                         shipping_cost_total=shipping_cost_total,
                         demand_source_summary=group_demand_source_summary,
+                        esi_demand_day_total=esi_demand_day_total,
                     )
                     for (
                         source_location_id,
@@ -360,6 +471,7 @@ class TradeRepository:
                         total_item_volume_m3,
                         shipping_cost_total,
                         group_demand_source_summary,
+                        esi_demand_day_total,
                     ) in rows
                 ]
             return []
@@ -380,6 +492,7 @@ class TradeRepository:
         source_type: str = "all",
         min_security: str = "all",
         demand_source: str = "all",
+        min_esi_demand_day: float = 0.0,
     ) -> list[OpportunityItemRow]:
         from app.models.all_models import Item, Location, OpportunityItem, Region
         from app.services.sync.service import SyncService
@@ -419,6 +532,7 @@ class TradeRepository:
                 target_demand_day_column=OpportunityItem.target_demand_day,
                 target_dos_column=OpportunityItem.target_dos,
                 demand_source_column=OpportunityItem.demand_source,
+                esi_demand_day_column=OpportunityItem.esi_demand_day,
                 item_search=item_search,
                 min_profit=min_profit,
                 min_roi_now_pct=min_roi_now_pct,
@@ -427,6 +541,7 @@ class TradeRepository:
                 source_type=source_type,
                 min_security=min_security,
                 demand_source=demand_source,
+                min_esi_demand_day=min_esi_demand_day,
             )
             rows = (
                 session.execute(
@@ -469,6 +584,7 @@ class TradeRepository:
                         item_volume_m3=item.item_volume_m3,
                         shipping_cost=item.shipping_cost,
                         demand_source=item.demand_source,
+                        esi_demand_day=item.esi_demand_day,
                     )
                     for item, item_name, external_type_id in rows
                 ]
@@ -545,6 +661,7 @@ class TradeRepository:
                     item_volume_m3=item.item_volume_m3,
                     shipping_cost=item.shipping_cost,
                     demand_source=item.demand_source,
+                    esi_demand_day=item.esi_demand_day,
                 )
                 for item, item_name, external_type_id in rows
             ]

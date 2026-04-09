@@ -11,6 +11,7 @@ class DemandSource(str, Enum):
     LOCAL_STRUCTURE = "local_structure"
     REGIONAL_FALLBACK = "regional_fallback"
     BLENDED = "blended"
+    ESI_LIVE = "esi_live"
 
 
 class TrackingTier(str, Enum):

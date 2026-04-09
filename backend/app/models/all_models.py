@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Index,
     Table,
     Float,
     ForeignKey,
@@ -331,6 +332,43 @@ class StructureDemandPeriod(Base):
     coverage_pct: Mapped[float] = mapped_column(Float)
 
 
+class NpcStationOrderDelta(Base):
+    __tablename__ = "npc_station_order_deltas"
+    __table_args__ = (
+        Index("ix_npc_delta_loc_type_time", "location_id", "type_id", "to_snapshot_time"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    order_id: Mapped[int] = mapped_column(BigInteger)
+    from_snapshot_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    to_snapshot_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    old_volume: Mapped[int] = mapped_column(Integer)
+    new_volume: Mapped[int] = mapped_column(Integer)
+    delta_volume: Mapped[int] = mapped_column(Integer)
+    disappeared: Mapped[bool] = mapped_column(Boolean, default=False)
+    inferred_trade_side: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    inferred_trade_units: Mapped[int] = mapped_column(Integer, default=0)
+    price: Mapped[float] = mapped_column(Float)
+
+
+class NpcStationDemandPeriod(Base):
+    __tablename__ = "npc_station_demand_period"
+    __table_args__ = (UniqueConstraint("location_id", "type_id", "period_days"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    period_days: Mapped[int] = mapped_column(Integer)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    buy_from_sell_period: Mapped[float] = mapped_column(Float)
+    sell_to_buy_period: Mapped[float] = mapped_column(Float)
+    buy_from_sell_yesterday: Mapped[float] = mapped_column(Float)
+    sell_to_buy_yesterday: Mapped[float] = mapped_column(Float)
+    coverage_pct: Mapped[float] = mapped_column(Float)
+
+
 class MarketPricePeriod(Base):
     __tablename__ = "market_price_period"
     __table_args__ = (UniqueConstraint("location_id", "type_id", "period_days"),)
@@ -391,6 +429,7 @@ class OpportunityItem(Base):
     item_volume_m3: Mapped[float] = mapped_column(Float)
     shipping_cost: Mapped[float] = mapped_column(Float, default=0.0)
     demand_source: Mapped[str] = mapped_column(String(32))
+    esi_demand_day: Mapped[float] = mapped_column(Float, default=0.0)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -422,6 +461,7 @@ class OpportunitySourceSummary(Base):
     total_item_volume_m3: Mapped[float] = mapped_column(Float)
     shipping_cost_total: Mapped[float] = mapped_column(Float)
     demand_source_summary: Mapped[str] = mapped_column(String(32))
+    esi_demand_day_total: Mapped[float] = mapped_column(Float, default=0.0)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

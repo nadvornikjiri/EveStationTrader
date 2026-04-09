@@ -26,6 +26,7 @@ dev = [
   "pytest>=8.3.5",
   "pytest-asyncio>=0.25.3",
   "pytest-cov>=6.0.0",
+  "pytest-timeout>=2.3.1",
   "ruff>=0.14.1",
 ]
 
@@ -35,6 +36,7 @@ dev = [
   "pytest>=8.3.5",
   "pytest-asyncio>=0.25.3",
   "pytest-cov>=6.0.0",
+  "pytest-timeout>=2.3.1",
   "ruff>=0.14.1",
 ]
 
@@ -47,6 +49,11 @@ default-groups = ["dev"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = '-m "not integration"'
+timeout = 30
+markers = [
+  "integration: tests that require Docker-backed services such as PostgreSQL",
+]
 
 [[tool.mypy.overrides]]
 module = [

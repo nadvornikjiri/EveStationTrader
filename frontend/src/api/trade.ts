@@ -31,6 +31,7 @@ export type SourceSummary = {
   total_item_volume_m3: number;
   shipping_cost_total: number;
   demand_source_summary: string;
+  esi_demand_day_total: number;
 };
 
 export type OpportunityItem = {
@@ -56,6 +57,7 @@ export type OpportunityItem = {
   item_volume_m3: number;
   shipping_cost: number;
   demand_source: string;
+  esi_demand_day: number;
 };
 
 export type TargetOpportunityItem = OpportunityItem & {
@@ -71,6 +73,7 @@ export type TradeFilters = {
   sourceType: string;
   minSecurity: string;
   demandSource: string;
+  minEsiDemandDay: string;
 };
 
 export type ItemOrderRow = {
@@ -128,6 +131,9 @@ export async function getSourceSummaries(
   if (filters.maxDos.trim().length > 0) {
     params.set("max_dos", filters.maxDos);
   }
+  if (filters.minEsiDemandDay.trim().length > 0) {
+    params.set("min_esi_demand_day", filters.minEsiDemandDay);
+  }
   return apiGet<SourceSummary[]>(
     `/opportunities/source-summaries?${params.toString()}`,
   );
@@ -161,6 +167,9 @@ export async function getOpportunityItems(
   }
   if (filters.maxDos.trim().length > 0) {
     params.set("max_dos", filters.maxDos);
+  }
+  if (filters.minEsiDemandDay.trim().length > 0) {
+    params.set("min_esi_demand_day", filters.minEsiDemandDay);
   }
   return apiGet<OpportunityItem[]>(
     `/opportunities/items?${params.toString()}`,

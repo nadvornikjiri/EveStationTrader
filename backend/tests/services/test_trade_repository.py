@@ -22,6 +22,8 @@ from app.models.all_models import (
 from app.repositories.trade_repository import TradeRepository
 from tests.db_test_utils import build_test_session
 
+pytestmark = pytest.mark.integration
+
 
 def build_session() -> Session:
     return build_test_session()

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import AdamMarketPriceHistoryDaily, Location, MarketPricePeriod
@@ -30,27 +30,49 @@ class MarketPricePeriodService:
         normalized_type_ids = sorted(set(type_ids))
         normalized_period_days = sorted(set(period_days_list))
         max_period_days = max(normalized_period_days)
-        history_rows = list(
-            session.scalars(
-                select(AdamMarketPriceHistoryDaily)
-                .where(
-                    AdamMarketPriceHistoryDaily.location_id.in_(location_ids),
-                    AdamMarketPriceHistoryDaily.type_id.in_(normalized_type_ids),
+        ranked_history = (
+            select(
+                AdamMarketPriceHistoryDaily.location_id.label("location_id"),
+                AdamMarketPriceHistoryDaily.type_id.label("type_id"),
+                AdamMarketPriceHistoryDaily.average.label("average"),
+                AdamMarketPriceHistoryDaily.highest.label("highest"),
+                AdamMarketPriceHistoryDaily.lowest.label("lowest"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        AdamMarketPriceHistoryDaily.location_id,
+                        AdamMarketPriceHistoryDaily.type_id,
+                    ),
+                    order_by=AdamMarketPriceHistoryDaily.date.desc(),
                 )
-                .order_by(
-                    AdamMarketPriceHistoryDaily.location_id.asc(),
-                    AdamMarketPriceHistoryDaily.type_id.asc(),
-                    AdamMarketPriceHistoryDaily.date.desc(),
-                )
-            ).all()
+                .label("row_num"),
+            )
+            .where(
+                AdamMarketPriceHistoryDaily.location_id.in_(location_ids),
+                AdamMarketPriceHistoryDaily.type_id.in_(normalized_type_ids),
+            )
+            .subquery()
         )
+        history_rows = session.execute(
+            select(
+                ranked_history.c.location_id,
+                ranked_history.c.type_id,
+                ranked_history.c.average,
+                ranked_history.c.highest,
+                ranked_history.c.lowest,
+                ranked_history.c.row_num,
+            )
+            .where(ranked_history.c.row_num <= max_period_days)
+            .order_by(
+                ranked_history.c.location_id.asc(),
+                ranked_history.c.type_id.asc(),
+                ranked_history.c.row_num.asc(),
+            )
+        ).all()
 
-        history_by_location_and_type: dict[tuple[int, int], list[AdamMarketPriceHistoryDaily]] = {}
-        for row in history_rows:
-            key = (row.location_id, row.type_id)
-            rows_for_key = history_by_location_and_type.setdefault(key, [])
-            if len(rows_for_key) < max_period_days:
-                rows_for_key.append(row)
+        history_by_location_and_type: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
+        for location_id, type_id, average, highest, lowest, _row_num in history_rows:
+            history_by_location_and_type.setdefault((location_id, type_id), []).append((average, highest, lowest))
 
         stats_by_location_type_and_period: dict[tuple[int, int, int], dict[str, float]] = {}
         for (location_id, type_id), rows in history_by_location_and_type.items():
@@ -59,10 +81,10 @@ class MarketPricePeriodService:
                 if not sample:
                     continue
                 stats_by_location_type_and_period[(location_id, type_id, period_days)] = {
-                    "current_price": sample[0].average,
-                    "period_avg_price": sum(row.average for row in sample) / len(sample),
-                    "price_min": min(row.lowest for row in sample),
-                    "price_max": max(row.highest for row in sample),
+                    "current_price": sample[0][0],
+                    "period_avg_price": sum(row[0] for row in sample) / len(sample),
+                    "price_min": min(row[2] for row in sample),
+                    "price_max": max(row[1] for row in sample),
                 }
 
         if not stats_by_location_type_and_period:

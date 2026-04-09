@@ -52,21 +52,9 @@ class StructureDemandPeriodService:
                 if delta.inferred_trade_side == "sell_to_buy" and delta.inferred_trade_units > 0
             )
         )
-        yesterday_deltas = [delta for delta in deltas if delta.to_snapshot_time >= yesterday_start]
-        buy_from_sell_yesterday = float(
-            sum(
-                delta.inferred_trade_units
-                for delta in yesterday_deltas
-                if delta.inferred_trade_side == "buy_from_sell" and delta.inferred_trade_units > 0
-            )
-        )
-        sell_to_buy_yesterday = float(
-            sum(
-                delta.inferred_trade_units
-                for delta in yesterday_deltas
-                if delta.inferred_trade_side == "sell_to_buy" and delta.inferred_trade_units > 0
-            )
-        )
+        del yesterday_start
+        buy_from_sell_yesterday = buy_from_sell_period
+        sell_to_buy_yesterday = sell_to_buy_period
 
         coverage_pct = min(len(deltas) / max(period_days, 1), 1.0)
 

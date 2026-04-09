@@ -3,9 +3,12 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import pytest
 from app.models.all_models import Item, StructureOrderDelta, StructureSnapshot, StructureSnapshotOrder
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def build_session() -> Session:

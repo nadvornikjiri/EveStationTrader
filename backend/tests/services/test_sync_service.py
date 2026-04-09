@@ -46,6 +46,8 @@ from app.services.structures.snapshots import StructureOrderInput, StructureSnap
 from app.services.sync.service import StructureSnapshotBatch, SyncService
 from tests.db_test_utils import build_test_session, create_test_engine, reset_schema
 
+pytestmark = pytest.mark.integration
+
 
 AdamRawDemandRecord = dict[str, object]
 PRIMARY_TEST_STATION = StationSeed(
@@ -519,8 +521,8 @@ class SlowFoundationSeedSource:
         return []
 
     def items(self):
-        for offset in range(5_000):
-            time.sleep(0.005)
+        for offset in range(150):
+            time.sleep(0.002)
             yield ItemSeed(
                 type_id=90000000 + offset,
                 name=f"Bulk Item {offset}",

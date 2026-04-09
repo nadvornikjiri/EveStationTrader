@@ -38,7 +38,7 @@ def after_cursor_execute(conn, cursor, statement, parameters, context, executema
     query_parameters = conn.info.pop("_query_parameters", None)
     duration_ms = ((perf_counter() - start_time) * 1000) if start_time is not None else 0.0
     formatted_parameters = _format_sql_parameters(query_parameters)
-    sql_logger.debug(
+    sql_logger.info(
         "SQL %s params=%s (%.2f ms)",
         normalized_statement,
         formatted_parameters,

@@ -34,6 +34,7 @@ class SourceSummary(BaseModel):
     total_item_volume_m3: float
     shipping_cost_total: float
     demand_source_summary: str
+    esi_demand_day_total: float
 
 
 class OpportunityItemRow(BaseModel):
@@ -60,6 +61,7 @@ class OpportunityItemRow(BaseModel):
     item_volume_m3: float
     shipping_cost: float
     demand_source: str
+    esi_demand_day: float
 
 
 class TargetOpportunityItemRow(OpportunityItemRow):

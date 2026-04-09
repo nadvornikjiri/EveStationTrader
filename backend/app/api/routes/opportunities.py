@@ -24,6 +24,7 @@ def get_source_summaries(
     source_type: str = "all",
     min_security: str = "all",
     demand_source: str = "all",
+    min_esi_demand_day: float = 0.0,
 ) -> list[SourceSummary]:
     return TradeRepository().list_source_summaries(
         target_location_id,
@@ -36,6 +37,7 @@ def get_source_summaries(
         source_type=source_type,
         min_security=min_security,
         demand_source=demand_source,
+        min_esi_demand_day=min_esi_demand_day,
     )
 
 
@@ -52,6 +54,7 @@ def get_items(
     source_type: str = "all",
     min_security: str = "all",
     demand_source: str = "all",
+    min_esi_demand_day: float = 0.0,
 ) -> list[OpportunityItemRow]:
     return TradeRepository().list_items(
         target_location_id,
@@ -65,6 +68,7 @@ def get_items(
         source_type=source_type,
         min_security=min_security,
         demand_source=demand_source,
+        min_esi_demand_day=min_esi_demand_day,
     )
 
 

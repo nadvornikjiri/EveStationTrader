@@ -701,7 +701,7 @@ test("renders sortable headers for the grouped opportunity table", () => {
     "In Transit",
     "Assets",
     "Active Sell Orders",
-    "Source Avg Price",
+    "Source Now Price",
     "Target Now Price",
     "Target Period Avg Price",
     "Target Now Profit",

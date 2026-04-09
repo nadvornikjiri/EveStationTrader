@@ -5,7 +5,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.domain.enums import DemandSource, LocationType
-from app.models.all_models import AdamMarketOrdersTradeRaw, Item, Location, MarketDemandResolved, StructureDemandPeriod
+from app.models.all_models import AdamMarketOrdersTradeRaw, Item, Location, MarketDemandResolved, NpcStationDemandPeriod, StructureDemandPeriod
 from app.services.postgres_copy import copy_rows
 
 
@@ -189,6 +189,68 @@ class MarketDemandResolutionService:
             )
             or 0
         )
+
+        # ESI live override: for any demand key where npc_station_demand_period has
+        # a higher buy_from_sell_yesterday than what Adam4EVE provided, switch to ESI_LIVE.
+        # Also insert ESI_LIVE rows for keys that Adam4EVE had no data for.
+        esi_live_count = 0
+        has_npc_demand_table = session.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'npc_station_demand_period')"
+            )
+        )
+        if has_npc_demand_table:
+            esi_live_result = session.execute(
+                text(
+                    """
+                    INSERT INTO market_demand_resolved (
+                        location_id, type_id, period_days, demand_source,
+                        buy_from_sell_period, sell_to_buy_period,
+                        buy_from_sell_yesterday, sell_to_buy_yesterday,
+                        computed_at
+                    )
+                    SELECT
+                        nsp.location_id,
+                        nsp.type_id,
+                        nsp.period_days,
+                        :demand_source,
+                        nsp.buy_from_sell_period,
+                        nsp.sell_to_buy_period,
+                        nsp.buy_from_sell_yesterday,
+                        nsp.sell_to_buy_yesterday,
+                        :computed_at
+                    FROM adam_npc_demand_refresh_keys AS keys
+                    JOIN npc_station_demand_period AS nsp
+                      ON nsp.location_id = keys.location_id
+                     AND nsp.type_id = keys.type_id
+                     AND nsp.period_days = :period_days
+                    WHERE nsp.buy_from_sell_yesterday > COALESCE(
+                        (SELECT resolved.buy_from_sell_yesterday
+                         FROM market_demand_resolved AS resolved
+                         WHERE resolved.location_id = keys.location_id
+                           AND resolved.type_id = keys.type_id
+                           AND resolved.period_days = :period_days),
+                        0
+                    )
+                    ON CONFLICT (location_id, type_id, period_days) DO UPDATE SET
+                        demand_source = EXCLUDED.demand_source,
+                        buy_from_sell_period = EXCLUDED.buy_from_sell_period,
+                        sell_to_buy_period = EXCLUDED.sell_to_buy_period,
+                        buy_from_sell_yesterday = EXCLUDED.buy_from_sell_yesterday,
+                        sell_to_buy_yesterday = EXCLUDED.sell_to_buy_yesterday,
+                        computed_at = EXCLUDED.computed_at
+                    """
+                ),
+                {
+                    "period_days": period_days,
+                    "demand_source": DemandSource.ESI_LIVE.value,
+                    "computed_at": datetime.now(UTC),
+                },
+            )
+            esi_live_count = esi_live_result.rowcount
+        refreshed_count += esi_live_count
+
         session.commit()
         return refreshed_count
 
@@ -253,58 +315,86 @@ class MarketDemandResolutionService:
         if location is None or item is None:
             raise ValueError("location_id or type_id was not found")
 
+        # Gather Adam4EVE demand data
+        adam_bfs_yesterday = 0.0
+        adam_bfs_period = 0.0
+        adam_stb_period = 0.0
+        adam_stb_yesterday = 0.0
+        adam_points = 0
         latest_scan_date = session.scalar(
             select(AdamMarketOrdersTradeRaw.c.scanDate).where(
                 AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
                 AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
             ).order_by(AdamMarketOrdersTradeRaw.c.scanDate.desc())
         )
-        if latest_scan_date is None:
-            return self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
+        if latest_scan_date is not None:
+            window_start = latest_scan_date - timedelta(days=max(period_days - 1, 0))
+            raw_rows = session.execute(
+                select(
+                    AdamMarketOrdersTradeRaw.c.scanDate,
+                    AdamMarketOrdersTradeRaw.c.is_buy_order,
+                    AdamMarketOrdersTradeRaw.c.amount,
+                ).where(
+                    AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
+                    AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
+                    AdamMarketOrdersTradeRaw.c.scanDate >= window_start,
+                    AdamMarketOrdersTradeRaw.c.scanDate <= latest_scan_date,
+                )
+            ).all()
+            distinct_dates: set[date] = set()
+            for scan_date, is_buy_order, amount in raw_rows:
+                distinct_dates.add(scan_date)
+                if is_buy_order == 0:
+                    adam_bfs_period += amount
+                    if scan_date == latest_scan_date:
+                        adam_bfs_yesterday += amount
+                else:
+                    adam_stb_period += amount
+                    if scan_date == latest_scan_date:
+                        adam_stb_yesterday += amount
+            adam_points = len(distinct_dates)
 
-        window_start = latest_scan_date - timedelta(days=max(period_days - 1, 0))
-        raw_rows = session.execute(
-            select(
-                AdamMarketOrdersTradeRaw.c.scanDate,
-                AdamMarketOrdersTradeRaw.c.is_buy_order,
-                AdamMarketOrdersTradeRaw.c.amount,
-            ).where(
-                AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
-                AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
-                AdamMarketOrdersTradeRaw.c.scanDate >= window_start,
-                AdamMarketOrdersTradeRaw.c.scanDate <= latest_scan_date,
+        # Gather ESI live demand data
+        esi_period = session.scalar(
+            select(NpcStationDemandPeriod).where(
+                NpcStationDemandPeriod.location_id == location_id,
+                NpcStationDemandPeriod.type_id == type_id,
+                NpcStationDemandPeriod.period_days == period_days,
             )
-        ).all()
-        if not raw_rows:
-            return self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
-
-        buy_from_sell_period = 0.0
-        sell_to_buy_period = 0.0
-        buy_from_sell_yesterday = 0.0
-        sell_to_buy_yesterday = 0.0
-        distinct_dates: set[date] = set()
-        for scan_date, is_buy_order, amount in raw_rows:
-            distinct_dates.add(scan_date)
-            if is_buy_order == 0:
-                buy_from_sell_period += amount
-                if scan_date == latest_scan_date:
-                    buy_from_sell_yesterday += amount
-            else:
-                sell_to_buy_period += amount
-                if scan_date == latest_scan_date:
-                    sell_to_buy_yesterday += amount
-        return self._upsert_row(
-            session,
-            location_id=location_id,
-            type_id=type_id,
-            period_days=period_days,
-            demand_source=DemandSource.ADAM4EVE.value,
-            buy_from_sell_period=buy_from_sell_period,
-            sell_to_buy_period=sell_to_buy_period,
-            buy_from_sell_yesterday=buy_from_sell_yesterday,
-            sell_to_buy_yesterday=sell_to_buy_yesterday,
-            points_used=len(distinct_dates),
         )
+        esi_bfs_yesterday = esi_period.buy_from_sell_yesterday if esi_period else 0.0
+
+        # Pick the source with higher buy_from_sell_yesterday
+        if esi_bfs_yesterday > adam_bfs_yesterday and esi_period is not None:
+            return self._upsert_row(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=period_days,
+                demand_source=DemandSource.ESI_LIVE.value,
+                buy_from_sell_period=esi_period.buy_from_sell_period,
+                sell_to_buy_period=esi_period.sell_to_buy_period,
+                buy_from_sell_yesterday=esi_period.buy_from_sell_yesterday,
+                sell_to_buy_yesterday=esi_period.sell_to_buy_yesterday,
+                points_used=1,
+            )
+
+        if adam_bfs_yesterday > 0 or adam_bfs_period > 0:
+            return self._upsert_row(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=period_days,
+                demand_source=DemandSource.ADAM4EVE.value,
+                buy_from_sell_period=adam_bfs_period,
+                sell_to_buy_period=adam_stb_period,
+                buy_from_sell_yesterday=adam_bfs_yesterday,
+                sell_to_buy_yesterday=adam_stb_yesterday,
+                points_used=adam_points,
+            )
+
+        # Neither source has data
+        return self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
 
     def _upsert_structure_fallback(
         self,

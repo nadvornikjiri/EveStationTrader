@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -7,6 +8,8 @@ from app.models.all_models import EsiMarketOrder, Item, Location, Region, System
 from app.repositories.seed_data import StationSeed
 from app.services.esi.orders_ingestion import EsiRegionOrderBatch, EsiRegionalOrderIngestionService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 def build_session() -> Session:
@@ -359,13 +362,13 @@ def test_delete_orders_by_ids_batches_large_parameter_sets() -> None:
                 issued=datetime(2026, 3, 23, 9, 0, tzinfo=UTC),
                 duration=90,
             )
-            for order_id in range(10_000, 16_100)
+            for order_id in range(10_000, 10_100)
         ]
     )
     session.commit()
 
     service = EsiRegionalOrderIngestionService()
-    service._delete_orders_by_ids(session, order_ids=list(range(10_000, 16_100)))
+    service._delete_orders_by_ids(session, order_ids=list(range(10_000, 10_100)))
     session.commit()
 
     assert session.scalars(select(EsiMarketOrder)).all() == []

@@ -2,6 +2,7 @@ import csv
 from datetime import date, timedelta
 from typing import TypedDict
 
+import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,8 @@ from app.models.all_models import (
 from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
 from app.services.demand.market_demand import MarketDemandResolutionService
 from tests.db_test_utils import build_test_session
+
+pytestmark = pytest.mark.integration
 
 
 class CsvDemandRow(TypedDict):

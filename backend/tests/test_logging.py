@@ -1,11 +1,14 @@
 import logging
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import text
 
 from app.core.logging import configure_logging, request_logger
 from app.db import session as db_session
 from app.db.session import SessionLocal
+
+pytestmark = pytest.mark.integration
 
 
 def test_request_logging_emits_http_request_line(client) -> None:

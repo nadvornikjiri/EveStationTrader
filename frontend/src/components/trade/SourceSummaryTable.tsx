@@ -23,7 +23,8 @@ export type GroupedSortKey =
   | "roi_period"
   | "item_volume_m3"
   | "shipping_cost"
-  | "demand_source";
+  | "demand_source"
+  | "esi_demand_day";
 
 export type GroupedSortDirection = "asc" | "desc";
 
@@ -52,12 +53,13 @@ const SORTABLE_COLUMNS: Array<{ key: GroupedSortKey; label: string }> = [
   { key: "purchase_units", label: "Purchase Units" },
   { key: "source_units_available", label: "Source Units Avail" },
   { key: "target_demand_day", label: "Target Demand / Day" },
+  { key: "esi_demand_day", label: "ESI Traded Vol" },
   { key: "target_supply_units", label: "Target Supply Units" },
   { key: "target_dos", label: "Target D.O.S" },
   { key: "in_transit_units", label: "In Transit" },
   { key: "assets_units", label: "Assets" },
   { key: "active_sell_orders_units", label: "Active Sell Orders" },
-  { key: "source_avg_price", label: "Source Avg Price" },
+  { key: "source_avg_price", label: "Source Now Price" },
   { key: "target_now_price", label: "Target Now Price" },
   { key: "target_period_avg_price", label: "Target Period Avg Price" },
   { key: "target_now_profit", label: "Target Now Profit" },
@@ -181,6 +183,8 @@ function summaryValue(row: SourceSummary, key: GroupedSortKey): number | string 
       return row.shipping_cost_total;
     case "demand_source":
       return row.demand_source_summary;
+    case "esi_demand_day":
+      return row.esi_demand_day_total;
   }
 }
 
@@ -228,6 +232,8 @@ function itemValue(row: OpportunityItem, key: GroupedSortKey): number | string {
       return row.shipping_cost;
     case "demand_source":
       return row.demand_source;
+    case "esi_demand_day":
+      return row.esi_demand_day;
   }
 }
 
@@ -285,6 +291,8 @@ function renderSummaryCell(row: SourceSummary, key: GroupedSortKey) {
       return row.shipping_cost_total.toLocaleString();
     case "demand_source":
       return row.demand_source_summary;
+    case "esi_demand_day":
+      return row.esi_demand_day_total.toFixed(1);
   }
 }
 
@@ -332,6 +340,8 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
       return row.shipping_cost.toLocaleString();
     case "demand_source":
       return row.demand_source;
+    case "esi_demand_day":
+      return row.esi_demand_day.toFixed(1);
   }
 }
 
@@ -438,15 +448,15 @@ export function SourceSummaryTable({
           <tbody>
             {rows.length === 0 && isLoading ? (
               <tr>
-                <td colSpan={21}>Loading source markets for this target...</td>
+                <td colSpan={22}>Loading source markets for this target...</td>
               </tr>
             ) : rows.length === 0 && errorMessage ? (
               <tr>
-                <td colSpan={21}>{errorMessage}</td>
+                <td colSpan={22}>{errorMessage}</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={21}>No computed source markets available for this target yet.</td>
+                <td colSpan={22}>No computed source markets available for this target yet.</td>
               </tr>
             ) : (
               sortedRows.flatMap((row) => {
@@ -485,7 +495,7 @@ export function SourceSummaryTable({
                 if (isExpandedRowsLoading) {
                   renderedRows.push(
                     <tr key={`loading-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={21}>Loading item opportunities for this source...</td>
+                      <td colSpan={22}>Loading item opportunities for this source...</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -494,7 +504,7 @@ export function SourceSummaryTable({
                 if (expandedRowsErrorMessage) {
                   renderedRows.push(
                     <tr key={`error-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={21}>{expandedRowsErrorMessage}</td>
+                      <td colSpan={22}>{expandedRowsErrorMessage}</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -503,7 +513,7 @@ export function SourceSummaryTable({
                 if (sortedExpandedRows.length === 0) {
                   renderedRows.push(
                     <tr key={`empty-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={21}>No item opportunities match the current filters for this source.</td>
+                      <td colSpan={22}>No item opportunities match the current filters for this source.</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -546,7 +556,7 @@ export function SourceSummaryTable({
                 if (visibleExpandedRows.length < sortedExpandedRows.length) {
                   renderedRows.push(
                     <tr key={`show-more-${row.source_location_id}`} className="grouped-item-row grouped-item-more-row">
-                      <td colSpan={21}>
+                      <td colSpan={22}>
                         <button
                           type="button"
                           className="inline-more-button"

@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 import re
 
+import pytest
 
 from sqlalchemy import delete, insert, select, update
 
+from app.api.routes import database as database_routes
 from app.api.schemas.sync import SyncJobRunResponse
 from app.core.security import build_esi_scopes
 from app.db.session import SessionLocal
@@ -23,6 +25,8 @@ from app.models.all_models import (
     User,
 )
 from app.main import build_cors_options
+
+pytestmark = pytest.mark.integration
 
 
 def reset_character_tables() -> None:
@@ -425,6 +429,21 @@ def test_get_sync_jobs_includes_progress_fields(client) -> None:
 
 
 def test_get_database_tables(client) -> None:
+    response = client.get("/api/database/tables")
+    assert response.status_code == 200
+    assert any(row["name"] == "items" for row in response.json())
+
+
+def test_get_database_tables_avoids_per_table_reflection(client, monkeypatch) -> None:
+    original_table = database_routes.Table
+
+    def fail_if_reflecting(*args, **kwargs):
+        if kwargs.get("autoload_with") is not None:
+            raise AssertionError("list_database_tables should not reflect each table to compute row counts.")
+        return original_table(*args, **kwargs)
+
+    monkeypatch.setattr(database_routes, "Table", fail_if_reflecting)
+
     response = client.get("/api/database/tables")
     assert response.status_code == 200
     assert any(row["name"] == "items" for row in response.json())
