@@ -22,6 +22,16 @@ def rebuild_opportunities_job() -> None:
     )
 
 
+def sync_everef_history_job() -> None:
+    result = SyncService().trigger_job("everef_history_sync")
+    logger.info(
+        "everef history sync completed: job_id=%s status=%s records=%s",
+        result.id,
+        result.status,
+        result.records_processed,
+    )
+
+
 def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(heartbeat_job, "interval", minutes=5, id="heartbeat", replace_existing=True)
     scheduler.add_job(
@@ -29,5 +39,12 @@ def register_jobs(scheduler: BaseScheduler) -> None:
         "interval",
         minutes=10,
         id="rebuild_opportunities",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        sync_everef_history_job,
+        "interval",
+        hours=24,
+        id="everef_history_sync",
         replace_existing=True,
     )

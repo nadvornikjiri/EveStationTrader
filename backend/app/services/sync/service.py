@@ -4,14 +4,21 @@ import logging
 from pathlib import Path
 import resource
 import signal
+import tempfile
 from threading import Event, Lock, Thread, current_thread, main_thread
 from time import perf_counter
-from typing import Callable, Protocol, Sequence, cast
+from typing import Callable, Protocol, Sequence, TypeVar, cast
 
 from sqlalchemy import and_, delete, distinct, func, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas.sync import ClearSyncDataResponse, FallbackDiagnostic, SyncJobRunResponse, SyncStatusCard
+from app.api.schemas.sync import (
+    ClearSyncDataResponse,
+    FallbackDiagnostic,
+    SyncJobRunResponse,
+    SyncJobStageRunResponse,
+    SyncStatusCard,
+)
 from app.db.session import SessionLocal
 from app.models.all_models import (
     AdamMarketPriceHistoryDaily,
@@ -23,7 +30,10 @@ from app.models.all_models import (
     CharacterAccessibleStructure,
     EsiCharacter,
     EsiCharacterSyncState,
+    EsiHistoryDaily,
+    EsiHistorySyncState,
     EsiMarketOrder,
+    EveRefHistorySyncState,
     Item,
     Location,
     MarketDemandResolved,
@@ -36,6 +46,7 @@ from app.models.all_models import (
     StructureOrderDelta,
     StructureSnapshotOrder,
     StructureSnapshot,
+    SyncJobStageRun,
     SyncJobRun,
     System,
     TrackedStructure,
@@ -50,7 +61,10 @@ from app.services.adam4eve.history_ingestion import (
 )
 from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
 from app.services.demand.market_demand import MarketDemandResolutionService
+from app.services.everef.client import download_history_file, fetch_totals_json, get_available_dates
+from app.services.everef.history_ingestion import EveRefHistoryIngestionService
 from app.services.esi.client import EsiClient, EsiRegionalOrderRecord
+from app.services.esi.history_ingestion import EsiRegionalHistoryIngestionService, EsiRegionalHistoryRecord
 from app.services.esi.orders_ingestion import EsiRegionOrderBatch, EsiRegionalOrderIngestionService
 from app.services.opportunities.generation import OpportunityGenerationService
 from app.services.pricing.market_price_periods import MarketPricePeriodService
@@ -71,6 +85,8 @@ class UniverseCapableEsiClient(Protocol):
     def fetch_station(self, station_id: int) -> StationSeed: ...
 
     def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]: ...
+
+    def fetch_regional_history(self, region_id: int, type_id: int) -> list[EsiRegionalHistoryRecord]: ...
 
 
 class AdamDemandCapableClient(Protocol):
@@ -140,6 +156,7 @@ class JobCancelledError(RuntimeError):
 _PROCESS_CANCELLATION_EVENT = Event()
 _SIGNAL_HANDLER_LOCK = Lock()
 _SIGNAL_HANDLERS_REGISTERED = False
+T = TypeVar("T")
 
 
 def register_cancellation_signal_handlers() -> None:
@@ -171,6 +188,8 @@ class SyncService:
         ("foundation_import_sync", "Foundation universe sync"),
         ("adam4eve_sync", "Adam4EVE sync"),
         ("esi_market_orders_sync", "ESI market orders sync"),
+        ("esi_history_sync", "ESI market history sync"),
+        ("everef_history_sync", "EVE Ref history sync"),
         ("structure_snapshot_sync", "Structure snapshot sync"),
         ("character_sync", "Character sync"),
         ("opportunity_rebuild", "Opportunity rebuild"),
@@ -183,6 +202,8 @@ class SyncService:
     IMPORT_SCOPE_GLOBAL = "global"
     ADAM_HISTORY_MAX_LOOKBACK_DAYS = 14
     PRE_REBUILD_ESI_MARKET_ORDER_MAX_AGE_MINUTES = 10
+    OPPORTUNITY_REBUILD_MAX_RUNTIME = timedelta(minutes=30)
+    PROGRESS_RATE_UPDATE_INTERVAL_SECONDS = 1.0
 
     @staticmethod
     def _current_rss_mb() -> float | None:
@@ -222,6 +243,28 @@ class SyncService:
             f" {extra_metrics}" if extra_metrics else "",
         )
 
+    @classmethod
+    def _log_job_stage_checkpoint(
+        cls,
+        job_type: str,
+        stage: str,
+        *,
+        started_at: float,
+        **metrics: object,
+    ) -> None:
+        current_rss_mb = cls._current_rss_mb()
+        peak_rss_mb = cls._peak_rss_mb()
+        extra_metrics = " ".join(f"{key}={value}" for key, value in metrics.items())
+        logger.info(
+            "sync timing job_type=%s stage=%s elapsed_s=%.3f current_rss_mb=%s peak_rss_mb=%s%s",
+            job_type,
+            stage,
+            perf_counter() - started_at,
+            f"{current_rss_mb:.1f}" if current_rss_mb is not None else "-",
+            f"{peak_rss_mb:.1f}" if peak_rss_mb is not None else "-",
+            f" {extra_metrics}" if extra_metrics else "",
+        )
+
     def __init__(
         self,
         *,
@@ -244,6 +287,184 @@ class SyncService:
         if timestamp.tzinfo is None:
             return timestamp.replace(tzinfo=UTC)
         return timestamp.astimezone(UTC)
+
+    @staticmethod
+    def _sanitize_stage_metrics(metrics: dict[str, object] | None) -> dict[str, object]:
+        if not metrics:
+            return {}
+        return {key: value for key, value in metrics.items() if value is not None}
+
+    def _job_stage_rows(self, session: Session, job_id: int) -> list[SyncJobStageRun]:
+        return list(
+            session.scalars(
+                select(SyncJobStageRun)
+                .where(SyncJobStageRun.job_run_id == job_id)
+                .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
+            ).all()
+        )
+
+    def _stage_response(self, stage_run: SyncJobStageRun) -> SyncJobStageRunResponse:
+        return SyncJobStageRunResponse(
+            id=stage_run.id,
+            stage_key=stage_run.stage_key,
+            status=stage_run.status,
+            started_at=stage_run.started_at,
+            finished_at=stage_run.finished_at,
+            duration_ms=stage_run.duration_ms,
+            metrics=stage_run.metrics or {},
+            error_details=stage_run.error_details,
+        )
+
+    def _start_job_stage(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        stage_key: str,
+        metrics: dict[str, object] | None = None,
+    ) -> SyncJobStageRun:
+        stage_run = SyncJobStageRun(
+            job_run_id=job_id,
+            stage_key=stage_key,
+            status="running",
+            started_at=datetime.now(UTC),
+            metrics=self._sanitize_stage_metrics(metrics),
+        )
+        session.add(stage_run)
+        session.flush()
+        session.commit()
+        return stage_run
+
+    def _finish_job_stage(
+        self,
+        session: Session,
+        *,
+        stage_run_id: int,
+        status: str,
+        stage_started_at: float,
+        metrics: dict[str, object] | None = None,
+        error_details: str | None = None,
+    ) -> None:
+        stage_run = session.get(SyncJobStageRun, stage_run_id)
+        if stage_run is None or stage_run.finished_at is not None:
+            return
+        stage_run.status = status
+        stage_run.finished_at = datetime.now(UTC)
+        stage_run.duration_ms = max(int((perf_counter() - stage_started_at) * 1000), 0)
+        if metrics:
+            merged_metrics = dict(stage_run.metrics or {})
+            merged_metrics.update(self._sanitize_stage_metrics(metrics))
+            stage_run.metrics = merged_metrics
+        if error_details is not None:
+            stage_run.error_details = error_details
+        session.commit()
+
+    def _record_completed_job_stage(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        stage_key: str,
+        stage_started_at: float,
+        metrics: dict[str, object] | None = None,
+        status: str = "success",
+        error_details: str | None = None,
+    ) -> None:
+        stage_run = self._start_job_stage(session, job_id=job_id, stage_key=stage_key)
+        self._finish_job_stage(
+            session,
+            stage_run_id=stage_run.id,
+            status=status,
+            stage_started_at=stage_started_at,
+            metrics=metrics,
+            error_details=error_details,
+        )
+
+    def _run_job_stage(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        stage_key: str,
+        func: Callable[[], T],
+        initial_metrics: dict[str, object] | None = None,
+        success_metrics: Callable[[T], dict[str, object]] | None = None,
+    ) -> T:
+        stage_run = self._start_job_stage(session, job_id=job_id, stage_key=stage_key, metrics=initial_metrics)
+        stage_started_at = perf_counter()
+        try:
+            result = func()
+        except JobCancelledError as exc:
+            session.rollback()
+            self._finish_job_stage(
+                session,
+                stage_run_id=stage_run.id,
+                status="cancelled",
+                stage_started_at=stage_started_at,
+                error_details=str(exc),
+            )
+            raise
+        except Exception as exc:
+            session.rollback()
+            self._finish_job_stage(
+                session,
+                stage_run_id=stage_run.id,
+                status="failed",
+                stage_started_at=stage_started_at,
+                error_details=str(exc),
+            )
+            raise
+
+        self._finish_job_stage(
+            session,
+            stage_run_id=stage_run.id,
+            status="success",
+            stage_started_at=stage_started_at,
+            metrics=success_metrics(result) if success_metrics is not None else None,
+        )
+        return result
+
+    @staticmethod
+    def _rate_message(
+        *,
+        verb: str,
+        current: int,
+        total: int,
+        unit: str,
+        started_at: float,
+    ) -> str:
+        elapsed_seconds = max(perf_counter() - started_at, 1e-6)
+        rate = current / elapsed_seconds
+        return (
+            f"{verb} {current} / {total} {unit} "
+            f"at {rate:.1f} {unit}/s."
+        )
+
+    def _finalize_open_job_stages(self, session: Session, *, job_id: int, status: str, error_details: str | None) -> None:
+        open_stages = list(
+            session.scalars(
+                select(SyncJobStageRun)
+                .where(
+                    SyncJobStageRun.job_run_id == job_id,
+                    SyncJobStageRun.finished_at.is_(None),
+                )
+                .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
+            ).all()
+        )
+        if not open_stages:
+            return
+        finished_at = datetime.now(UTC)
+        for stage_run in open_stages:
+            stage_run.status = status
+            stage_run.finished_at = finished_at
+            if stage_run.error_details is None:
+                stage_run.error_details = error_details
+            if stage_run.duration_ms is None:
+                stage_run.duration_ms = max(
+                    int((finished_at - self._ensure_utc(stage_run.started_at)).total_seconds() * 1000),
+                    0,
+                )
+        session.commit()
 
     def get_status(self) -> list[SyncStatusCard]:
         def load_status() -> list[SyncStatusCard]:
@@ -366,7 +587,7 @@ class SyncService:
                 rows = session.scalars(
                     select(SyncJobRun).order_by(SyncJobRun.started_at.desc(), SyncJobRun.id.desc())
                 ).all()
-                return [self._to_job_response(row) for row in rows]
+                return [self._to_job_response(session, row) for row in rows]
             finally:
                 session.close()
 
@@ -382,6 +603,10 @@ class SyncService:
                 records_deleted += self._clear_adam4eve_data(session)
             elif job_type == "esi_market_orders_sync":
                 records_deleted += self._clear_esi_market_orders_data(session)
+            elif job_type == "esi_history_sync":
+                records_deleted += self._clear_esi_history_data(session)
+            elif job_type == "everef_history_sync":
+                records_deleted += self._clear_everef_history_data(session)
             elif job_type == "structure_snapshot_sync":
                 records_deleted += self._clear_structure_snapshot_data(session)
             elif job_type == "character_sync":
@@ -405,6 +630,9 @@ class SyncService:
         session = self.session_factory()
         try:
             self._finalize_stale_cancelling_jobs(session)
+            active_job = self._get_active_job_run(session, job_type=job_type)
+            if active_job is not None:
+                return self._to_job_response(session, active_job)
             job_run = self._create_job_run(session, job_type=job_type, started_at=now)
             return self._execute_job(session, job_id=job_run.id, job_type=job_type, started_at=now)
         finally:
@@ -415,8 +643,11 @@ class SyncService:
         session = self.session_factory()
         try:
             self._finalize_stale_cancelling_jobs(session)
+            active_job = self._get_active_job_run(session, job_type=job_type)
+            if active_job is not None:
+                return self._to_job_response(session, active_job)
             job_run = self._create_job_run(session, job_type=job_type, started_at=now)
-            response = self._to_job_response(job_run)
+            response = self._to_job_response(session, job_run)
         finally:
             session.close()
 
@@ -454,6 +685,19 @@ class SyncService:
         session.commit()
         return job_run
 
+    @staticmethod
+    def _get_active_job_run(session: Session, *, job_type: str) -> SyncJobRun | None:
+        return session.scalar(
+            select(SyncJobRun)
+            .where(
+                SyncJobRun.job_type == job_type,
+                SyncJobRun.finished_at.is_(None),
+                SyncJobRun.status.in_(("running", "cancelling")),
+            )
+            .order_by(SyncJobRun.started_at.desc(), SyncJobRun.id.desc())
+            .limit(1)
+        )
+
     def _execute_job(
         self,
         session: Session,
@@ -476,6 +720,7 @@ class SyncService:
             persisted_job = session.get(SyncJobRun, job_id)
             if persisted_job is None:
                 raise
+            self._finalize_open_job_stages(session, job_id=job_id, status="cancelled", error_details=str(exc))
             finished_at = datetime.now(UTC)
             persisted_job.status = "cancelled"
             persisted_job.finished_at = finished_at
@@ -487,12 +732,13 @@ class SyncService:
                 persisted_job.progress_current = 0
             persisted_job.message = str(exc)
             session.commit()
-            return self._to_job_response(persisted_job)
+            return self._to_job_response(session, persisted_job)
         except Exception as exc:
             session.rollback()
             persisted_job = session.get(SyncJobRun, job_id)
             if persisted_job is None:
                 raise
+            self._finalize_open_job_stages(session, job_id=job_id, status="failed", error_details=str(exc))
             finished_at = datetime.now(UTC)
             persisted_job.status = "failed"
             persisted_job.finished_at = finished_at
@@ -505,11 +751,12 @@ class SyncService:
             persisted_job.message = f"Failed {job_type}."
             persisted_job.error_details = str(exc)
             session.commit()
-            return self._to_job_response(persisted_job)
+            return self._to_job_response(session, persisted_job)
 
         persisted_job = session.get(SyncJobRun, job_id)
         if persisted_job is None:
             raise LookupError(f"Sync job {job_id} disappeared during execution.")
+        self._finalize_open_job_stages(session, job_id=job_id, status="success", error_details=None)
         finished_at = datetime.now(UTC)
         persisted_job.status = "success"
         persisted_job.finished_at = finished_at
@@ -523,7 +770,7 @@ class SyncService:
         persisted_job.message = message
         persisted_job.error_details = None
         session.commit()
-        return self._to_job_response(persisted_job)
+        return self._to_job_response(session, persisted_job)
 
     def cancel_job(self, job_id: int) -> SyncJobRunResponse:
         session = self.session_factory()
@@ -533,7 +780,7 @@ class SyncService:
             if job_run is None:
                 raise LookupError(f"Sync job {job_id} was not found.")
             if job_run.finished_at is not None or job_run.status in {"success", "failed", "cancelled"}:
-                return self._to_job_response(job_run)
+                return self._to_job_response(session, job_run)
 
             def mark_cancelling() -> None:
                 refreshed_job = session.get(SyncJobRun, job_id)
@@ -544,7 +791,7 @@ class SyncService:
 
             mark_cancelling()
             session.commit()
-            return self._to_job_response(job_run)
+            return self._to_job_response(session, job_run)
         finally:
             session.close()
 
@@ -602,6 +849,20 @@ class SyncService:
         records_deleted = 0
         records_deleted += self._clear_opportunity_data(session)
         records_deleted += self._delete_rows(session, delete(EsiMarketOrder))
+        return records_deleted
+
+    def _clear_esi_history_data(self, session: Session) -> int:
+        records_deleted = 0
+        records_deleted += self._clear_opportunity_data(session)
+        records_deleted += self._delete_rows(session, delete(EsiHistoryDaily))
+        records_deleted += self._delete_rows(session, delete(EsiHistorySyncState))
+        return records_deleted
+
+    def _clear_everef_history_data(self, session: Session) -> int:
+        records_deleted = 0
+        records_deleted += self._clear_opportunity_data(session)
+        records_deleted += self._delete_rows(session, delete(EsiHistoryDaily))
+        records_deleted += self._delete_rows(session, delete(EveRefHistorySyncState))
         return records_deleted
 
     def _clear_structure_snapshot_data(self, session: Session) -> int:
@@ -767,6 +1028,7 @@ class SyncService:
                 phase_started_at = perf_counter()
                 generated_count, scope_count = self._rebuild_opportunities(
                     session,
+                    job_id=job_id,
                     period_days=analysis_period_days,
                     cancellation_check=lambda: self._check_for_cancellation(session, job_id),
                 )
@@ -810,6 +1072,19 @@ class SyncService:
                 debug_enabled=debug_enabled,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
+        elif job_type == "esi_history_sync":
+            records_processed, target_type, target_id, message = self._sync_esi_history(
+                session,
+                job_id=job_id,
+                period_days=analysis_period_days,
+                cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+            )
+        elif job_type == "everef_history_sync":
+            records_processed, target_type, target_id, message = self._sync_everef_history(
+                session,
+                job_id=job_id,
+                cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+            )
         elif job_type == "character_sync":
             character_ids = list(
                 session.scalars(
@@ -841,17 +1116,67 @@ class SyncService:
                 )
         elif job_type == "opportunity_rebuild":
             esi_order_sync_message: str | None = None
+            rebuild_started_at = perf_counter()
             if self._should_refresh_esi_market_orders_before_rebuild(session):
-                _, _, _, esi_order_sync_message = self._sync_esi_market_orders(
+                stage_started_at = perf_counter()
+                _, _, _, esi_order_sync_message = self._run_job_stage(
                     session,
                     job_id=job_id,
-                    debug_enabled=debug_enabled,
-                    cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+                    stage_key="refresh_esi_market_orders",
+                    func=lambda: self._sync_esi_market_orders(
+                        session,
+                        job_id=job_id,
+                        debug_enabled=debug_enabled,
+                        cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+                    ),
+                    success_metrics=lambda result: {"records_processed": result[0], "region_count": result[2]},
                 )
-            generated_count, scope_count = self._rebuild_opportunities(
+                self._log_job_stage_checkpoint(
+                    "opportunity_rebuild",
+                    "refresh_esi_market_orders",
+                    started_at=stage_started_at,
+                )
+            else:
+                skipped_started_at = perf_counter()
+                self._record_completed_job_stage(
+                    session,
+                    job_id=job_id,
+                    stage_key="refresh_esi_market_orders",
+                    stage_started_at=skipped_started_at,
+                    status="skipped",
+                    metrics={"reason": "fresh_esi_market_orders_sync"},
+                )
+                self._log_job_stage_checkpoint(
+                    "opportunity_rebuild",
+                    "refresh_esi_market_orders_skipped",
+                    started_at=skipped_started_at,
+                )
+            stage_started_at = perf_counter()
+            generated_count, scope_count = self._run_job_stage(
                 session,
-                period_days=analysis_period_days,
-                cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+                job_id=job_id,
+                stage_key="rebuild_scopes",
+                func=lambda: self._rebuild_opportunities(
+                    session,
+                    job_id=job_id,
+                    period_days=analysis_period_days,
+                    cancellation_check=lambda: self._check_for_cancellation(session, job_id),
+                ),
+                success_metrics=lambda result: {"generated_count": result[0], "scope_count": result[1]},
+            )
+            self._log_job_stage_checkpoint(
+                "opportunity_rebuild",
+                "rebuild_scopes",
+                started_at=stage_started_at,
+                generated_count=generated_count,
+                scope_count=scope_count,
+            )
+            self._log_job_stage_checkpoint(
+                "opportunity_rebuild",
+                "total",
+                started_at=rebuild_started_at,
+                generated_count=generated_count,
+                scope_count=scope_count,
             )
             if generated_count == 0 and scope_count == 0:
                 message = "Skipped opportunity rebuild because computed demand rows are missing."
@@ -881,6 +1206,7 @@ class SyncService:
             )
             generated_count, scope_count = self._rebuild_opportunities(
                 session,
+                job_id=job_id,
                 period_days=analysis_period_days,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
@@ -906,6 +1232,7 @@ class SyncService:
         cancellation_check: Callable[[], None] | None = None,
     ) -> tuple[int, str, str | None, str]:
         universe_client = cast(UniverseCapableEsiClient, self.esi_client)
+        sync_started_at = perf_counter()
         regions = self._all_regions(session, debug_enabled=debug_enabled)
         if not regions:
             return (0, "manual", None, "Skipped ESI market orders sync because imported regions are missing.")
@@ -928,6 +1255,7 @@ class SyncService:
             progress_unit="regions",
             message=f"Downloading ESI market orders for 0 / {len(regions)} regions.",
         )
+        download_started_at = perf_counter()
         for region_index, region in enumerate(regions, start=1):
             if cancellation_check is not None:
                 cancellation_check()
@@ -942,6 +1270,12 @@ class SyncService:
                 progress_unit="regions",
                 message=f"Downloaded ESI market orders for {region_index} / {len(regions)} regions.",
             )
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "download_esi_market_order_batches",
+            started_at=download_started_at,
+            region_count=len(regions),
+        )
         total_downloaded_orders = sum(len(rows) for _, rows in downloaded_order_batches)
         self._update_job_progress(
             session,
@@ -965,6 +1299,7 @@ class SyncService:
 
         if cancellation_check is not None:
             cancellation_check()
+        ingest_started_at = perf_counter()
         result = ingestion_service.ingest_order_batches(
             session,
             region_batches=[
@@ -986,6 +1321,14 @@ class SyncService:
         total_stations_created += result.stations_created
         total_skipped_missing_items += result.skipped_missing_items
         total_skipped_non_npc_locations += result.skipped_non_npc_locations
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "ingest_esi_market_orders",
+            started_at=ingest_started_at,
+            downloaded_order_count=total_downloaded_orders,
+            processed_count=result.records_processed,
+            delta_count=result.delta_count,
+        )
 
         # Aggregate deltas into demand periods and cleanup old deltas
         demand_period_count = 0
@@ -994,6 +1337,7 @@ class SyncService:
             from app.services.npc_stations.deltas import NpcStationDeltaService
 
             analysis_period = max(settings.default_analysis_period_days, 1)
+            demand_started_at = perf_counter()
             demand_period_count = NpcStationDemandPeriodService().refresh_for_locations(
                 session,
                 target_location_ids=list(target_internal_ids),
@@ -1001,6 +1345,13 @@ class SyncService:
             )
             NpcStationDeltaService.cleanup_old_deltas(session)
             session.commit()
+            self._log_job_stage_checkpoint(
+                "opportunity_rebuild",
+                "refresh_npc_demand_periods",
+                started_at=demand_started_at,
+                target_location_count=len(target_internal_ids),
+                demand_period_count=demand_period_count,
+            )
 
         self._update_job_progress(
             session,
@@ -1020,7 +1371,218 @@ class SyncService:
             f"{total_skipped_non_npc_locations} skipped because the location could not be resolved across {len(regions)} regions, "
             f"{result.delta_count} order deltas, {demand_period_count} demand periods)."
         )
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "sync_esi_market_orders_total",
+            started_at=sync_started_at,
+            processed_count=total_processed,
+            downloaded_order_count=total_downloaded_orders,
+        )
         return (total_processed, "regions", str(len(regions)), message)
+
+    def _sync_esi_history(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        period_days: int,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> tuple[int, str, str | None, str]:
+        sync_started_at = perf_counter()
+        scopes = self._run_job_stage(
+            session,
+            job_id=job_id,
+            stage_key="load_rebuild_scopes",
+            func=lambda: self._load_rebuild_scopes(session, period_days=period_days),
+            success_metrics=lambda result: {"scope_count": len(result)},
+        )
+        if not scopes:
+            return (0, "targets", "0", "Skipped ESI market history sync because rebuild scopes are missing.")
+
+        self._run_job_stage(
+            session,
+            job_id=job_id,
+            stage_key="refresh_esi_history_for_scopes",
+            func=lambda: self._refresh_esi_history_for_scopes(
+                session,
+                job_id=job_id,
+                scopes=scopes,
+                cancellation_check=cancellation_check,
+            ),
+            success_metrics=lambda result: {
+                "scope_count": len(scopes),
+                "types_processed": result,
+            },
+        )
+        self._log_job_stage_checkpoint(
+            "esi_history_sync",
+            "refresh_esi_history_for_scopes",
+            started_at=sync_started_at,
+            scope_count=len(scopes),
+        )
+
+        history_rows = int(
+            session.scalar(
+                select(func.count())
+                .select_from(EsiHistoryDaily)
+            )
+            or 0
+        )
+        processed_type_count = sum(
+            int(stage.metrics.get("processed_type_count", 0))
+            for stage in self._job_stage_rows(session, job_id)
+            if stage.stage_key == "esi_history_region_refresh" and stage.status == "success"
+        )
+        message = (
+            "Synced ESI market history "
+            f"({processed_type_count} region-type histories refreshed across {len(scopes)} rebuild scopes; "
+            f"totals now: {history_rows} ESI history rows)."
+        )
+        return (processed_type_count, "targets", str(len(scopes)), message)
+
+    def _sync_everef_history(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> tuple[int, str, str | None, str]:
+        cache_dir = Path(tempfile.gettempdir()) / "everef_cache"
+        sync_started_at = perf_counter()
+
+        def resolve_dates() -> list[tuple[date, int | None]]:
+            totals = fetch_totals_json()
+            state_rows = session.scalars(
+                select(EveRefHistorySyncState).order_by(EveRefHistorySyncState.history_date.asc())
+            ).all()
+            existing_by_date = {row.history_date: row for row in state_rows}
+
+            totals_by_date: dict[date, int | None] = {}
+            for raw_date, payload in totals.items():
+                try:
+                    parsed_date = date.fromisoformat(raw_date)
+                except ValueError:
+                    continue
+                raw_size = payload.get("size")
+                if raw_size is None:
+                    file_size = None
+                else:
+                    try:
+                        file_size = int(raw_size)
+                    except (TypeError, ValueError):
+                        file_size = None
+                totals_by_date[parsed_date] = file_size
+
+            if not existing_by_date:
+                return [
+                    (history_date, totals_by_date[history_date])
+                    for history_date in get_available_dates(30)
+                    if history_date in totals_by_date
+                ]
+
+            return [
+                (history_date, file_size)
+                for history_date, file_size in sorted(totals_by_date.items())
+                if history_date not in existing_by_date or existing_by_date[history_date].file_size != file_size
+            ]
+
+        dates_to_download = self._run_job_stage(
+            session,
+            job_id=job_id,
+            stage_key="resolve_dates",
+            func=resolve_dates,
+            success_metrics=lambda result: {"date_count": len(result)},
+        )
+        self._log_job_stage_checkpoint(
+            "everef_history_sync",
+            "resolve_dates",
+            started_at=sync_started_at,
+            date_count=len(dates_to_download),
+        )
+
+        if not dates_to_download:
+            return (0, "targets", "0", "Skipped EVE Ref history sync because no files required refresh.")
+
+        rows_inserted = 0
+        ingestion_service = EveRefHistoryIngestionService()
+        total_dates = len(dates_to_download)
+
+        for index, (history_date, file_size) in enumerate(dates_to_download, start=1):
+            if cancellation_check is not None:
+                cancellation_check()
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Ingesting EVE Ref history files",
+                progress_current=index - 1,
+                progress_total=total_dates,
+                progress_unit="dates",
+                message=f"Ingesting EVE Ref history for {history_date.isoformat()} ({index} / {total_dates}).",
+            )
+
+            def ingest_date() -> int:
+                csv_path = download_history_file(history_date, cache_dir)
+                try:
+                    inserted = ingestion_service.ingest_history_file(
+                        session,
+                        csv_path,
+                        cancellation_check=cancellation_check,
+                    )
+                    state_row = session.scalar(
+                        select(EveRefHistorySyncState).where(EveRefHistorySyncState.history_date == history_date)
+                    )
+                    if state_row is None:
+                        state_row = EveRefHistorySyncState(
+                            history_date=history_date,
+                            loaded_at=datetime.now(UTC),
+                            file_size=file_size,
+                        )
+                        session.add(state_row)
+                    else:
+                        state_row.loaded_at = datetime.now(UTC)
+                        state_row.file_size = file_size
+                    session.commit()
+                    return inserted
+                finally:
+                    csv_path.unlink(missing_ok=True)
+                    csv_archive_path = csv_path.with_suffix(f"{csv_path.suffix}.bz2")
+                    csv_archive_path.unlink(missing_ok=True)
+
+            inserted = self._run_job_stage(
+                session,
+                job_id=job_id,
+                stage_key="ingest",
+                func=ingest_date,
+                initial_metrics={"history_date": history_date.isoformat(), "file_size": file_size},
+                success_metrics=lambda result, *, target_date=history_date: {
+                    "history_date": target_date.isoformat(),
+                    "file_size": file_size,
+                    "rows_inserted": result,
+                },
+            )
+            rows_inserted += inserted
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Ingesting EVE Ref history files",
+                progress_current=index,
+                progress_total=total_dates,
+                progress_unit="dates",
+                message=f"Ingested EVE Ref history for {history_date.isoformat()} ({index} / {total_dates}).",
+            )
+
+        self._log_job_stage_checkpoint(
+            "everef_history_sync",
+            "ingest",
+            started_at=sync_started_at,
+            date_count=total_dates,
+            rows_inserted=rows_inserted,
+        )
+        message = (
+            "Synced EVE Ref history "
+            f"({rows_inserted} rows inserted across {total_dates} dates)."
+        )
+        return (rows_inserted, "targets", str(total_dates), message)
 
     def _should_refresh_esi_market_orders_before_rebuild(self, session: Session) -> bool:
         latest_success = session.scalar(
@@ -1233,6 +1795,35 @@ class SyncService:
             period_days=period_days,
         )
 
+    def _load_rebuild_scopes(
+        self,
+        session: Session,
+        *,
+        period_days: int | None,
+    ) -> list[tuple[int, int]]:
+        configured_target_market_ids = (
+            SettingsService(session_factory=lambda: session).get_settings_for_session(session).target_market_location_ids
+        )
+        if not configured_target_market_ids:
+            return []
+        configured_target_ids = set(
+            session.scalars(select(Location.id).where(Location.location_id.in_(configured_target_market_ids))).all()
+        )
+        if not configured_target_ids:
+            return []
+
+        scope_query = (
+            select(
+                MarketDemandResolved.location_id,
+                MarketDemandResolved.period_days,
+            )
+            .where(MarketDemandResolved.location_id.in_(configured_target_ids))
+            .distinct()
+        )
+        if period_days is not None:
+            scope_query = scope_query.where(MarketDemandResolved.period_days == period_days)
+        return [(int(row[0]), int(row[1])) for row in session.execute(scope_query).all()]
+
     def _adam_demand_refresh_keys(
         self,
         session: Session,
@@ -1267,36 +1858,32 @@ class SyncService:
     def _rebuild_opportunities(
         self,
         session: Session,
+        job_id: int,
         period_days: int | None = None,
         cancellation_check: Callable[[], None] | None = None,
     ) -> tuple[int, int]:
-        configured_target_market_ids = (
-            SettingsService(session_factory=lambda: session).get_settings_for_session(session).target_market_location_ids
-        )
-        if not configured_target_market_ids:
-            return (0, 0)
-        configured_target_ids = set(
-            session.scalars(select(Location.id).where(Location.location_id.in_(configured_target_market_ids))).all()
-        )
-        if not configured_target_ids:
-            return (0, 0)
+        rebuild_started_at = perf_counter()
+        scope_load_started_at = perf_counter()
 
-        scope_query = (
-            select(
-                MarketDemandResolved.location_id,
-                MarketDemandResolved.period_days,
-            )
-            .where(MarketDemandResolved.location_id.in_(configured_target_ids))
-            .distinct()
+        scopes = self._run_job_stage(
+            session,
+            job_id=job_id,
+            stage_key="load_rebuild_scopes",
+            func=lambda: self._load_rebuild_scopes(session, period_days=period_days),
+            success_metrics=lambda result: {"scope_count": len(result)},
         )
-        if period_days is not None:
-            scope_query = scope_query.where(MarketDemandResolved.period_days == period_days)
-        scopes = session.execute(scope_query).all()
         if not scopes:
             return (0, 0)
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "load_rebuild_scopes",
+            started_at=scope_load_started_at,
+            scope_count=len(scopes),
+        )
 
         scope_count = 0
         generated_count = 0
+        scope_generation_started_at = perf_counter()
         for target_location_id, scope_period_days in scopes:
             if cancellation_check is not None:
                 cancellation_check()
@@ -1324,18 +1911,331 @@ class SyncService:
             if not source_location_ids:
                 continue
 
-            result = OpportunityGenerationService().generate_for_target(
+            def record_scope_stage(stage_key: str, stage_started_at: float, metrics: dict[str, object]) -> None:
+                self._record_completed_job_stage(
+                    session,
+                    job_id=job_id,
+                    stage_key=f"target_scope.{stage_key}",
+                    stage_started_at=stage_started_at,
+                    metrics={
+                        "target_location_id": target_location_id,
+                        "period_days": scope_period_days,
+                        **metrics,
+                    },
+                )
+
+            result = self._run_job_stage(
                 session,
-                target_location_id=target_location_id,
-                source_location_ids=source_location_ids,
-                type_ids=type_ids,
-                period_days=scope_period_days,
-                replace_entire_target_scope=True,
+                job_id=job_id,
+                stage_key="target_scope.total",
+                func=lambda: OpportunityGenerationService().generate_for_target(
+                    session,
+                    target_location_id=target_location_id,
+                    source_location_ids=source_location_ids,
+                    type_ids=type_ids,
+                    period_days=scope_period_days,
+                    replace_entire_target_scope=True,
+                    cancellation_check=cancellation_check,
+                    stage_callback=record_scope_stage,
+                ),
+                initial_metrics={
+                    "target_location_id": target_location_id,
+                    "period_days": scope_period_days,
+                    "type_count": len(type_ids),
+                    "source_count": len(source_location_ids),
+                },
+                success_metrics=lambda scope_result: {
+                    "target_location_id": target_location_id,
+                    "period_days": scope_period_days,
+                    "type_count": len(type_ids),
+                    "source_count": len(source_location_ids),
+                    "generated_count": scope_result.item_count,
+                    "summary_count": scope_result.summary_count,
+                },
             )
             scope_count += 1
             generated_count += result.item_count
 
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "generate_opportunity_rows",
+            started_at=scope_generation_started_at,
+            scope_count=scope_count,
+            generated_count=generated_count,
+        )
+        self._log_job_stage_checkpoint(
+            "opportunity_rebuild",
+            "_rebuild_opportunities_total",
+            started_at=rebuild_started_at,
+            scope_count=scope_count,
+            generated_count=generated_count,
+        )
+
         return (generated_count, scope_count)
+
+    def _refresh_esi_history_for_scopes(
+        self,
+        session: Session,
+        *,
+        job_id: int | None,
+        scopes: list[tuple[int, int]],
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> int:
+        region_type_map: dict[int, set[int]] = {}
+        for target_location_id, scope_period_days in scopes:
+            target_location = session.get(Location, target_location_id)
+            if target_location is None:
+                continue
+            type_ids = set(
+                session.scalars(
+                    select(MarketDemandResolved.type_id).where(
+                        MarketDemandResolved.location_id == target_location_id,
+                        MarketDemandResolved.period_days == scope_period_days,
+                    )
+                ).all()
+            )
+            if not type_ids:
+                continue
+            region_type_map.setdefault(target_location.region_id, set()).update(type_ids)
+
+        if not region_type_map:
+            return 0
+
+        total_type_count = sum(len(type_ids) for type_ids in region_type_map.values())
+        processed_type_count = 0
+        progress_started_at = perf_counter()
+        last_progress_emit_at = progress_started_at
+        if job_id is not None:
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Refreshing ESI market history",
+                progress_current=0,
+                progress_total=total_type_count,
+                progress_unit="types",
+                message=self._rate_message(
+                    verb="Processed",
+                    current=0,
+                    total=total_type_count,
+                    unit="types",
+                    started_at=progress_started_at,
+                ),
+            )
+
+        for region_id, type_ids in region_type_map.items():
+            if self._esi_history_region_checked_today(session, region_id=region_id, type_ids=type_ids):
+                processed_type_count += len(type_ids)
+                if job_id is not None:
+                    self._record_completed_job_stage(
+                        session,
+                        job_id=job_id,
+                        stage_key="esi_history_region_refresh",
+                        stage_started_at=perf_counter(),
+                        status="skipped",
+                        metrics={"region_id": region_id, "type_count": len(type_ids), "reason": "checked_today"},
+                    )
+                    now = perf_counter()
+                    if (
+                        now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
+                        or processed_type_count >= total_type_count
+                    ):
+                        self._update_job_progress(
+                            session,
+                            job_id,
+                            progress_phase="Refreshing ESI market history",
+                            progress_current=processed_type_count,
+                            progress_total=total_type_count,
+                            progress_unit="types",
+                            message=self._rate_message(
+                                verb="Processed",
+                                current=processed_type_count,
+                                total=total_type_count,
+                                unit="types",
+                                started_at=progress_started_at,
+                            ),
+                        )
+                        last_progress_emit_at = now
+                continue
+            if cancellation_check is not None:
+                cancellation_check()
+            region = session.get(Region, region_id)
+            if region is None:
+                continue
+            def refresh_region_history() -> tuple[int, date | None]:
+                synced_through_date: date | None = None
+                region_processed_type_count = 0
+                nonlocal processed_type_count, last_progress_emit_at
+                for type_id in sorted(type_ids):
+                    if cancellation_check is not None:
+                        cancellation_check()
+                    item = session.get(Item, type_id)
+                    processed_type_count += 1
+                    if item is None:
+                        now = perf_counter()
+                        if (
+                            job_id is not None
+                            and (
+                                now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
+                                or processed_type_count >= total_type_count
+                            )
+                        ):
+                            self._update_job_progress(
+                                session,
+                                job_id,
+                                progress_phase="Refreshing ESI market history",
+                                progress_current=processed_type_count,
+                                progress_total=total_type_count,
+                                progress_unit="types",
+                                message=self._rate_message(
+                                    verb="Processed",
+                                    current=processed_type_count,
+                                    total=total_type_count,
+                                    unit="types",
+                                    started_at=progress_started_at,
+                                ),
+                            )
+                            last_progress_emit_at = now
+                        continue
+                    records = cast(list[EsiRegionalHistoryRecord], self.esi_client.fetch_regional_history(region.region_id, item.type_id))
+                    result = EsiRegionalHistoryIngestionService().ingest_region_history(
+                        session,
+                        eve_region_id=region.region_id,
+                        eve_type_id=item.type_id,
+                        records=records,
+                    )
+                    if records:
+                        candidate_date = max(
+                            record["date"]
+                            if isinstance(record["date"], date)
+                            else date.fromisoformat(str(record["date"]))
+                            for record in records
+                        )
+                        if synced_through_date is None or candidate_date > synced_through_date:
+                            synced_through_date = candidate_date
+                        region_processed_type_count += 1
+                    del result
+                    now = perf_counter()
+                    if (
+                        job_id is not None
+                        and (
+                            now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
+                            or processed_type_count >= total_type_count
+                        )
+                    ):
+                        self._update_job_progress(
+                            session,
+                            job_id,
+                            progress_phase="Refreshing ESI market history",
+                            progress_current=processed_type_count,
+                            progress_total=total_type_count,
+                            progress_unit="types",
+                            message=self._rate_message(
+                                verb="Processed",
+                                current=processed_type_count,
+                                total=total_type_count,
+                                unit="types",
+                                started_at=progress_started_at,
+                            ),
+                        )
+                        last_progress_emit_at = now
+                self._mark_esi_history_region_checked(
+                    session,
+                    region_id=region_id,
+                    synced_through_date=synced_through_date,
+                )
+                return region_processed_type_count, synced_through_date
+
+            if job_id is None:
+                refresh_region_history()
+            else:
+                self._run_job_stage(
+                    session,
+                    job_id=job_id,
+                    stage_key="esi_history_region_refresh",
+                    func=refresh_region_history,
+                    initial_metrics={"region_id": region_id, "type_count": len(type_ids)},
+                    success_metrics=lambda result: {
+                        "region_id": region_id,
+                        "type_count": len(type_ids),
+                        "processed_type_count": result[0],
+                        "synced_through_date": result[1].isoformat() if result[1] is not None else None,
+                    },
+                )
+        if job_id is not None:
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Refreshing ESI market history",
+                progress_current=processed_type_count,
+                progress_total=total_type_count,
+                progress_unit="types",
+                message=self._rate_message(
+                    verb="Processed",
+                    current=processed_type_count,
+                    total=total_type_count,
+                    unit="types",
+                    started_at=progress_started_at,
+                ),
+            )
+        return processed_type_count
+
+    def _refresh_esi_history_for_location_types(
+        self,
+        session: Session,
+        *,
+        target_location_id: int,
+        period_days: int,
+        type_ids: list[int],
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> None:
+        if not type_ids:
+            return
+        self._refresh_esi_history_for_scopes(
+            session,
+            job_id=None,
+            scopes=[(target_location_id, period_days)],
+            cancellation_check=cancellation_check,
+        )
+
+    def _esi_history_region_checked_today(
+        self,
+        session: Session,
+        *,
+        region_id: int,
+        type_ids: set[int],
+    ) -> bool:
+        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
+        if state is None or state.last_checked_at is None:
+            return False
+        if self._ensure_utc(state.last_checked_at).date() < datetime.now(UTC).date():
+            return False
+        if not type_ids:
+            return True
+        history_types = set(
+            session.scalars(
+                select(EsiHistoryDaily.type_id).where(
+                    EsiHistoryDaily.region_id == region_id,
+                    EsiHistoryDaily.type_id.in_(sorted(type_ids)),
+                )
+            ).all()
+        )
+        return type_ids.issubset(history_types)
+
+    def _mark_esi_history_region_checked(
+        self,
+        session: Session,
+        *,
+        region_id: int,
+        synced_through_date: date | None,
+    ) -> None:
+        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
+        if state is None:
+            state = EsiHistorySyncState(region_id=region_id)
+            session.add(state)
+        state.last_checked_at = datetime.now(UTC)
+        if synced_through_date is not None:
+            state.synced_through_date = synced_through_date
+        session.commit()
 
     def prepare_trade_period(
         self,
@@ -1396,6 +2296,12 @@ class SyncService:
                     type_ids=type_ids,
                     period_days=requested_period_days,
                 )
+        self._refresh_esi_history_for_location_types(
+            session,
+            target_location_id=target_location.id,
+            period_days=requested_period_days,
+            type_ids=type_ids,
+        )
         OpportunityGenerationService().generate_for_target(
             session,
             target_location_id=target_location.id,
@@ -1432,6 +2338,12 @@ class SyncService:
             type_ids_by_source.setdefault(current_source_location_id, set()).add(current_type_id)
 
         for current_source_location_id, source_type_ids in type_ids_by_source.items():
+            self._refresh_esi_history_for_location_types(
+                session,
+                target_location_id=target_location_id,
+                period_days=period_days,
+                type_ids=sorted(source_type_ids),
+            )
             OpportunityGenerationService().generate_for_target(
                 session,
                 target_location_id=target_location_id,
@@ -1987,6 +2899,25 @@ class SyncService:
         probe_session = self.session_factory()
         try:
             job_run = probe_session.get(SyncJobRun, job_id)
+            if (
+                job_run is not None
+                and job_run.job_type == "opportunity_rebuild"
+                and job_run.finished_at is None
+                and (datetime.now(UTC) - self._ensure_utc(job_run.started_at)) >= self.OPPORTUNITY_REBUILD_MAX_RUNTIME
+            ):
+                timeout_seconds = int(self.OPPORTUNITY_REBUILD_MAX_RUNTIME.total_seconds())
+                if timeout_seconds >= 60 and timeout_seconds % 60 == 0:
+                    timeout_label = f"{timeout_seconds // 60} minute"
+                elif timeout_seconds >= 60:
+                    timeout_label = f"{self.OPPORTUNITY_REBUILD_MAX_RUNTIME.total_seconds() / 60:.1f} minute"
+                else:
+                    timeout_label = f"{max(timeout_seconds, 1)} second"
+                timeout_message = (
+                    "Cancelled opportunity_rebuild after exceeding "
+                    f"{timeout_label} runtime limit."
+                )
+                self._mark_job_cancelling(session, job_id, timeout_message)
+                raise JobCancelledError(timeout_message)
             if job_run is not None and job_run.status in {"cancelling", "cancelled"}:
                 raise JobCancelledError(job_run.message or f"Cancelled {job_run.job_type}.")
         finally:
@@ -2031,7 +2962,7 @@ class SyncService:
         apply_progress()
         session.commit()
 
-    def _to_job_response(self, job_run: SyncJobRun) -> SyncJobRunResponse:
+    def _to_job_response(self, session: Session, job_run: SyncJobRun) -> SyncJobRunResponse:
         return SyncJobRunResponse(
             id=job_run.id,
             started_at=job_run.started_at,
@@ -2048,6 +2979,7 @@ class SyncService:
             progress_unit=job_run.progress_unit,
             message=job_run.message,
             error_details=job_run.error_details,
+            stages=[self._stage_response(stage_run) for stage_run in self._job_stage_rows(session, job_run.id)],
         )
 
     def _finalize_stale_cancelling_jobs(self, session: Session) -> None:

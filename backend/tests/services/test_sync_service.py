@@ -1,39 +1,43 @@
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+import tempfile
 import threading
 import time
-import tempfile
 from typing import cast
-from pathlib import Path
-from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.all_models import (
     AdamMarketOrdersTradeRaw,
-    Item,
     AdamNpcDemandSyncState,
     BulkImportCursor,
     BulkImportFile,
+    EsiCharacter,
+    EsiHistoryDaily,
+    EsiHistorySyncState,
     EsiMarketOrder,
+    EveRefHistorySyncState,
+    Item,
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
     OpportunityItem,
     OpportunitySourceSummary,
     Region,
-    EsiCharacter,
     Station,
     StructureDemandPeriod,
     StructureOrderDelta,
-    StructureSnapshotOrder,
     StructureSnapshot,
+    StructureSnapshotOrder,
+    SyncJobStageRun,
     SyncJobRun,
     System,
     TrackedStructure,
-    UserSetting,
     User,
+    UserSetting,
     WorkerHeartbeat,
 )
 from app.repositories.seed_data import ItemSeed, RegionSeed, StaticFoundationSeedSource, StationSeed, SystemSeed
@@ -120,10 +124,163 @@ def seed_opportunity_inputs(session: Session) -> tuple[int, int, int]:
                 buy_from_sell_yesterday=10.0,
                 sell_to_buy_yesterday=2.0,
             ),
+            EsiHistoryDaily(
+                region_id=region.id,
+                type_id=item.id,
+                date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                average=120.0,
+                highest=125.0,
+                lowest=115.0,
+                order_count=5,
+                volume=114,
+            ),
+            EsiMarketOrder(
+                order_id=1001,
+                region_id=region.id,
+                location_id=source.id,
+                type_id=item.id,
+                system_id=source_system.id,
+                is_buy_order=False,
+                price=100.0,
+                volume_total=300,
+                volume_remain=300,
+                min_volume=1,
+                order_range="region",
+                issued=datetime(2026, 4, 9, tzinfo=UTC),
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=1002,
+                region_id=region.id,
+                location_id=target.id,
+                type_id=item.id,
+                system_id=target_system.id,
+                is_buy_order=False,
+                price=120.0,
+                volume_total=50,
+                volume_remain=50,
+                min_volume=1,
+                order_range="region",
+                issued=datetime(2026, 4, 9, tzinfo=UTC),
+                duration=90,
+            ),
         ]
     )
+    if session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id)) is None:
+        session.add(
+            EsiHistorySyncState(
+                region_id=region.id,
+                synced_through_date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                last_checked_at=datetime.now(UTC),
+            )
+        )
     session.commit()
     return target.id, source.id, item.id
+
+
+def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_imported_history() -> None:
+    session = build_session()
+    target_id, source_id, item_id = seed_opportunity_inputs(session)
+    region = session.scalar(select(Region).where(Region.region_id == 10000002))
+    item = session.get(Item, item_id)
+    assert region is not None
+    assert item is not None
+
+    session.execute(delete(EsiHistoryDaily).where(EsiHistoryDaily.region_id == region.id, EsiHistoryDaily.type_id == item_id))
+    session.execute(delete(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id))
+    session.execute(
+        delete(OpportunityItem).where(
+            OpportunityItem.target_location_id == target_id,
+            OpportunityItem.source_location_id == source_id,
+            OpportunityItem.type_id == item_id,
+            OpportunityItem.period_days == 14,
+        )
+    )
+    session.add(
+        OpportunityItem(
+            target_location_id=target_id,
+            source_location_id=source_id,
+            type_id=item_id,
+            period_days=14,
+            purchase_units=10.0,
+            source_units_available=300.0,
+            target_demand_day=40.0 / 14.0,
+            target_supply_units=50.0,
+            target_dos=17.5,
+            in_transit_units=0.0,
+            assets_units=0.0,
+            active_sell_orders_units=0.0,
+            source_station_sell_price=100.0,
+            target_station_sell_price=120.0,
+            target_period_avg_price=150.0,
+            target_now_profit=20.0,
+            target_period_profit=50.0,
+            capital_required=1000.0,
+            roi_now=0.2,
+            roi_period=0.5,
+            source_security_status=0.7,
+            item_volume_m3=0.01,
+            shipping_cost=0.0,
+            demand_source="adam4eve",
+            computed_at=datetime(2026, 4, 9, 15, 49, 43, tzinfo=UTC),
+            esi_demand_day=1.0 / 14.0,
+        )
+    )
+    session.commit()
+
+    imported_volumes = [34, 4, 4, 4, 19, 8, 9, 3, 1, 10, 2, 3, 4, 5]
+    imported_history = [
+        {
+            "date": (datetime(2026, 4, 8, tzinfo=UTC).date() - timedelta(days=offset)).isoformat(),
+            "average": 1_000_000.0 + offset,
+            "highest": 1_000_100.0 + offset,
+            "lowest": 999_900.0 + offset,
+            "order_count": 10 + offset,
+            "volume": volume,
+        }
+        for offset, volume in enumerate(imported_volumes)
+    ]
+    universe_client = StubUniverseClient(
+        regional_history={
+            (10000002, item.type_id): imported_history,
+        }
+    )
+    service = SyncService(
+        session_factory=lambda: session,
+        esi_client=universe_client,
+    )
+
+    service.prepare_trade_period(
+        session,
+        target_location_id=target_id,
+        type_id=item.type_id,
+        period_days=14,
+        refresh_inputs=False,
+    )
+
+    refreshed_row = session.scalar(
+        select(OpportunityItem).where(
+            OpportunityItem.target_location_id == target_id,
+            OpportunityItem.source_location_id == source_id,
+            OpportunityItem.type_id == item_id,
+            OpportunityItem.period_days == 14,
+        )
+    )
+    history_rows = session.scalars(
+        select(EsiHistoryDaily)
+        .where(
+            EsiHistoryDaily.region_id == region.id,
+            EsiHistoryDaily.type_id == item_id,
+        )
+        .order_by(EsiHistoryDaily.date.desc())
+    ).all()
+
+    assert universe_client.regional_history_calls == [(10000002, item.type_id)]
+    assert refreshed_row is not None
+    assert refreshed_row.esi_demand_day == pytest.approx(sum(imported_volumes) / 14.0)
+    assert refreshed_row.esi_demand_day != pytest.approx(1.0 / 14.0)
+    assert len(history_rows) == 14
+    assert [row.volume for row in history_rows] == imported_volumes
 
 
 def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
@@ -186,8 +343,56 @@ def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
                 buy_from_sell_yesterday=8.0,
                 sell_to_buy_yesterday=1.0,
             ),
+            EsiHistoryDaily(
+                region_id=region.id,
+                type_id=item.id,
+                date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                average=200.0,
+                highest=210.0,
+                lowest=190.0,
+                order_count=4,
+                volume=36,
+            ),
+            EsiMarketOrder(
+                order_id=2001,
+                region_id=region.id,
+                location_id=source.id,
+                type_id=item.id,
+                system_id=source_system.id,
+                is_buy_order=False,
+                price=150.0,
+                volume_total=100,
+                volume_remain=100,
+                min_volume=1,
+                order_range="region",
+                issued=datetime(2026, 4, 9, tzinfo=UTC),
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=2002,
+                region_id=region.id,
+                location_id=target.id,
+                type_id=item.id,
+                system_id=target_system.id,
+                is_buy_order=False,
+                price=200.0,
+                volume_total=20,
+                volume_remain=20,
+                min_volume=1,
+                order_range="region",
+                issued=datetime(2026, 4, 9, tzinfo=UTC),
+                duration=90,
+            ),
         ]
     )
+    if session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id)) is None:
+        session.add(
+            EsiHistorySyncState(
+                region_id=region.id,
+                synced_through_date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                last_checked_at=datetime.now(UTC),
+            )
+        )
     session.commit()
     return target.id, source.id, item.id
 
@@ -464,6 +669,7 @@ class StubUniverseClient:
         universe_systems: list[SystemSeed] | None = None,
         universe_items: list[ItemSeed] | None = None,
         regional_orders: dict[int, list[EsiRegionalOrderRecord]] | None = None,
+        regional_history: dict[tuple[int, int], list[dict[str, object]]] | None = None,
         stations: dict[int, StationSeed] | None = None,
         item_details: dict[int, ItemSeed] | None = None,
     ) -> None:
@@ -471,9 +677,11 @@ class StubUniverseClient:
         self._universe_systems = universe_systems or []
         self._universe_items = universe_items or []
         self._regional_orders = regional_orders or {}
+        self._regional_history = regional_history or {}
         self._stations = stations or {}
         self._item_details = item_details or {item.type_id: item for item in self._universe_items}
         self.regional_order_calls: list[int] = []
+        self.regional_history_calls: list[tuple[int, int]] = []
         self.item_detail_calls: list[int] = []
 
     def fetch_universe_item(self, type_id: int) -> ItemSeed:
@@ -486,6 +694,10 @@ class StubUniverseClient:
     def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]:
         self.regional_order_calls.append(region_id)
         return list(self._regional_orders.get(region_id, []))
+
+    def fetch_regional_history(self, region_id: int, type_id: int) -> list[dict[str, object]]:
+        self.regional_history_calls.append((region_id, type_id))
+        return list(self._regional_history.get((region_id, type_id), []))
 
 
 class StubFoundationClient:
@@ -926,6 +1138,22 @@ def test_check_for_cancellation_propagates_database_probe_errors() -> None:
 def test_trigger_job_opportunity_rebuild_persists_rows_and_sync_job() -> None:
     session = build_session()
     target_id, source_id, item_id = seed_opportunity_inputs(session)
+    now = datetime.now(UTC)
+    session.add(
+        SyncJobRun(
+            job_type="esi_market_orders_sync",
+            status="success",
+            triggered_by="manual",
+            started_at=now - timedelta(minutes=5),
+            finished_at=now - timedelta(minutes=1),
+            duration_ms=1_000,
+            records_processed=2,
+            target_type="regions",
+            target_id="1",
+            message="Synced ESI market orders.",
+        )
+    )
+    session.commit()
     service = SyncService(session_factory=lambda: session)
 
     result = service.trigger_job("opportunity_rebuild")
@@ -957,6 +1185,81 @@ def test_trigger_job_opportunity_rebuild_persists_rows_and_sync_job() -> None:
     assert job_row.job_type == "opportunity_rebuild"
     assert job_row.records_processed == 1
     assert job_row.status == "success"
+    assert any(stage.stage_key == "rebuild_scopes" for stage in result.stages)
+    assert any(stage.stage_key == "target_scope.total" for stage in result.stages)
+
+
+def test_trigger_job_opportunity_rebuild_persists_stage_timings() -> None:
+    session = build_session()
+    seed_opportunity_inputs(session)
+    now = datetime.now(UTC)
+    session.add(
+        SyncJobRun(
+            job_type="esi_market_orders_sync",
+            status="success",
+            triggered_by="manual",
+            started_at=now - timedelta(minutes=4),
+            finished_at=now - timedelta(minutes=1),
+            duration_ms=1_000,
+            records_processed=2,
+            target_type="regions",
+            target_id="1",
+            message="Synced ESI market orders.",
+        )
+    )
+    session.commit()
+    service = SyncService(session_factory=lambda: session)
+
+    result = service.trigger_job("opportunity_rebuild")
+    stage_rows = session.scalars(
+        select(SyncJobStageRun)
+        .where(SyncJobStageRun.job_run_id == result.id)
+        .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
+    ).all()
+
+    assert result.status == "success"
+    assert stage_rows != []
+    assert {stage.stage_key for stage in stage_rows} >= {
+        "refresh_esi_market_orders",
+        "rebuild_scopes",
+        "load_rebuild_scopes",
+        "target_scope.total",
+    }
+    assert any(stage.stage_key == "refresh_esi_market_orders" and stage.status == "skipped" for stage in stage_rows)
+    assert all(stage.finished_at is not None for stage in stage_rows)
+    assert all(stage.duration_ms is not None for stage in stage_rows)
+
+
+def test_trigger_job_opportunity_rebuild_returns_existing_running_job() -> None:
+    session = build_session()
+    seed_opportunity_inputs(session)
+    started_at = datetime(2026, 4, 9, 13, 0, tzinfo=UTC)
+    running_job = SyncJobRun(
+        job_type="opportunity_rebuild",
+        status="running",
+        triggered_by="manual",
+        started_at=started_at,
+        finished_at=None,
+        records_processed=0,
+        target_type="manual",
+        target_id=None,
+        progress_phase="Running",
+        progress_current=1,
+        progress_total=10,
+        progress_unit="targets",
+        message="Running opportunity_rebuild.",
+    )
+    session.add(running_job)
+    session.commit()
+
+    service = SyncService(session_factory=lambda: session)
+
+    result = service.trigger_job("opportunity_rebuild")
+    jobs = session.scalars(select(SyncJobRun).order_by(SyncJobRun.id.asc())).all()
+
+    assert result.id == running_job.id
+    assert result.status == "running"
+    assert len(jobs) == 1
 
 
 def test_opportunity_rebuild_only_processes_configured_target_markets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -991,8 +1294,9 @@ def test_opportunity_rebuild_only_processes_configured_target_markets(monkeypatc
     generated_targets: list[tuple[int, tuple[int, ...]]] = []
 
     class StubGenerationResult:
-        def __init__(self, item_count: int) -> None:
+        def __init__(self, item_count: int, summary_count: int = 0) -> None:
             self.item_count = item_count
+            self.summary_count = summary_count
 
     def stub_generate_for_target(
         self: object,
@@ -1002,19 +1306,36 @@ def test_opportunity_rebuild_only_processes_configured_target_markets(monkeypatc
         source_location_ids: list[int],
         type_ids: list[int],
         period_days: int,
+        replace_entire_target_scope: bool = False,
+        cancellation_check: object = None,
+        stage_callback: object = None,
     ) -> StubGenerationResult:
         assert period_days == 14
+        assert replace_entire_target_scope is True
         assert source_location_ids != []
+        del session, cancellation_check, stage_callback
         generated_targets.append((target_location_id, tuple(sorted(type_ids))))
-        return StubGenerationResult(item_count=len(type_ids))
+        return StubGenerationResult(item_count=len(type_ids), summary_count=1)
 
     monkeypatch.setattr(
         "app.services.sync.service.OpportunityGenerationService.generate_for_target",
         stub_generate_for_target,
     )
     service = SyncService(session_factory=lambda: session)
+    job_run = SyncJobRun(
+        job_type="opportunity_rebuild",
+        status="running",
+        triggered_by="manual",
+        started_at=datetime.now(UTC),
+        records_processed=0,
+        target_type="manual",
+        target_id=None,
+        message="Running opportunity_rebuild.",
+    )
+    session.add(job_run)
+    session.commit()
 
-    generated_count, scope_count = service._rebuild_opportunities(session, period_days=14)
+    generated_count, scope_count = service._rebuild_opportunities(session, job_id=job_run.id, period_days=14)
 
     assert generated_count == 1
     assert scope_count == 1
@@ -1064,9 +1385,12 @@ def test_opportunity_rebuild_refreshes_esi_orders_when_last_sync_is_stale(
     def stub_rebuild_opportunities(
         self: object,
         session: Session,
+        job_id: int,
         period_days: int | None = None,
         cancellation_check: object = None,
     ) -> tuple[int, int]:
+        assert job_id > 0
+        del session, cancellation_check
         assert period_days == 14
         return (3, 2)
 
@@ -1108,9 +1432,12 @@ def test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh(
     def stub_rebuild_opportunities(
         self: object,
         session: Session,
+        job_id: int,
         period_days: int | None = None,
         cancellation_check: object = None,
     ) -> tuple[int, int]:
+        assert job_id > 0
+        del session, cancellation_check
         assert period_days == 14
         return (3, 2)
 
@@ -1122,6 +1449,187 @@ def test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh(
     assert result.status == "success"
     assert result.records_processed == 3
     assert result.message == "Rebuilt opportunities (3 item rows across 2 target scopes)."
+
+
+def test_esi_history_sync_runs_separately_from_opportunity_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = build_session()
+    seed_opportunity_inputs(session)
+    service = SyncService(session_factory=lambda: session)
+    history_calls: list[tuple[int | None, int]] = []
+
+    def stub_refresh_esi_history_for_scopes(
+        self: object,
+        session: Session,
+        *,
+        job_id: int | None,
+        scopes: list[tuple[int, int]],
+        cancellation_check: object = None,
+    ) -> int:
+        del self, session, cancellation_check
+        history_calls.append((job_id, len(scopes)))
+        return 7
+
+    monkeypatch.setattr(SyncService, "_refresh_esi_history_for_scopes", stub_refresh_esi_history_for_scopes)
+
+    result = service.trigger_job("esi_history_sync")
+    stage_rows = session.scalars(
+        select(SyncJobStageRun)
+        .where(SyncJobStageRun.job_run_id == result.id)
+        .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
+    ).all()
+
+    assert result.status == "success"
+    assert result.message is not None
+    assert "Synced ESI market history" in result.message
+    assert history_calls == [(result.id, 1)]
+    assert any(stage.stage_key == "load_rebuild_scopes" and stage.status == "success" for stage in stage_rows)
+    assert any(
+        stage.stage_key == "refresh_esi_history_for_scopes" and stage.status == "success"
+        for stage in stage_rows
+    )
+
+
+def test_everef_history_sync_first_run_succeeds_with_mocked_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([region, item])
+    session.commit()
+    service = SyncService(session_factory=lambda: session)
+
+    monkeypatch.setattr(
+        "app.services.sync.service.fetch_totals_json",
+        lambda: {
+            "2026-04-09": {"size": 123},
+            "2026-04-10": {"size": 456},
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.sync.service.get_available_dates",
+        lambda days_back=30: [date(2026, 4, 9), date(2026, 4, 10)],
+    )
+
+    def fake_download_history_file(target_date: date, cache_dir: Path) -> Path:
+        csv_path = cache_dir / f"market-history-{target_date.isoformat()}.csv"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(
+            "average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id\n"
+            f"10.5,{target_date.isoformat()},11.0,9.5,7,999,2026-04-11T00:00:00Z,10000002,34\n",
+            encoding="utf-8",
+        )
+        return csv_path
+
+    monkeypatch.setattr("app.services.sync.service.download_history_file", fake_download_history_file)
+    monkeypatch.setattr(
+        "app.services.sync.service.tempfile.gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    result = service.trigger_job("everef_history_sync")
+
+    state_rows = session.scalars(
+        select(EveRefHistorySyncState).order_by(EveRefHistorySyncState.history_date.asc())
+    ).all()
+    history_rows = session.scalars(select(EsiHistoryDaily).order_by(EsiHistoryDaily.date.asc())).all()
+
+    assert result.status == "success"
+    assert result.records_processed == 2
+    assert result.target_type == "targets"
+    assert result.target_id == "2"
+    assert [row.history_date for row in state_rows] == [date(2026, 4, 9), date(2026, 4, 10)]
+    assert [row.file_size for row in state_rows] == [123, 456]
+    assert [row.date for row in history_rows] == [date(2026, 4, 9), date(2026, 4, 10)]
+    assert all(not path.exists() for path in tmp_path.glob("everef_cache/*.csv"))
+
+
+def test_opportunity_rebuild_does_not_refresh_esi_history_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = build_session()
+    seed_opportunity_inputs(session)
+    now = datetime.now(UTC)
+    session.add(
+        SyncJobRun(
+            job_type="esi_market_orders_sync",
+            status="success",
+            triggered_by="manual",
+            started_at=now - timedelta(minutes=4),
+            finished_at=now - timedelta(minutes=1),
+            duration_ms=1_000,
+            records_processed=2,
+            target_type="regions",
+            target_id="1",
+            message="Synced ESI market orders.",
+        )
+    )
+    session.commit()
+    service = SyncService(session_factory=lambda: session)
+
+    def fail_refresh_esi_history_for_scopes(*args: object, **kwargs: object) -> int:
+        raise AssertionError("Expected opportunity_rebuild to skip ESI history refresh.")
+
+    monkeypatch.setattr(SyncService, "_refresh_esi_history_for_scopes", fail_refresh_esi_history_for_scopes)
+
+    result = service.trigger_job("opportunity_rebuild")
+
+    assert result.status == "success"
+    assert result.records_processed == 1
+
+
+def test_opportunity_rebuild_cancels_after_runtime_limit_and_keeps_partial_stage_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = build_session()
+    seed_opportunity_inputs(session)
+    now = datetime.now(UTC)
+    session.add(
+        SyncJobRun(
+            job_type="esi_market_orders_sync",
+            status="success",
+            triggered_by="manual",
+            started_at=now - timedelta(minutes=4),
+            finished_at=now - timedelta(minutes=1),
+            duration_ms=1_000,
+            records_processed=2,
+            target_type="regions",
+            target_id="1",
+            message="Fresh ESI sync.",
+        )
+    )
+    session.commit()
+    service = SyncService(session_factory=lambda: session)
+    monkeypatch.setattr(service, "OPPORTUNITY_REBUILD_MAX_RUNTIME", timedelta(milliseconds=1))
+
+    def slow_rebuild_opportunities(
+        self: object,
+        session: Session,
+        job_id: int,
+        period_days: int | None = None,
+        cancellation_check: object = None,
+    ) -> tuple[int, int]:
+        del self, session, job_id, period_days
+        time.sleep(0.01)
+        assert callable(cancellation_check)
+        cancellation_check()
+        return (0, 0)
+
+    monkeypatch.setattr(SyncService, "_rebuild_opportunities", slow_rebuild_opportunities)
+
+    result = service.trigger_job("opportunity_rebuild")
+    stage_rows = session.scalars(
+        select(SyncJobStageRun)
+        .where(SyncJobStageRun.job_run_id == result.id)
+        .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
+    ).all()
+
+    assert result.status == "cancelled"
+    assert result.message is not None
+    assert "runtime limit" in result.message
+    assert any(stage.stage_key == "refresh_esi_market_orders" and stage.status == "skipped" for stage in stage_rows)
+    assert any(stage.stage_key == "rebuild_scopes" and stage.status == "cancelled" for stage in stage_rows)
 
 
 def test_get_status_uses_persisted_sync_job_history() -> None:
