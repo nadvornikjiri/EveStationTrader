@@ -194,15 +194,6 @@ class EsiHistoryDaily(Base):
     volume: Mapped[int] = mapped_column(BigInteger)
 
 
-class EsiHistorySyncState(Base):
-    __tablename__ = "esi_history_sync_state"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), unique=True, index=True)
-    synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class EveRefHistorySyncState(Base):
     __tablename__ = "everef_history_sync_state"
 

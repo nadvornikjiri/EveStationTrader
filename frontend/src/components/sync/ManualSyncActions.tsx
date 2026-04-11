@@ -3,6 +3,7 @@ type Props = {
   onClear: (jobType: string) => void;
   isPending: boolean;
   pendingJobType?: string | null;
+  activeJobTypes?: string[];
   isClearing: boolean;
   clearingJobType?: string | null;
   lastMessage?: string | null;
@@ -23,6 +24,11 @@ const actions = [
     key: "esi_market_orders_sync",
     runLabel: "Sync NPC Orders Now",
     clearLabel: "Clear NPC Orders Data",
+  },
+  {
+    key: "everef_history_sync",
+    runLabel: "Sync EVE Ref History Now",
+    clearLabel: "Clear EVE Ref History Data",
   },
   {
     key: "structure_snapshot_sync",
@@ -46,6 +52,7 @@ export function ManualSyncActions({
   onClear,
   isPending,
   pendingJobType,
+  activeJobTypes = [],
   isClearing,
   clearingJobType,
   lastMessage,
@@ -73,15 +80,28 @@ export function ManualSyncActions({
       </div>
       <div className="action-grid">
         {actions.map((action) => (
-          <button
-            key={action.key}
-            className="refresh-button"
-            disabled={isPending}
-            onClick={() => onRun(action.key)}
-            type="button"
-          >
-            {isPending && pendingJobType === action.key ? `Starting ${action.runLabel}...` : action.runLabel}
-          </button>
+          (() => {
+            const isActive = activeJobTypes.includes(action.key);
+            const isDisabled = isPending || isActive;
+            let label = action.runLabel;
+            if (isPending && pendingJobType === action.key) {
+              label = `Starting ${action.runLabel}...`;
+            } else if (isActive) {
+              label = `${action.runLabel} Already Running`;
+            }
+
+            return (
+              <button
+                key={action.key}
+                className="refresh-button"
+                disabled={isDisabled}
+                onClick={() => onRun(action.key)}
+                type="button"
+              >
+                {label}
+              </button>
+            );
+          })()
         ))}
       </div>
     </section>

@@ -31,7 +31,6 @@ from app.models.all_models import (
     EsiCharacter,
     EsiCharacterSyncState,
     EsiHistoryDaily,
-    EsiHistorySyncState,
     EsiMarketOrder,
     EveRefHistorySyncState,
     Item,
@@ -64,7 +63,6 @@ from app.services.demand.market_demand import MarketDemandResolutionService
 from app.services.everef.client import download_history_file, fetch_totals_json, get_available_dates
 from app.services.everef.history_ingestion import EveRefHistoryIngestionService
 from app.services.esi.client import EsiClient, EsiRegionalOrderRecord
-from app.services.esi.history_ingestion import EsiRegionalHistoryIngestionService, EsiRegionalHistoryRecord
 from app.services.esi.orders_ingestion import EsiRegionOrderBatch, EsiRegionalOrderIngestionService
 from app.services.opportunities.generation import OpportunityGenerationService
 from app.services.pricing.market_price_periods import MarketPricePeriodService
@@ -85,8 +83,6 @@ class UniverseCapableEsiClient(Protocol):
     def fetch_station(self, station_id: int) -> StationSeed: ...
 
     def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]: ...
-
-    def fetch_regional_history(self, region_id: int, type_id: int) -> list[EsiRegionalHistoryRecord]: ...
 
 
 class AdamDemandCapableClient(Protocol):
@@ -188,7 +184,6 @@ class SyncService:
         ("foundation_import_sync", "Foundation universe sync"),
         ("adam4eve_sync", "Adam4EVE sync"),
         ("esi_market_orders_sync", "ESI market orders sync"),
-        ("esi_history_sync", "ESI market history sync"),
         ("everef_history_sync", "EVE Ref history sync"),
         ("structure_snapshot_sync", "Structure snapshot sync"),
         ("character_sync", "Character sync"),
@@ -603,8 +598,6 @@ class SyncService:
                 records_deleted += self._clear_adam4eve_data(session)
             elif job_type == "esi_market_orders_sync":
                 records_deleted += self._clear_esi_market_orders_data(session)
-            elif job_type == "esi_history_sync":
-                records_deleted += self._clear_esi_history_data(session)
             elif job_type == "everef_history_sync":
                 records_deleted += self._clear_everef_history_data(session)
             elif job_type == "structure_snapshot_sync":
@@ -851,13 +844,6 @@ class SyncService:
         records_deleted += self._delete_rows(session, delete(EsiMarketOrder))
         return records_deleted
 
-    def _clear_esi_history_data(self, session: Session) -> int:
-        records_deleted = 0
-        records_deleted += self._clear_opportunity_data(session)
-        records_deleted += self._delete_rows(session, delete(EsiHistoryDaily))
-        records_deleted += self._delete_rows(session, delete(EsiHistorySyncState))
-        return records_deleted
-
     def _clear_everef_history_data(self, session: Session) -> int:
         records_deleted = 0
         records_deleted += self._clear_opportunity_data(session)
@@ -1070,13 +1056,6 @@ class SyncService:
                 session,
                 job_id=job_id,
                 debug_enabled=debug_enabled,
-                cancellation_check=lambda: self._check_for_cancellation(session, job_id),
-            )
-        elif job_type == "esi_history_sync":
-            records_processed, target_type, target_id, message = self._sync_esi_history(
-                session,
-                job_id=job_id,
-                period_days=analysis_period_days,
                 cancellation_check=lambda: self._check_for_cancellation(session, job_id),
             )
         elif job_type == "everef_history_sync":
@@ -1380,66 +1359,6 @@ class SyncService:
         )
         return (total_processed, "regions", str(len(regions)), message)
 
-    def _sync_esi_history(
-        self,
-        session: Session,
-        *,
-        job_id: int,
-        period_days: int,
-        cancellation_check: Callable[[], None] | None = None,
-    ) -> tuple[int, str, str | None, str]:
-        sync_started_at = perf_counter()
-        scopes = self._run_job_stage(
-            session,
-            job_id=job_id,
-            stage_key="load_rebuild_scopes",
-            func=lambda: self._load_rebuild_scopes(session, period_days=period_days),
-            success_metrics=lambda result: {"scope_count": len(result)},
-        )
-        if not scopes:
-            return (0, "targets", "0", "Skipped ESI market history sync because rebuild scopes are missing.")
-
-        self._run_job_stage(
-            session,
-            job_id=job_id,
-            stage_key="refresh_esi_history_for_scopes",
-            func=lambda: self._refresh_esi_history_for_scopes(
-                session,
-                job_id=job_id,
-                scopes=scopes,
-                cancellation_check=cancellation_check,
-            ),
-            success_metrics=lambda result: {
-                "scope_count": len(scopes),
-                "types_processed": result,
-            },
-        )
-        self._log_job_stage_checkpoint(
-            "esi_history_sync",
-            "refresh_esi_history_for_scopes",
-            started_at=sync_started_at,
-            scope_count=len(scopes),
-        )
-
-        history_rows = int(
-            session.scalar(
-                select(func.count())
-                .select_from(EsiHistoryDaily)
-            )
-            or 0
-        )
-        processed_type_count = sum(
-            int(stage.metrics.get("processed_type_count", 0))
-            for stage in self._job_stage_rows(session, job_id)
-            if stage.stage_key == "esi_history_region_refresh" and stage.status == "success"
-        )
-        message = (
-            "Synced ESI market history "
-            f"({processed_type_count} region-type histories refreshed across {len(scopes)} rebuild scopes; "
-            f"totals now: {history_rows} ESI history rows)."
-        )
-        return (processed_type_count, "targets", str(len(scopes)), message)
-
     def _sync_everef_history(
         self,
         session: Session,
@@ -1548,17 +1467,20 @@ class SyncService:
                     csv_archive_path = csv_path.with_suffix(f"{csv_path.suffix}.bz2")
                     csv_archive_path.unlink(missing_ok=True)
 
+            def ingest_success_metrics(result: int) -> dict[str, object]:
+                return {
+                    "history_date": history_date.isoformat(),
+                    "file_size": file_size,
+                    "rows_inserted": result,
+                }
+
             inserted = self._run_job_stage(
                 session,
                 job_id=job_id,
                 stage_key="ingest",
                 func=ingest_date,
                 initial_metrics={"history_date": history_date.isoformat(), "file_size": file_size},
-                success_metrics=lambda result, *, target_date=history_date: {
-                    "history_date": target_date.isoformat(),
-                    "file_size": file_size,
-                    "rows_inserted": result,
-                },
+                success_metrics=ingest_success_metrics,
             )
             rows_inserted += inserted
             self._update_job_progress(
@@ -1973,270 +1895,6 @@ class SyncService:
 
         return (generated_count, scope_count)
 
-    def _refresh_esi_history_for_scopes(
-        self,
-        session: Session,
-        *,
-        job_id: int | None,
-        scopes: list[tuple[int, int]],
-        cancellation_check: Callable[[], None] | None = None,
-    ) -> int:
-        region_type_map: dict[int, set[int]] = {}
-        for target_location_id, scope_period_days in scopes:
-            target_location = session.get(Location, target_location_id)
-            if target_location is None:
-                continue
-            type_ids = set(
-                session.scalars(
-                    select(MarketDemandResolved.type_id).where(
-                        MarketDemandResolved.location_id == target_location_id,
-                        MarketDemandResolved.period_days == scope_period_days,
-                    )
-                ).all()
-            )
-            if not type_ids:
-                continue
-            region_type_map.setdefault(target_location.region_id, set()).update(type_ids)
-
-        if not region_type_map:
-            return 0
-
-        total_type_count = sum(len(type_ids) for type_ids in region_type_map.values())
-        processed_type_count = 0
-        progress_started_at = perf_counter()
-        last_progress_emit_at = progress_started_at
-        if job_id is not None:
-            self._update_job_progress(
-                session,
-                job_id,
-                progress_phase="Refreshing ESI market history",
-                progress_current=0,
-                progress_total=total_type_count,
-                progress_unit="types",
-                message=self._rate_message(
-                    verb="Processed",
-                    current=0,
-                    total=total_type_count,
-                    unit="types",
-                    started_at=progress_started_at,
-                ),
-            )
-
-        for region_id, type_ids in region_type_map.items():
-            if self._esi_history_region_checked_today(session, region_id=region_id, type_ids=type_ids):
-                processed_type_count += len(type_ids)
-                if job_id is not None:
-                    self._record_completed_job_stage(
-                        session,
-                        job_id=job_id,
-                        stage_key="esi_history_region_refresh",
-                        stage_started_at=perf_counter(),
-                        status="skipped",
-                        metrics={"region_id": region_id, "type_count": len(type_ids), "reason": "checked_today"},
-                    )
-                    now = perf_counter()
-                    if (
-                        now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
-                        or processed_type_count >= total_type_count
-                    ):
-                        self._update_job_progress(
-                            session,
-                            job_id,
-                            progress_phase="Refreshing ESI market history",
-                            progress_current=processed_type_count,
-                            progress_total=total_type_count,
-                            progress_unit="types",
-                            message=self._rate_message(
-                                verb="Processed",
-                                current=processed_type_count,
-                                total=total_type_count,
-                                unit="types",
-                                started_at=progress_started_at,
-                            ),
-                        )
-                        last_progress_emit_at = now
-                continue
-            if cancellation_check is not None:
-                cancellation_check()
-            region = session.get(Region, region_id)
-            if region is None:
-                continue
-            def refresh_region_history() -> tuple[int, date | None]:
-                synced_through_date: date | None = None
-                region_processed_type_count = 0
-                nonlocal processed_type_count, last_progress_emit_at
-                for type_id in sorted(type_ids):
-                    if cancellation_check is not None:
-                        cancellation_check()
-                    item = session.get(Item, type_id)
-                    processed_type_count += 1
-                    if item is None:
-                        now = perf_counter()
-                        if (
-                            job_id is not None
-                            and (
-                                now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
-                                or processed_type_count >= total_type_count
-                            )
-                        ):
-                            self._update_job_progress(
-                                session,
-                                job_id,
-                                progress_phase="Refreshing ESI market history",
-                                progress_current=processed_type_count,
-                                progress_total=total_type_count,
-                                progress_unit="types",
-                                message=self._rate_message(
-                                    verb="Processed",
-                                    current=processed_type_count,
-                                    total=total_type_count,
-                                    unit="types",
-                                    started_at=progress_started_at,
-                                ),
-                            )
-                            last_progress_emit_at = now
-                        continue
-                    records = cast(list[EsiRegionalHistoryRecord], self.esi_client.fetch_regional_history(region.region_id, item.type_id))
-                    result = EsiRegionalHistoryIngestionService().ingest_region_history(
-                        session,
-                        eve_region_id=region.region_id,
-                        eve_type_id=item.type_id,
-                        records=records,
-                    )
-                    if records:
-                        candidate_date = max(
-                            record["date"]
-                            if isinstance(record["date"], date)
-                            else date.fromisoformat(str(record["date"]))
-                            for record in records
-                        )
-                        if synced_through_date is None or candidate_date > synced_through_date:
-                            synced_through_date = candidate_date
-                        region_processed_type_count += 1
-                    del result
-                    now = perf_counter()
-                    if (
-                        job_id is not None
-                        and (
-                            now - last_progress_emit_at >= self.PROGRESS_RATE_UPDATE_INTERVAL_SECONDS
-                            or processed_type_count >= total_type_count
-                        )
-                    ):
-                        self._update_job_progress(
-                            session,
-                            job_id,
-                            progress_phase="Refreshing ESI market history",
-                            progress_current=processed_type_count,
-                            progress_total=total_type_count,
-                            progress_unit="types",
-                            message=self._rate_message(
-                                verb="Processed",
-                                current=processed_type_count,
-                                total=total_type_count,
-                                unit="types",
-                                started_at=progress_started_at,
-                            ),
-                        )
-                        last_progress_emit_at = now
-                self._mark_esi_history_region_checked(
-                    session,
-                    region_id=region_id,
-                    synced_through_date=synced_through_date,
-                )
-                return region_processed_type_count, synced_through_date
-
-            if job_id is None:
-                refresh_region_history()
-            else:
-                self._run_job_stage(
-                    session,
-                    job_id=job_id,
-                    stage_key="esi_history_region_refresh",
-                    func=refresh_region_history,
-                    initial_metrics={"region_id": region_id, "type_count": len(type_ids)},
-                    success_metrics=lambda result: {
-                        "region_id": region_id,
-                        "type_count": len(type_ids),
-                        "processed_type_count": result[0],
-                        "synced_through_date": result[1].isoformat() if result[1] is not None else None,
-                    },
-                )
-        if job_id is not None:
-            self._update_job_progress(
-                session,
-                job_id,
-                progress_phase="Refreshing ESI market history",
-                progress_current=processed_type_count,
-                progress_total=total_type_count,
-                progress_unit="types",
-                message=self._rate_message(
-                    verb="Processed",
-                    current=processed_type_count,
-                    total=total_type_count,
-                    unit="types",
-                    started_at=progress_started_at,
-                ),
-            )
-        return processed_type_count
-
-    def _refresh_esi_history_for_location_types(
-        self,
-        session: Session,
-        *,
-        target_location_id: int,
-        period_days: int,
-        type_ids: list[int],
-        cancellation_check: Callable[[], None] | None = None,
-    ) -> None:
-        if not type_ids:
-            return
-        self._refresh_esi_history_for_scopes(
-            session,
-            job_id=None,
-            scopes=[(target_location_id, period_days)],
-            cancellation_check=cancellation_check,
-        )
-
-    def _esi_history_region_checked_today(
-        self,
-        session: Session,
-        *,
-        region_id: int,
-        type_ids: set[int],
-    ) -> bool:
-        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
-        if state is None or state.last_checked_at is None:
-            return False
-        if self._ensure_utc(state.last_checked_at).date() < datetime.now(UTC).date():
-            return False
-        if not type_ids:
-            return True
-        history_types = set(
-            session.scalars(
-                select(EsiHistoryDaily.type_id).where(
-                    EsiHistoryDaily.region_id == region_id,
-                    EsiHistoryDaily.type_id.in_(sorted(type_ids)),
-                )
-            ).all()
-        )
-        return type_ids.issubset(history_types)
-
-    def _mark_esi_history_region_checked(
-        self,
-        session: Session,
-        *,
-        region_id: int,
-        synced_through_date: date | None,
-    ) -> None:
-        state = session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region_id))
-        if state is None:
-            state = EsiHistorySyncState(region_id=region_id)
-            session.add(state)
-        state.last_checked_at = datetime.now(UTC)
-        if synced_through_date is not None:
-            state.synced_through_date = synced_through_date
-        session.commit()
-
     def prepare_trade_period(
         self,
         session: Session,
@@ -2296,12 +1954,6 @@ class SyncService:
                     type_ids=type_ids,
                     period_days=requested_period_days,
                 )
-        self._refresh_esi_history_for_location_types(
-            session,
-            target_location_id=target_location.id,
-            period_days=requested_period_days,
-            type_ids=type_ids,
-        )
         OpportunityGenerationService().generate_for_target(
             session,
             target_location_id=target_location.id,
@@ -2338,12 +1990,6 @@ class SyncService:
             type_ids_by_source.setdefault(current_source_location_id, set()).add(current_type_id)
 
         for current_source_location_id, source_type_ids in type_ids_by_source.items():
-            self._refresh_esi_history_for_location_types(
-                session,
-                target_location_id=target_location_id,
-                period_days=period_days,
-                type_ids=sorted(source_type_ids),
-            )
             OpportunityGenerationService().generate_for_target(
                 session,
                 target_location_id=target_location_id,

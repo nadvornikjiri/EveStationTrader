@@ -66,7 +66,7 @@ vi.mock("../hooks/useSyncData", () => ({
         last_successful_sync: null,
         next_scheduled_sync: null,
         recent_error_count: 0,
-        active_message: "Processed 60 / 100 downloaded ESI market orders.",
+        active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
         progress_phase: "Processing downloaded ESI market orders",
         progress_current: 60,
         progress_total: 100,
@@ -107,7 +107,7 @@ vi.mock("../hooks/useSyncData", () => ({
         progress_current: 60,
         progress_total: 100,
         progress_unit: "downloaded records",
-        message: "Processed 60 / 100 downloaded ESI market orders.",
+        message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
         error_details: null,
       },
     ],
@@ -165,6 +165,7 @@ test("renders sync dashboard data", () => {
   expect(screen.getByText("Sync Dashboard")).toBeInTheDocument();
   expect(screen.getByText("Worker Health")).toBeInTheDocument();
   expect(screen.getByText("Clear SDE Data")).toBeInTheDocument();
+  expect(screen.getByText("Sync EVE Ref History Now")).toBeInTheDocument();
   expect(screen.getByText("Job History")).toBeInTheDocument();
   expect(screen.getByText("Demand Fallback Diagnostics")).toBeInTheDocument();
 });
@@ -200,6 +201,7 @@ test("shows running progress for active sync jobs", () => {
 
   expect(screen.getAllByText("Processing downloaded ESI market orders")).not.toHaveLength(0);
   expect(screen.getAllByText("60 / 100 downloaded records")).not.toHaveLength(0);
+  expect(screen.getAllByText(/12\.0 downloaded records\/s/)).not.toHaveLength(0);
   expect(screen.getByLabelText("ESI market orders sync progress")).toBeInTheDocument();
   expect(screen.getByLabelText("esi_market_orders_sync progress")).toBeInTheDocument();
 });
@@ -211,6 +213,12 @@ test("shows immediate pending feedback for the selected sync action", () => {
   renderSyncPage();
 
   expect(screen.getByRole("button", { name: "Starting Sync Adam4EVE Now..." })).toBeDisabled();
+});
+
+test("disables manual actions for jobs that are already running", () => {
+  renderSyncPage();
+
+  expect(screen.getByRole("button", { name: "Sync NPC Orders Now Already Running" })).toBeDisabled();
 });
 
 test("shows immediate pending feedback for the selected clear action", () => {

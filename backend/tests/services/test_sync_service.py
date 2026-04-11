@@ -17,7 +17,6 @@ from app.models.all_models import (
     BulkImportFile,
     EsiCharacter,
     EsiHistoryDaily,
-    EsiHistorySyncState,
     EsiMarketOrder,
     EveRefHistorySyncState,
     Item,
@@ -166,14 +165,6 @@ def seed_opportunity_inputs(session: Session) -> tuple[int, int, int]:
             ),
         ]
     )
-    if session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id)) is None:
-        session.add(
-            EsiHistorySyncState(
-                region_id=region.id,
-                synced_through_date=datetime(2026, 4, 8, tzinfo=UTC).date(),
-                last_checked_at=datetime.now(UTC),
-            )
-        )
     session.commit()
     return target.id, source.id, item.id
 
@@ -187,7 +178,6 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
     assert item is not None
 
     session.execute(delete(EsiHistoryDaily).where(EsiHistoryDaily.region_id == region.id, EsiHistoryDaily.type_id == item_id))
-    session.execute(delete(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id))
     session.execute(
         delete(OpportunityItem).where(
             OpportunityItem.target_location_id == target_id,
@@ -228,27 +218,7 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
     )
     session.commit()
 
-    imported_volumes = [34, 4, 4, 4, 19, 8, 9, 3, 1, 10, 2, 3, 4, 5]
-    imported_history = [
-        {
-            "date": (datetime(2026, 4, 8, tzinfo=UTC).date() - timedelta(days=offset)).isoformat(),
-            "average": 1_000_000.0 + offset,
-            "highest": 1_000_100.0 + offset,
-            "lowest": 999_900.0 + offset,
-            "order_count": 10 + offset,
-            "volume": volume,
-        }
-        for offset, volume in enumerate(imported_volumes)
-    ]
-    universe_client = StubUniverseClient(
-        regional_history={
-            (10000002, item.type_id): imported_history,
-        }
-    )
-    service = SyncService(
-        session_factory=lambda: session,
-        esi_client=universe_client,
-    )
+    service = SyncService(session_factory=lambda: session)
 
     service.prepare_trade_period(
         session,
@@ -275,12 +245,9 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
         .order_by(EsiHistoryDaily.date.desc())
     ).all()
 
-    assert universe_client.regional_history_calls == [(10000002, item.type_id)]
     assert refreshed_row is not None
-    assert refreshed_row.esi_demand_day == pytest.approx(sum(imported_volumes) / 14.0)
-    assert refreshed_row.esi_demand_day != pytest.approx(1.0 / 14.0)
-    assert len(history_rows) == 14
-    assert [row.volume for row in history_rows] == imported_volumes
+    assert refreshed_row.esi_demand_day == pytest.approx(0.0)
+    assert len(history_rows) == 0
 
 
 def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
@@ -385,14 +352,6 @@ def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
             ),
         ]
     )
-    if session.scalar(select(EsiHistorySyncState).where(EsiHistorySyncState.region_id == region.id)) is None:
-        session.add(
-            EsiHistorySyncState(
-                region_id=region.id,
-                synced_through_date=datetime(2026, 4, 8, tzinfo=UTC).date(),
-                last_checked_at=datetime.now(UTC),
-            )
-        )
     session.commit()
     return target.id, source.id, item.id
 
@@ -669,7 +628,6 @@ class StubUniverseClient:
         universe_systems: list[SystemSeed] | None = None,
         universe_items: list[ItemSeed] | None = None,
         regional_orders: dict[int, list[EsiRegionalOrderRecord]] | None = None,
-        regional_history: dict[tuple[int, int], list[dict[str, object]]] | None = None,
         stations: dict[int, StationSeed] | None = None,
         item_details: dict[int, ItemSeed] | None = None,
     ) -> None:
@@ -677,11 +635,9 @@ class StubUniverseClient:
         self._universe_systems = universe_systems or []
         self._universe_items = universe_items or []
         self._regional_orders = regional_orders or {}
-        self._regional_history = regional_history or {}
         self._stations = stations or {}
         self._item_details = item_details or {item.type_id: item for item in self._universe_items}
         self.regional_order_calls: list[int] = []
-        self.regional_history_calls: list[tuple[int, int]] = []
         self.item_detail_calls: list[int] = []
 
     def fetch_universe_item(self, type_id: int) -> ItemSeed:
@@ -694,10 +650,6 @@ class StubUniverseClient:
     def fetch_regional_orders(self, region_id: int) -> list[EsiRegionalOrderRecord]:
         self.regional_order_calls.append(region_id)
         return list(self._regional_orders.get(region_id, []))
-
-    def fetch_regional_history(self, region_id: int, type_id: int) -> list[dict[str, object]]:
-        self.regional_history_calls.append((region_id, type_id))
-        return list(self._regional_history.get((region_id, type_id), []))
 
 
 class StubFoundationClient:
@@ -1451,46 +1403,6 @@ def test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh(
     assert result.message == "Rebuilt opportunities (3 item rows across 2 target scopes)."
 
 
-def test_esi_history_sync_runs_separately_from_opportunity_rebuild(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = build_session()
-    seed_opportunity_inputs(session)
-    service = SyncService(session_factory=lambda: session)
-    history_calls: list[tuple[int | None, int]] = []
-
-    def stub_refresh_esi_history_for_scopes(
-        self: object,
-        session: Session,
-        *,
-        job_id: int | None,
-        scopes: list[tuple[int, int]],
-        cancellation_check: object = None,
-    ) -> int:
-        del self, session, cancellation_check
-        history_calls.append((job_id, len(scopes)))
-        return 7
-
-    monkeypatch.setattr(SyncService, "_refresh_esi_history_for_scopes", stub_refresh_esi_history_for_scopes)
-
-    result = service.trigger_job("esi_history_sync")
-    stage_rows = session.scalars(
-        select(SyncJobStageRun)
-        .where(SyncJobStageRun.job_run_id == result.id)
-        .order_by(SyncJobStageRun.started_at.asc(), SyncJobStageRun.id.asc())
-    ).all()
-
-    assert result.status == "success"
-    assert result.message is not None
-    assert "Synced ESI market history" in result.message
-    assert history_calls == [(result.id, 1)]
-    assert any(stage.stage_key == "load_rebuild_scopes" and stage.status == "success" for stage in stage_rows)
-    assert any(
-        stage.stage_key == "refresh_esi_history_for_scopes" and stage.status == "success"
-        for stage in stage_rows
-    )
-
-
 def test_everef_history_sync_first_run_succeeds_with_mocked_downloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1567,11 +1479,6 @@ def test_opportunity_rebuild_does_not_refresh_esi_history_inline(monkeypatch: py
     )
     session.commit()
     service = SyncService(session_factory=lambda: session)
-
-    def fail_refresh_esi_history_for_scopes(*args: object, **kwargs: object) -> int:
-        raise AssertionError("Expected opportunity_rebuild to skip ESI history refresh.")
-
-    monkeypatch.setattr(SyncService, "_refresh_esi_history_for_scopes", fail_refresh_esi_history_for_scopes)
 
     result = service.trigger_job("opportunity_rebuild")
 

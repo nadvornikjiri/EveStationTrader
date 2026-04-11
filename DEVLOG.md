@@ -1,3 +1,17 @@
+## 2026-04-11
+
+- task id: `REMOVE-LEGACY-ESI-HISTORY-SYNC-2026-04-11`
+- title: Remove Legacy ESI History Sync
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: removed the retired `esi_history_sync` path now that `everef_history_sync` is in place. This deleted the old ESI history ingestion service, removed `fetch_regional_history()` from the ESI client, stripped the sync-service dispatch/clear-data/inline-refresh hooks, dropped `EsiHistorySyncState` from the ORM and exports, added Alembic migration `20260411_0016` to drop `esi_history_sync_state`, replaced the manual sync action with `Sync EVE Ref History Now`, and removed obsolete API/client/service tests for the legacy path.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `rg -n "esi_history_sync|EsiHistorySyncState|EsiRegionalHistoryIngestionService|fetch_regional_history|_sync_esi_history" backend/app backend/tests frontend/src`
+  - `cd backend && ./.venv/bin/mypy app/`
+  - `cd backend && ./.venv/bin/pytest tests/`
+  - note: `mypy app/` is still blocked by pre-existing errors in `app/services/opportunities/aggregator.py`, `app/services/npc_stations/deltas.py`, `app/services/demand/market_demand.py`, and `app/repositories/trade_repository.py`
+  - note: `pytest tests/` is still blocked by pre-existing failures in `tests/services/test_adam4eve_client.py`, `tests/services/test_aggregator.py`, and `tests/workers/test_sync_tasks.py`
+
 ## 2026-03-27
 
 - task id: `ADAM4EVE-FILE-IMPORT-LOGGING-2026-03-27`

@@ -15,8 +15,10 @@ from app.models.all_models import (
     EsiCharacter,
     EsiCharacterSyncState,
     EsiCharacterToken,
+    EsiHistoryDaily,
     Item,
     Location,
+    Region,
     OpportunityItem,
     OpportunitySourceSummary,
     SyncJobRun,
@@ -563,6 +565,118 @@ def test_get_database_table_rows_enriches_adam_demand_references(client) -> None
     assert "item_name" in payload["columns"]
     assert any(
         row["location_eve_id"] == 60003760 and row["type_eve_id"] == 34 and row["item_name"]
+        for row in payload["rows"]
+    )
+
+
+def test_get_database_table_rows_enriches_opportunity_item_references_and_filters_by_eve_type_id(client) -> None:
+    session = SessionLocal()
+    try:
+        target_location = session.scalar(select(Location).where(Location.location_id == 60008494))
+        source_location = session.scalar(select(Location).where(Location.location_id == 60003760))
+        item = session.scalar(select(Item).where(Item.type_id == 14084))
+        if target_location is None or source_location is None or item is None:
+            raise AssertionError("Expected seeded target, source, and item to exist.")
+
+        session.execute(delete(OpportunityItem))
+        session.execute(
+            insert(OpportunityItem).values(
+                target_location_id=target_location.id,
+                source_location_id=source_location.id,
+                type_id=item.id,
+                period_days=14,
+                purchase_units=1.0,
+                source_units_available=2.0,
+                target_demand_day=3.0,
+                target_supply_units=4.0,
+                target_dos=5.0,
+                in_transit_units=0.0,
+                assets_units=0.0,
+                active_sell_orders_units=0.0,
+                source_station_sell_price=10.0,
+                target_station_sell_price=11.0,
+                target_period_avg_price=12.0,
+                target_now_profit=1.0,
+                target_period_profit=2.0,
+                capital_required=10.0,
+                roi_now=0.1,
+                roi_period=0.2,
+                source_security_status=0.9,
+                item_volume_m3=5.0,
+                shipping_cost=0.0,
+                demand_source="adam4eve",
+                computed_at=datetime(2026, 4, 9, tzinfo=UTC),
+                esi_demand_day=0.07142857142857142,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(
+        "/api/database/tables/opportunity_items",
+        params={
+            "filter_target_location_id": str(target_location.id),
+            "filter_type_id": "14084",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["table_name"] == "opportunity_items"
+    assert payload["filtered_row_count"] == 1
+    assert len(payload["rows"]) == 1
+    assert "target_location_eve_id" in payload["columns"]
+    assert "target_location_name" in payload["columns"]
+    assert "source_location_eve_id" in payload["columns"]
+    assert "source_location_name" in payload["columns"]
+    assert "type_eve_id" in payload["columns"]
+    assert "item_name" in payload["columns"]
+    row = payload["rows"][0]
+    assert row["type_id"] == item.id
+    assert row["type_eve_id"] == 14084
+    assert row["item_name"] == "True Sansha Explosive Energized Membrane"
+
+
+def test_get_database_table_rows_enriches_esi_history_daily_references(client) -> None:
+    session = SessionLocal()
+    try:
+        region = session.scalar(select(Region).where(Region.region_id == 10000002))
+        item = session.scalar(select(Item).where(Item.type_id == 34))
+        if region is None or item is None:
+            raise AssertionError("Expected seeded region and item to exist.")
+
+        session.execute(delete(EsiHistoryDaily))
+        session.execute(
+            insert(EsiHistoryDaily).values(
+                region_id=region.id,
+                type_id=item.id,
+                date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                average=4.14,
+                highest=4.15,
+                lowest=4.06,
+                order_count=1498,
+                volume=4_018_074_559,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get("/api/database/tables/esi_history_daily")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["table_name"] == "esi_history_daily"
+    assert "region_eve_id" in payload["columns"]
+    assert "region_name" in payload["columns"]
+    assert "type_eve_id" in payload["columns"]
+    assert "item_name" in payload["columns"]
+    assert any(
+        row["region_eve_id"] == 10000002
+        and row["region_name"] == "The Forge"
+        and row["type_eve_id"] == 34
+        and row["item_name"] == "Tritanium"
         for row in payload["rows"]
     )
 
