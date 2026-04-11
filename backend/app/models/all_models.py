@@ -179,9 +179,37 @@ class AdamMarketPriceSyncState(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-# Backward-compatible aliases while the rest of the codebase transitions off the old ESI naming.
-EsiHistoryDaily = AdamMarketPriceHistoryDaily
-EsiHistorySyncState = AdamMarketPriceSyncState
+class EsiHistoryDaily(Base):
+    __tablename__ = "esi_history_daily"
+    __table_args__ = (UniqueConstraint("region_id", "type_id", "date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    date: Mapped[date] = mapped_column(Date)
+    average: Mapped[float] = mapped_column(Float)
+    highest: Mapped[float] = mapped_column(Float)
+    lowest: Mapped[float] = mapped_column(Float)
+    order_count: Mapped[int] = mapped_column(Integer)
+    volume: Mapped[int] = mapped_column(BigInteger)
+
+
+class EsiHistorySyncState(Base):
+    __tablename__ = "esi_history_sync_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"), unique=True, index=True)
+    synced_through_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EveRefHistorySyncState(Base):
+    __tablename__ = "everef_history_sync_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    history_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class EsiMarketOrder(Base):
@@ -483,6 +511,20 @@ class SyncJobRun(Base):
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_details: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SyncJobStageRun(Base):
+    __tablename__ = "sync_job_stage_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_run_id: Mapped[int] = mapped_column(ForeignKey("sync_job_runs.id"), index=True)
+    stage_key: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     error_details: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

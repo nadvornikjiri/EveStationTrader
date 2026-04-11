@@ -2504,6 +2504,24 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - Added a sync-service regression test proving non-configured targets are skipped during _rebuild_opportunities.
 
 
+## 2026-04-09 - NPC-ESI-DISAPPEARED-ORDER-VOLUME
+- Fixed NPC station ESI delta inference so orders that disappear between snapshots now contribute their remaining units to traded-volume inference instead of being recorded as zero-volume trades.
+- Added regression coverage for disappeared sell orders, disappeared buy orders, and demand-period aggregation that includes disappeared-order inferred volume.
+- Updated opportunity generation so the `ESI Traded Vol` column for NPC targets uses the summed NPC-station ESI demand across the whole target region, then converts that regional period total into a per-day average.
+- Added a sync-service guard that returns the existing active `opportunity_rebuild` job instead of starting a duplicate rebuild while one is already running or cancelling.
+- Replaced the `ESI Traded Vol` source with official ESI regional market history volume (`/markets/{region}/history`) for all targets, storing rows in `esi_history_daily` and refreshing missing regional histories during rebuilds.
+- validation:
+  - `backend/.venv/bin/ruff check backend/app/services/npc_stations/deltas.py backend/tests/services/test_npc_station_deltas.py backend/tests/services/test_npc_station_demand_periods.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_npc_station_deltas.py tests/services/test_npc_station_demand_periods.py`
+  - `cd backend && ./.venv/bin/ruff check app/services/opportunities/generation.py tests/services/test_opportunity_generation.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_opportunity_generation.py`
+  - `cd backend && ./.venv/bin/ruff check app/services/sync/service.py tests/services/test_sync_service.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_sync_service.py -k 'opportunity_rebuild'`
+  - `cd backend && ./.venv/bin/pytest tests/services/test_esi_client.py`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_esi_history_ingestion.py tests/services/test_opportunity_generation.py tests/services/test_sync_service.py -k 'opportunity_rebuild or ingest_region_history or regionwide_esi_history_volume'`
+  - `docker compose exec -T backend alembic upgrade head`
+  - note: full backend `mypy .` and `pytest` are currently blocked by pre-existing branch failures in Adam4EVE client tests, aggregator typing/tests, and existing `rowcount` typing issues outside this bugfix scope
+
 ## 2026-04-01 - PRE-REBUILD-ESI-ORDER-REFRESH
 - Opportunity rebuild now refreshes NPC ESI market orders immediately beforehand when the last successful esi_market_orders_sync is older than 10 minutes or missing.
 - Refactored the ESI market order sync path into a shared helper so standalone syncs and pre-rebuild refreshes use the same ingestion flow and messaging.
@@ -2544,3 +2562,36 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `docker compose run --rm backend sh -lc "ruff check app/main.py tests/api/test_endpoints.py && mypy app/main.py tests/api/test_endpoints.py"`
   - `docker compose run --rm -e TEST_DATABASE_URL=postgresql+psycopg://eve_trader:eve_trader@postgres:5432/eve_trader_test backend sh -lc "pytest tests/api/test_endpoints.py -k 'cors or targets or sync_status'"`
   - note: full backend `mypy .` is currently blocked by pre-existing failures in `tests/services/test_esi_history_ingestion.py`
+
+## 2026-04-10 - OPPORTUNITY-REBUILD-STAGE-TIMING-AND-DEADLINE
+- Added durable `sync_job_stage_runs` telemetry for sync jobs and exposed per-stage timing results on sync job responses so opportunity rebuild progress survives cancellation and can be inspected after the run ends.
+- Instrumented the total opportunity rebuild flow with stage timing checkpoints for pre-rebuild ESI refresh, scope loading, ESI history refresh, per-target scope generation, and target-scope sub-stages inside opportunity generation.
+- Added a self-enforced 30 minute runtime cap for `opportunity_rebuild`; when exceeded, the job now cancels itself cleanly and preserves all completed and in-flight stage measurements gathered up to that point.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check app/services/sync/service.py app/services/opportunities/generation.py app/api/schemas/sync.py app/models/all_models.py app/models/__init__.py tests/services/test_sync_service.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_sync_service.py::test_trigger_job_opportunity_rebuild_persists_rows_and_sync_job tests/services/test_sync_service.py::test_trigger_job_opportunity_rebuild_persists_stage_timings tests/services/test_sync_service.py::test_opportunity_rebuild_only_processes_configured_target_markets tests/services/test_sync_service.py::test_opportunity_rebuild_refreshes_esi_orders_when_last_sync_is_stale tests/services/test_sync_service.py::test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh tests/services/test_sync_service.py::test_opportunity_rebuild_cancels_after_runtime_limit_and_keeps_partial_stage_timings`
+  - note: targeted backend `mypy` remains blocked by pre-existing `rowcount` typing errors in `app/services/npc_stations/deltas.py` and `app/services/demand/market_demand.py`
+
+## 2026-04-11 - ESI-HISTORY-SYNC-SPLIT-AND-LIVE-RATE-UPDATES
+- Split scope-based ESI market history refresh out of `opportunity_rebuild` into a dedicated `esi_history_sync` job so rebuilds no longer block on region-history downloads.
+- Added a new Sync Dashboard action for `Sync ESI History Now`, a matching clear path for ESI history data, and a new sync status card entry for the standalone history job.
+- Added rate-aware progress messages for ESI history refresh, throttled to roughly once per second during type processing, and tightened Sync Dashboard polling to one second so operators can watch live throughput instead of only coarse progress totals.
+- Made April 9 Alembic migrations for NPC station deltas and `esi_demand_day` idempotent so API integration startup can safely replay migrations against an already-initialized test schema.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check app/services/sync/service.py app/domain/enums.py tests/services/test_sync_service.py tests/api/test_endpoints.py alembic/versions/20260409_0010_npc_station_order_deltas.py alembic/versions/20260409_0011_add_esi_demand_day.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_sync_service.py::test_trigger_job_opportunity_rebuild_persists_rows_and_sync_job tests/services/test_sync_service.py::test_trigger_job_opportunity_rebuild_persists_stage_timings tests/services/test_sync_service.py::test_esi_history_sync_runs_separately_from_opportunity_rebuild tests/services/test_sync_service.py::test_opportunity_rebuild_does_not_refresh_esi_history_inline tests/services/test_sync_service.py::test_opportunity_rebuild_cancels_after_runtime_limit_and_keeps_partial_stage_timings tests/api/test_endpoints.py::test_run_esi_history_sync tests/api/test_endpoints.py::test_clear_esi_history_sync_data tests/api/test_endpoints.py::test_run_foundation_import_sync tests/api/test_endpoints.py::test_clear_opportunity_rebuild_data`
+  - `docker compose exec -T frontend npm test -- --run src/pages/SyncPage.test.tsx`
+  - note: targeted backend `mypy` still reports pre-existing failures in `app/services/npc_stations/deltas.py`, `app/services/demand/market_demand.py`, and `app/repositories/trade_repository.py`
+
+## 2026-04-11 - EVEREF-HISTORY-FOUNDATION
+- Added the new `app/services/everef` package with an `httpx` client for `totals.json`, rolling available-date resolution, and streamed Everef `.csv.bz2` download/decompression into cached CSV files.
+- Added PostgreSQL-only Everef history file ingestion using a temp staging table plus delete-and-insert replacement into `esi_history_daily`, with cancellation checkpoints around the bulk load/upsert boundary.
+- Added the `EveRefHistorySyncState` model, exported it from `app.models`, and created Alembic migration `20260411_0015` for the new sync-state table without removing the legacy ESI sync state yet.
+- Added client and ingestion regression coverage for download/decompression, date selection, non-PostgreSQL rejection, and staging import replacement behavior.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check app/services/everef app/models/all_models.py app/models/__init__.py tests/services/test_everef_client.py tests/services/test_everef_history_ingestion.py alembic/versions/20260411_0015_everef_history_sync_state.py --fix`
+  - `cd backend && ./.venv/bin/mypy app/services/everef app/models/all_models.py app/models/__init__.py tests/services/test_everef_client.py tests/services/test_everef_history_ingestion.py`
+  - `cd backend && ./.venv/bin/pytest tests/services/test_everef_client.py tests/services/test_everef_history_ingestion.py`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_everef_history_ingestion.py::test_ingest_history_file_replaces_existing_rows_and_runs_cancellation_checks`
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - note: full backend `mypy .` is currently blocked by pre-existing failures in `app/services/opportunities/aggregator.py` and `tests/services/test_aggregator.py`; full backend `pytest` is currently blocked by pre-existing failures in `tests/services/test_adam4eve_client.py` and `tests/services/test_aggregator.py`
