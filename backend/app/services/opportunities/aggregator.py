@@ -36,4 +36,5 @@ def aggregate_source_summary(source_location_id: int, source_market_name: str, i
         total_item_volume_m3=sum(item.item_volume_m3 * item.purchase_units for item in items),
         shipping_cost_total=sum(item.shipping_cost for item in items),
         demand_source_summary=items[0].demand_source if len({item.demand_source for item in items}) == 1 else "Mixed",
+        esi_demand_day_total=sum(item.esi_demand_day for item in items),
     )

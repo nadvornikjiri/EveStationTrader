@@ -16,8 +16,10 @@ def build_session() -> Session:
 
 
 def seed_region_and_item(session: Session) -> tuple[int, int]:
-    region = Region(id=10000002, region_id=10000002, name="The Forge")
-    item = Item(id=34, type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    # Use internal PKs (1, 2) that differ from EVE IDs (10000002, 34) to
+    # verify the ingestion SQL joins on eve_id columns, not raw CSV values.
+    region = Region(id=1, region_id=10000002, name="The Forge")
+    item = Item(id=2, type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
     session.add_all([region, item])
     session.commit()
     return region.id, item.id

@@ -1377,19 +1377,11 @@ class SyncService:
             existing_by_date = {row.history_date: row for row in state_rows}
 
             totals_by_date: dict[date, int | None] = {}
-            for raw_date, payload in totals.items():
+            for raw_date, file_size in totals.items():
                 try:
                     parsed_date = date.fromisoformat(raw_date)
                 except ValueError:
                     continue
-                raw_size = payload.get("size")
-                if raw_size is None:
-                    file_size = None
-                else:
-                    try:
-                        file_size = int(raw_size)
-                    except (TypeError, ValueError):
-                        file_size = None
                 totals_by_date[parsed_date] = file_size
 
             if not existing_by_date:

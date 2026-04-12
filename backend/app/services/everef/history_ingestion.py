@@ -6,6 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.services.postgres_copy import copy_delimited_file
 
+_VALID_STAGED_ROWS = """
+    s.region_id IS NOT NULL AND s.region_id <> ''
+    AND s.type_id IS NOT NULL AND s.type_id <> ''
+    AND s.date IS NOT NULL AND s.date <> ''
+"""
+
 
 class EveRefHistoryIngestionService:
     def ingest_history_file(
@@ -48,25 +54,24 @@ class EveRefHistoryIngestionService:
         if cancellation_check is not None:
             cancellation_check()
 
+        # Join staging table against regions/items to resolve internal PKs,
+        # then delete any existing rows that will be replaced.
         session.execute(
             text(
-                """
+                f"""
                 DELETE FROM esi_history_daily AS existing
                 USING (
                     SELECT
-                        region_id::int AS region_id,
-                        type_id::int AS type_id,
-                        date::date AS date
-                    FROM everef_history_stage
-                    WHERE region_id IS NOT NULL
-                      AND region_id <> ''
-                      AND type_id IS NOT NULL
-                      AND type_id <> ''
-                      AND date IS NOT NULL
-                      AND date <> ''
+                        r.id AS region_pk,
+                        i.id AS type_pk,
+                        s.date::date AS date
+                    FROM everef_history_stage s
+                    JOIN regions r ON r.region_id = s.region_id::int
+                    JOIN items i ON i.type_id = s.type_id::int
+                    WHERE {_VALID_STAGED_ROWS}
                 ) AS staged
-                WHERE existing.region_id = staged.region_id
-                  AND existing.type_id = staged.type_id
+                WHERE existing.region_id = staged.region_pk
+                  AND existing.type_id = staged.type_pk
                   AND existing.date = staged.date
                 """
             )
@@ -75,25 +80,25 @@ class EveRefHistoryIngestionService:
         if cancellation_check is not None:
             cancellation_check()
 
+        # Count rows that will actually be inserted (only those whose
+        # region/item exist in our reference tables).
         insert_count = int(
             session.execute(
                 text(
-                    """
+                    f"""
                     SELECT COUNT(*)
-                    FROM everef_history_stage
-                    WHERE region_id IS NOT NULL
-                      AND region_id <> ''
-                      AND type_id IS NOT NULL
-                      AND type_id <> ''
-                      AND date IS NOT NULL
-                      AND date <> ''
+                    FROM everef_history_stage s
+                    JOIN regions r ON r.region_id = s.region_id::int
+                    JOIN items i ON i.type_id = s.type_id::int
+                    WHERE {_VALID_STAGED_ROWS}
                     """
                 )
             ).scalar_one()
         )
+
         session.execute(
             text(
-                """
+                f"""
                 INSERT INTO esi_history_daily (
                     region_id,
                     type_id,
@@ -105,21 +110,18 @@ class EveRefHistoryIngestionService:
                     volume
                 )
                 SELECT
-                    region_id::int,
-                    type_id::int,
-                    date::date,
-                    average::double precision,
-                    highest::double precision,
-                    lowest::double precision,
-                    order_count::int,
-                    volume::bigint
-                FROM everef_history_stage
-                WHERE region_id IS NOT NULL
-                  AND region_id <> ''
-                  AND type_id IS NOT NULL
-                  AND type_id <> ''
-                  AND date IS NOT NULL
-                  AND date <> ''
+                    r.id,
+                    i.id,
+                    s.date::date,
+                    s.average::double precision,
+                    s.highest::double precision,
+                    s.lowest::double precision,
+                    s.order_count::int,
+                    s.volume::bigint
+                FROM everef_history_stage s
+                JOIN regions r ON r.region_id = s.region_id::int
+                JOIN items i ON i.type_id = s.type_id::int
+                WHERE {_VALID_STAGED_ROWS}
                 """
             )
         )

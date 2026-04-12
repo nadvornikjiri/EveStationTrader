@@ -184,3 +184,38 @@ def test_upsert_updates_existing_period():
     periods = session.scalars(select(NpcStationDemandPeriod)).all()
     assert len(periods) == 1  # upserted, not duplicated
     assert periods[0].buy_from_sell_period == 35.0  # 10 + 25
+
+
+def test_aggregates_disappeared_orders_into_demand_period():
+    session = build_session()
+    loc_id, item_a, _ = seed_foundation(session)
+
+    now = datetime.now(UTC)
+    add_delta(session, location_id=loc_id, type_id=item_a, order_id=1001,
+              trade_side="buy_from_sell", trade_units=10, snapshot_time=now - timedelta(hours=2))
+    session.add(
+        NpcStationOrderDelta(
+            location_id=loc_id,
+            type_id=item_a,
+            order_id=1002,
+            from_snapshot_time=now - timedelta(hours=1, minutes=10),
+            to_snapshot_time=now - timedelta(hours=1),
+            old_volume=25,
+            new_volume=0,
+            delta_volume=-25,
+            disappeared=True,
+            inferred_trade_side="buy_from_sell",
+            inferred_trade_units=25,
+            price=12_000_000,
+        )
+    )
+    session.commit()
+
+    NpcStationDemandPeriodService().refresh_for_locations(
+        session, target_location_ids=[loc_id], period_days=14,
+    )
+    session.commit()
+
+    period = session.scalars(select(NpcStationDemandPeriod)).first()
+    assert period is not None
+    assert period.buy_from_sell_period == 35.0

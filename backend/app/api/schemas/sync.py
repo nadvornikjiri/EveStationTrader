@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SyncStatusCard(BaseModel):
@@ -15,6 +15,17 @@ class SyncStatusCard(BaseModel):
     progress_current: int | None = None
     progress_total: int | None = None
     progress_unit: str | None = None
+
+
+class SyncJobStageRunResponse(BaseModel):
+    id: int
+    stage_key: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    metrics: dict[str, object] = Field(default_factory=dict)
+    error_details: str | None = None
 
 
 class SyncJobRunResponse(BaseModel):
@@ -33,6 +44,7 @@ class SyncJobRunResponse(BaseModel):
     progress_unit: str | None = None
     message: str | None = None
     error_details: str | None = None
+    stages: list[SyncJobStageRunResponse] = Field(default_factory=list)
 
 
 class FallbackDiagnostic(BaseModel):

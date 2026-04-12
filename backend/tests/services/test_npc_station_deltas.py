@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import insert, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
@@ -220,7 +220,7 @@ def test_buy_order_volume_decrease_is_sell_to_buy():
     assert d.inferred_trade_units == 20
 
 
-def test_disappeared_order_has_no_inference():
+def test_disappeared_sell_order_infers_buy_from_sell():
     session = build_session()
     loc_id, item_a, _ = seed_foundation(session)
     region = session.scalars(select(Region)).first()
@@ -245,9 +245,39 @@ def test_disappeared_order_has_no_inference():
     assert result.delta_count == 1
     d = session.scalars(select(NpcStationOrderDelta)).first()
     assert d.disappeared is True
-    assert d.inferred_trade_side is None
-    assert d.inferred_trade_units == 0
+    assert d.inferred_trade_side == "buy_from_sell"
+    assert d.inferred_trade_units == 10
     assert d.old_volume == 10
+    assert d.new_volume == 0
+
+
+def test_disappeared_buy_order_infers_sell_to_buy():
+    session = build_session()
+    loc_id, item_a, _ = seed_foundation(session)
+    region = session.scalars(select(Region)).first()
+    system = session.scalars(select(System)).first()
+
+    insert_esi_order(
+        session, order_id=3002, location_id=loc_id, type_id=item_a,
+        region_id=region.id, system_id=system.id,
+        is_buy_order=True, price=15_000_000, volume_remain=12,
+    )
+    session.commit()
+
+    create_valid_stage(session)
+
+    result = NpcStationDeltaService().compute_and_persist_deltas(
+        session, target_location_ids=[loc_id],
+        snapshot_time=datetime(2026, 4, 9, 12, 10, tzinfo=UTC),
+    )
+    session.commit()
+
+    assert result.delta_count == 1
+    d = session.scalars(select(NpcStationOrderDelta)).first()
+    assert d.disappeared is True
+    assert d.inferred_trade_side == "sell_to_buy"
+    assert d.inferred_trade_units == 12
+    assert d.old_volume == 12
     assert d.new_volume == 0
 
 
@@ -272,7 +302,7 @@ def test_volume_increase_is_skipped():
         is_buy_order=True, price=10_000_000, volume_remain=60,
     )
 
-    result = NpcStationDeltaService().compute_and_persist_deltas(
+    NpcStationDeltaService().compute_and_persist_deltas(
         session, target_location_ids=[loc_id],
         snapshot_time=datetime(2026, 4, 9, 12, 10, tzinfo=UTC),
     )

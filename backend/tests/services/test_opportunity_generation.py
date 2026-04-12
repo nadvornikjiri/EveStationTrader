@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
+    EsiHistoryDaily,
     EsiMarketOrder,
     Item,
     Location,
@@ -320,6 +321,51 @@ def test_generate_opportunities_replaces_prior_rows_on_rerun() -> None:
     assert item_rows[0].capital_required == pytest.approx(320.0)
     assert item_rows[0].target_demand_day == pytest.approx(4.0)
     assert summary_rows[0].capital_required_total == pytest.approx(320.0)
+
+
+def test_generate_opportunities_uses_regionwide_esi_history_volume() -> None:
+    session = build_session()
+    ids = seed_trade_inputs(session)
+
+    target_location = session.get(Location, ids["target_location_id"])
+    assert target_location is not None
+
+    session.add_all(
+        [
+            EsiHistoryDaily(
+                region_id=target_location.region_id,
+                type_id=ids["tritanium_id"],
+                date=datetime(2026, 4, 9, tzinfo=UTC).date(),
+                average=97.0,
+                highest=103.0,
+                lowest=92.0,
+                order_count=10,
+                volume=70,
+            ),
+            EsiHistoryDaily(
+                region_id=target_location.region_id,
+                type_id=ids["tritanium_id"],
+                date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                average=99.0,
+                highest=104.0,
+                lowest=94.0,
+                order_count=12,
+                volume=44,
+            ),
+        ]
+    )
+    session.commit()
+
+    OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_location_id"],
+        source_location_ids=[ids["source_location_id"]],
+        type_ids=[ids["tritanium_id"]],
+        period_days=14,
+    )
+
+    row = session.scalars(select(OpportunityItem)).one()
+    assert row.esi_demand_day == pytest.approx((70 + 44) / 14.0)
 
 
 def test_generate_opportunities_uses_weighted_source_acquisition_price_when_lowest_order_cannot_fill_purchase_units() -> None:

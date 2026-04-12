@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from app.models.all_models import NpcStationOrderDelta
@@ -134,6 +134,9 @@ class NpcStationDeltaService:
                 ni += 1
             elif prev_key < new_key:
                 # Order disappeared
+                is_buy = p[2]
+                side = "sell_to_buy" if is_buy else "buy_from_sell"
+                units = p[4]
                 delta_rows.append((
                     location_id,
                     p[0],       # type_id
@@ -144,8 +147,8 @@ class NpcStationDeltaService:
                     0,          # new_volume
                     -p[4],      # delta_volume
                     True,       # disappeared
-                    None,       # inferred_trade_side
-                    0,          # inferred_trade_units
+                    side,
+                    units,
                     p[3],       # price
                 ))
                 pi += 1
@@ -156,11 +159,14 @@ class NpcStationDeltaService:
         # Remaining previous orders all disappeared
         while pi < prev_len:
             p = prev_rows[pi]
+            is_buy = p[2]
+            side = "sell_to_buy" if is_buy else "buy_from_sell"
+            units = p[4]
             delta_rows.append((
                 location_id,
                 p[0], p[1], p[5], snapshot_time,
                 p[4], 0, -p[4],
-                True, None, 0, p[3],
+                True, side, units, p[3],
             ))
             pi += 1
 

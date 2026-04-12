@@ -7,7 +7,7 @@ export function useSyncStatus() {
     queryKey: ["syncStatus"],
     queryFn: getSyncStatus,
     placeholderData: (previousData) => previousData,
-    refetchInterval: 5_000,
+    refetchInterval: 1_000,
   });
 }
 
@@ -16,7 +16,7 @@ export function useSyncJobs() {
     queryKey: ["syncJobs"],
     queryFn: getSyncJobs,
     placeholderData: (previousData) => previousData,
-    refetchInterval: 5_000,
+    refetchInterval: 1_000,
   });
 }
 

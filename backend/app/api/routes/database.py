@@ -51,19 +51,22 @@ def get_database_table(
         row_count = session.execute(select(func.count()).select_from(table)).scalar_one()
         statement, columns, selectable_columns = _build_database_statement(table_name=table_name, table=table)
         cleaned_filter_text = filter_text.strip()
-        column_filters = _extract_column_filters(request=request, selectable_columns=selectable_columns)
+        column_filters = _extract_column_filters(
+            table_name=table_name,
+            request=request,
+            selectable_columns=selectable_columns,
+        )
         if cleaned_filter_text:
             statement = statement.where(
                 or_(*[cast(column, String).ilike(f"%{cleaned_filter_text}%") for column in selectable_columns.values()])
             )
         if column_filters:
             statement = statement.where(
-                and_(
-                    *[
-                        cast(selectable_columns[column_name], String).ilike(f"%{filter_value}%")
-                        for column_name, filter_value in column_filters.items()
-                    ]
-                )
+                and_(*_build_column_filter_clauses(
+                    table_name=table_name,
+                    column_filters=column_filters,
+                    selectable_columns=selectable_columns,
+                ))
             )
         filtered_row_count = session.execute(select(func.count()).select_from(statement.subquery())).scalar_one()
 
@@ -125,6 +128,7 @@ def _serialize_value(value: object | None) -> object | None:
 
 def _extract_column_filters(
     *,
+    table_name: str,
     request: Request,
     selectable_columns: dict[str, ColumnElement[Any]],
 ) -> dict[str, str]:
@@ -139,12 +143,116 @@ def _extract_column_filters(
     return column_filters
 
 
+def _build_column_filter_clauses(
+    *,
+    table_name: str,
+    column_filters: dict[str, str],
+    selectable_columns: dict[str, ColumnElement[Any]],
+) -> list[ColumnElement[bool]]:
+    clauses: list[ColumnElement[bool]] = []
+    for column_name, filter_value in column_filters.items():
+        if table_name == "opportunity_items" and column_name == "type_id" and "type_eve_id" in selectable_columns:
+            clauses.append(
+                or_(
+                    cast(selectable_columns["type_id"], String).ilike(f"%{filter_value}%"),
+                    cast(selectable_columns["type_eve_id"], String).ilike(f"%{filter_value}%"),
+                )
+            )
+            continue
+        clauses.append(cast(selectable_columns[column_name], String).ilike(f"%{filter_value}%"))
+    return clauses
+
+
 def _build_database_statement(
     *,
     table_name: str,
     table: Table,
 ) -> tuple[Select[Any], list[str], dict[str, ColumnElement[Any]]]:
     selectable_columns: dict[str, ColumnElement[Any]] = {column.name: column for column in table.columns}
+
+    if table_name == "esi_history_daily":
+        history_columns = [column for column in table.columns]
+        region_eve_id = Region.region_id.label("region_eve_id")
+        region_name = Region.name.label("region_name")
+        type_eve_id = Item.type_id.label("type_eve_id")
+        item_name = Item.name.label("item_name")
+        statement = (
+            select(
+                *history_columns,
+                region_eve_id,
+                region_name,
+                type_eve_id,
+                item_name,
+            )
+            .select_from(table)
+            .outerjoin(Region, Region.id == table.c.region_id)
+            .outerjoin(Item, Item.id == table.c.type_id)
+        )
+
+        enriched_columns = [column.name for column in history_columns]
+        if "region_id" in enriched_columns:
+            region_index = enriched_columns.index("region_id") + 1
+            enriched_columns[region_index:region_index] = ["region_eve_id", "region_name"]
+        if "type_id" in enriched_columns:
+            type_index = enriched_columns.index("type_id") + 1
+            enriched_columns[type_index:type_index] = ["type_eve_id", "item_name"]
+
+        selectable_columns.update(
+            {
+                "region_eve_id": region_eve_id,
+                "region_name": region_name,
+                "type_eve_id": type_eve_id,
+                "item_name": item_name,
+            }
+        )
+        return statement, enriched_columns, selectable_columns
+
+    if table_name == "opportunity_items":
+        opportunity_columns = [column for column in table.columns]
+        type_eve_id = Item.type_id.label("type_eve_id")
+        item_name = Item.name.label("item_name")
+
+        target_location = Location.__table__.alias("target_location")
+        source_location = Location.__table__.alias("source_location")
+
+        statement = (
+            select(
+                *opportunity_columns,
+                target_location.c.location_id.label("target_location_eve_id"),
+                target_location.c.name.label("target_location_name"),
+                source_location.c.location_id.label("source_location_eve_id"),
+                source_location.c.name.label("source_location_name"),
+                type_eve_id,
+                item_name,
+            )
+            .select_from(table)
+            .outerjoin(target_location, target_location.c.id == table.c.target_location_id)
+            .outerjoin(source_location, source_location.c.id == table.c.source_location_id)
+            .outerjoin(Item, Item.id == table.c.type_id)
+        )
+
+        enriched_columns = [column.name for column in opportunity_columns]
+        if "target_location_id" in enriched_columns:
+            target_index = enriched_columns.index("target_location_id") + 1
+            enriched_columns[target_index:target_index] = ["target_location_eve_id", "target_location_name"]
+        if "source_location_id" in enriched_columns:
+            source_index = enriched_columns.index("source_location_id") + 1
+            enriched_columns[source_index:source_index] = ["source_location_eve_id", "source_location_name"]
+        if "type_id" in enriched_columns:
+            type_index = enriched_columns.index("type_id") + 1
+            enriched_columns[type_index:type_index] = ["type_eve_id", "item_name"]
+
+        selectable_columns.update(
+            {
+                "target_location_eve_id": target_location.c.location_id.label("target_location_eve_id"),
+                "target_location_name": target_location.c.name.label("target_location_name"),
+                "source_location_eve_id": source_location.c.location_id.label("source_location_eve_id"),
+                "source_location_name": source_location.c.name.label("source_location_name"),
+                "type_eve_id": type_eve_id,
+                "item_name": item_name,
+            }
+        )
+        return statement, enriched_columns, selectable_columns
 
     if table_name != "adam_market_orders_trade_raw":
         return select(*table.columns), [column.name for column in table.columns], selectable_columns

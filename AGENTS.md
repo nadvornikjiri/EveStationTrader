@@ -41,6 +41,7 @@ All work MUST follow task packets and acceptance criteria.
 - Map implementation to acceptance criteria
 - Write tests for all acceptance criteria
 - Update tests when behavior changes
+- If a fix requires refreshed imported data, rerun the required reimport/rebuild/sync yourself before handoff
 - Do NOT self-approve
 
 ### Tester
@@ -98,6 +99,7 @@ A task is DONE only if:
 - Lint passes
 - Type checks pass
 - Tests pass
+- Required post-fix reimports/rebuilds/sync jobs have been run when the change depends on refreshed data
 - Devlog entry is written
 
 ---

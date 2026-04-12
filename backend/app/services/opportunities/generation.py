@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
+from typing import Callable
 
 from sqlalchemy import Float, case, cast, delete, func, select
 from sqlalchemy.orm import Session
@@ -13,12 +15,12 @@ from app.domain.rules import (
     calculate_target_period_profit,
 )
 from app.models.all_models import (
+    EsiHistoryDaily,
     EsiMarketOrder,
     Item,
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
-    NpcStationDemandPeriod,
     OpportunityItem,
     OpportunitySourceSummary,
     System,
@@ -44,7 +46,13 @@ class OpportunityGenerationService:
         sales_tax_rate: float = 0.036,
         broker_fee_rate: float = 0.03,
         shipping_cost_per_m3: float = 0.0,
+        cancellation_check: Callable[[], None] | None = None,
+        stage_callback: Callable[[str, float, dict[str, object]], None] | None = None,
     ) -> OpportunityGenerationResult:
+        def record_stage(stage_key: str, started_at: float, **metrics: object) -> None:
+            if stage_callback is not None:
+                stage_callback(stage_key, started_at, {key: value for key, value in metrics.items() if value is not None})
+
         if not source_location_ids or not type_ids:
             return OpportunityGenerationResult(item_count=0, summary_count=0)
 
@@ -52,7 +60,11 @@ class OpportunityGenerationService:
         normalized_type_ids = list(dict.fromkeys(type_ids))
         computed_at = datetime.now(UTC)
         normalized_period_days = max(period_days, 1)
+        target_location = session.get(Location, target_location_id)
+        if target_location is None:
+            return OpportunityGenerationResult(item_count=0, summary_count=0)
 
+        delete_started_at = perf_counter()
         if replace_entire_target_scope:
             session.execute(
                 delete(OpportunityItem).where(
@@ -82,11 +94,21 @@ class OpportunityGenerationService:
                     OpportunitySourceSummary.period_days == period_days,
                 )
             )
+        record_stage(
+            "delete_existing_rows",
+            delete_started_at,
+            replace_entire_target_scope=replace_entire_target_scope,
+            source_count=len(normalized_source_ids),
+            type_count=len(normalized_type_ids),
+        )
 
         generated_count = 0
         all_location_ids = [target_location_id] + normalized_source_ids
+        type_loop_started_at = perf_counter()
 
         for type_id in normalized_type_ids:
+            if cancellation_check is not None:
+                cancellation_check()
             item = session.get(Item, type_id)
             demand = session.scalar(
                 select(MarketDemandResolved).where(
@@ -100,18 +122,19 @@ class OpportunityGenerationService:
             if demand.buy_from_sell_yesterday <= 0:
                 continue
 
-            # Compute ESI traded volume (daily average) for this item at the target
-            esi_demand_period = session.scalar(
-                select(NpcStationDemandPeriod).where(
-                    NpcStationDemandPeriod.location_id == target_location_id,
-                    NpcStationDemandPeriod.type_id == type_id,
-                    NpcStationDemandPeriod.period_days == period_days,
-                )
-            )
+            # Show ESI traded volume using region-level market history for every target.
             esi_demand_day = 0.0
-            if esi_demand_period is not None:
-                esi_total = esi_demand_period.buy_from_sell_period + esi_demand_period.sell_to_buy_period
-                esi_demand_day = esi_total / normalized_period_days
+            history_rows = session.execute(
+                select(EsiHistoryDaily.volume)
+                .where(
+                    EsiHistoryDaily.region_id == target_location.region_id,
+                    EsiHistoryDaily.type_id == type_id,
+                )
+                .order_by(EsiHistoryDaily.date.desc())
+                .limit(normalized_period_days)
+            ).all()
+            if history_rows:
+                esi_demand_day = sum(int(volume) for (volume,) in history_rows) / normalized_period_days
 
             target_price = session.scalar(
                 select(MarketPricePeriod).where(
@@ -255,6 +278,14 @@ class OpportunityGenerationService:
                 )
                 generated_count += 1
 
+        record_stage(
+            "generate_item_rows",
+            type_loop_started_at,
+            type_count=len(normalized_type_ids),
+            generated_count=generated_count,
+        )
+
+        summary_started_at = perf_counter()
         session.flush()
         summary_rows = self._summaries_for_sources(
             session,
@@ -267,6 +298,12 @@ class OpportunityGenerationService:
             session.add(summary_row)
 
         session.commit()
+        record_stage(
+            "flush_summaries_commit",
+            summary_started_at,
+            generated_count=generated_count,
+            summary_count=len(summary_rows),
+        )
         return OpportunityGenerationResult(item_count=generated_count, summary_count=len(summary_rows))
 
     def _summaries_for_sources(

@@ -15,14 +15,22 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "opportunity_items",
-        sa.Column("esi_demand_day", sa.Float(), nullable=False, server_default="0"),
-    )
-    op.add_column(
-        "opportunity_source_summaries",
-        sa.Column("esi_demand_day_total", sa.Float(), nullable=False, server_default="0"),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
+    opportunity_item_columns = {column["name"] for column in inspector.get_columns("opportunity_items")}
+    if "esi_demand_day" not in opportunity_item_columns:
+        op.add_column(
+            "opportunity_items",
+            sa.Column("esi_demand_day", sa.Float(), nullable=False, server_default="0"),
+        )
+
+    summary_columns = {column["name"] for column in inspector.get_columns("opportunity_source_summaries")}
+    if "esi_demand_day_total" not in summary_columns:
+        op.add_column(
+            "opportunity_source_summaries",
+            sa.Column("esi_demand_day_total", sa.Float(), nullable=False, server_default="0"),
+        )
 
 
 def downgrade() -> None:

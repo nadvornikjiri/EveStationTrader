@@ -34,6 +34,7 @@ def make_item(
         item_volume_m3=5,
         shipping_cost=10,
         demand_source=demand_source,
+        esi_demand_day=8.0,
     )
 
 

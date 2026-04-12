@@ -27,6 +27,9 @@ export function SyncPage() {
   const cancelJob = useCancelSyncJob();
   const pendingJobType = runJob.isPending ? runJob.variables : null;
   const clearingJobType = clearData.isPending ? clearData.variables : null;
+  const activeJobTypes = Array.from(
+    new Set((jobs.data ?? []).filter((job) => job.status === "running" || job.status === "cancelling").map((job) => job.job_type)),
+  );
   const latestRun = runJob.data;
   const latestClear = clearData.data;
   const latestRunFailed = latestRun?.status === "failed";
@@ -82,6 +85,7 @@ export function SyncPage() {
         onClear={(jobType) => clearData.mutate(jobType)}
         isPending={runJob.isPending}
         pendingJobType={pendingJobType}
+        activeJobTypes={activeJobTypes}
         isClearing={clearData.isPending}
         clearingJobType={clearingJobType}
         lastMessage={latestRunSummary}
