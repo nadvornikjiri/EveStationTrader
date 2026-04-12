@@ -90,3 +90,13 @@ export type OpportunityItemDetail = {
   source_market_buy_orders: ItemOrderRow[];
   metrics: OpportunityItem;
 };
+
+export type ShoppingListEntry = {
+  type_id: number;
+  item_name: string;
+  quantity: number;
+  source_station_sell_price: number;
+  item_volume_m3: number;
+  target_demand_day: number;
+  source_station_name: string;
+};
