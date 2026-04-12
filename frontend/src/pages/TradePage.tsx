@@ -352,6 +352,7 @@ export function TradePage() {
         expandedRowsErrorMessage={itemRowsError}
         sortKey={sortKey}
         sortDirection={sortDirection}
+        shoppingListTypeIds={shoppingListTypeIds}
         onSortChange={handleSortChange}
         onToggleSource={(nextSourceId) => {
           startTransition(() => {
@@ -364,6 +365,7 @@ export function TradePage() {
           setExpandedRowRenderLimit((currentLimit) => currentLimit + EXPANDED_ROW_RENDER_INCREMENT);
         }}
         onSelectItem={setSelectedTypeId}
+        onToggleShoppingList={handleToggleShoppingList}
       />
       {sortedSummaries.length > 0 ? (
         <div className="panel pagination-panel" aria-label="Grouped source market pagination">

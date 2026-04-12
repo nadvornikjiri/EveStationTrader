@@ -41,10 +41,12 @@ type Props = {
   expandedRowsErrorMessage?: string | null;
   sortKey: GroupedSortKey;
   sortDirection: GroupedSortDirection;
+  shoppingListTypeIds: Set<number>;
   onSortChange: (sortKey: GroupedSortKey) => void;
   onToggleSource: (sourceId: number) => void;
   onShowMoreExpandedRows: () => void;
   onSelectItem: (typeId: number) => void;
+  onToggleShoppingList: (item: OpportunityItem, sourceStationName: string) => void;
 };
 
 const SORTABLE_COLUMNS: Array<{ key: GroupedSortKey; label: string }> = [
@@ -358,10 +360,12 @@ export function SourceSummaryTable({
   expandedRowsErrorMessage = null,
   sortKey,
   sortDirection,
+  shoppingListTypeIds,
   onSortChange,
   onToggleSource,
   onShowMoreExpandedRows,
   onSelectItem,
+  onToggleShoppingList,
 }: Props) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -430,6 +434,7 @@ export function SourceSummaryTable({
         <table className="data-table">
           <thead>
             <tr>
+              <th className="checkbox-col" />
               {SORTABLE_COLUMNS.map((column) => (
                 <th key={column.key}>
                   <button
@@ -448,15 +453,15 @@ export function SourceSummaryTable({
           <tbody>
             {rows.length === 0 && isLoading ? (
               <tr>
-                <td colSpan={22}>Loading source markets for this target...</td>
+                <td colSpan={23}>Loading source markets for this target...</td>
               </tr>
             ) : rows.length === 0 && errorMessage ? (
               <tr>
-                <td colSpan={22}>{errorMessage}</td>
+                <td colSpan={23}>{errorMessage}</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={22}>No computed source markets available for this target yet.</td>
+                <td colSpan={23}>No computed source markets available for this target yet.</td>
               </tr>
             ) : (
               sortedRows.flatMap((row) => {
@@ -466,6 +471,7 @@ export function SourceSummaryTable({
                     key={`source-${row.source_location_id}`}
                     className={isExpanded ? "selected-row grouped-source-row" : "grouped-source-row"}
                   >
+                    <td className="checkbox-col" />
                     <td>
                       <button
                         type="button"
@@ -495,7 +501,7 @@ export function SourceSummaryTable({
                 if (isExpandedRowsLoading) {
                   renderedRows.push(
                     <tr key={`loading-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={22}>Loading item opportunities for this source...</td>
+                      <td colSpan={23}>Loading item opportunities for this source...</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -504,7 +510,7 @@ export function SourceSummaryTable({
                 if (expandedRowsErrorMessage) {
                   renderedRows.push(
                     <tr key={`error-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={22}>{expandedRowsErrorMessage}</td>
+                      <td colSpan={23}>{expandedRowsErrorMessage}</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -513,7 +519,7 @@ export function SourceSummaryTable({
                 if (sortedExpandedRows.length === 0) {
                   renderedRows.push(
                     <tr key={`empty-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={22}>No item opportunities match the current filters for this source.</td>
+                      <td colSpan={23}>No item opportunities match the current filters for this source.</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -538,6 +544,17 @@ export function SourceSummaryTable({
                         });
                       }}
                     >
+                      <td
+                        className="checkbox-col"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={`Add ${item.item_name} to shopping list`}
+                          checked={shoppingListTypeIds.has(item.type_id)}
+                          onChange={() => onToggleShoppingList(item, row.source_market_name)}
+                        />
+                      </td>
                       <td>
                         <span className="grouped-item-label">{item.item_name}</span>
                       </td>
@@ -556,7 +573,7 @@ export function SourceSummaryTable({
                 if (visibleExpandedRows.length < sortedExpandedRows.length) {
                   renderedRows.push(
                     <tr key={`show-more-${row.source_location_id}`} className="grouped-item-row grouped-item-more-row">
-                      <td colSpan={22}>
+                      <td colSpan={23}>
                         <button
                           type="button"
                           className="inline-more-button"
