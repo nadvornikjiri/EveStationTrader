@@ -238,17 +238,26 @@ export function TradePage() {
     }
   };
 
+  const shoppingListSourceId = useMemo(() => {
+    if (shoppingList.length === 0) return null;
+    return shoppingList[0].source_location_id;
+  }, [shoppingList]);
+
   const shoppingListTypeIds = useMemo(() => new Set(shoppingList.map((e) => e.type_id)), [shoppingList]);
 
-  const handleToggleShoppingList = (item: OpportunityItem, sourceStationName: string) => {
+  const handleToggleShoppingList = (item: OpportunityItem, sourceStationName: string, sourceLocationId: number) => {
     setShoppingList((current) => {
-      const exists = current.some((e) => e.type_id === item.type_id);
+      const exists = current.some((e) => e.type_id === item.type_id && e.source_location_id === sourceLocationId);
       if (exists) {
-        const next = current.filter((e) => e.type_id !== item.type_id);
+        const next = current.filter((e) => !(e.type_id === item.type_id && e.source_location_id === sourceLocationId));
         if (next.length === 0) {
           setIsShoppingListOpen(false);
         }
         return next;
+      }
+      // Lock to one source station
+      if (current.length > 0 && current[0].source_location_id !== sourceLocationId) {
+        return current;
       }
       const entry: ShoppingListEntry = {
         type_id: item.type_id,
@@ -258,6 +267,7 @@ export function TradePage() {
         item_volume_m3: item.item_volume_m3,
         target_demand_day: item.target_demand_day,
         source_station_name: sourceStationName,
+        source_location_id: sourceLocationId,
       };
       if (current.length === 0) {
         setIsShoppingListOpen(true);
@@ -287,9 +297,27 @@ export function TradePage() {
     setIsShoppingListOpen(false);
   };
 
-  const handleExportMultibuy = () => {
+  const handleExportMultibuy = async (): Promise<boolean> => {
     const text = shoppingList.map((e) => `${e.item_name} ${e.quantity}`).join("\n");
-    void navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback for older browsers / non-secure contexts
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return true;
+      } catch {
+        return false;
+      }
+    }
   };
 
   return (
@@ -354,6 +382,7 @@ export function TradePage() {
         sortKey={sortKey}
         sortDirection={sortDirection}
         shoppingListTypeIds={shoppingListTypeIds}
+        shoppingListSourceId={shoppingListSourceId}
         onSortChange={handleSortChange}
         onToggleSource={(nextSourceId) => {
           startTransition(() => {

@@ -9,7 +9,7 @@ type Props = {
   onRemove: (typeId: number) => void;
   onUpdateQty: (typeId: number, quantity: number) => void;
   onClearAll: () => void;
-  onExportMultibuy: () => void;
+  onExportMultibuy: () => Promise<boolean>;
 };
 
 function formatIsk(value: number): string {
@@ -44,7 +44,7 @@ export function ShoppingListOverlay({
   onClearAll,
   onExportMultibuy,
 }: Props) {
-  const [copied, setCopied] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   if (entries.length === 0) {
     return null;
@@ -56,10 +56,14 @@ export function ShoppingListOverlay({
   const totalPrice = entries.reduce((sum, e) => sum + e.quantity * e.source_station_sell_price, 0);
   const totalVolume = entries.reduce((sum, e) => sum + e.quantity * e.item_volume_m3, 0);
 
-  const handleExport = () => {
-    onExportMultibuy();
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const handleExport = async () => {
+    const success = await onExportMultibuy();
+    if (success) {
+      setToast({ message: "Copied to clipboard", type: "success" });
+    } else {
+      setToast({ message: "Failed to copy to clipboard", type: "error" });
+    }
+    setTimeout(() => setToast(null), 2500);
   };
 
   const handleClearAll = () => {
@@ -89,9 +93,9 @@ export function ShoppingListOverlay({
           <button
             type="button"
             className="shopping-list-overlay__export-btn"
-            onClick={handleExport}
+            onClick={() => { void handleExport(); }}
           >
-            {copied ? "Copied!" : "Export to Multibuy"}
+            Export to Multibuy
           </button>
           <button
             type="button"
@@ -166,6 +170,11 @@ export function ShoppingListOverlay({
           </tbody>
         </table>
       </div>
+      {toast ? (
+        <div className={`shopping-list-toast shopping-list-toast--${toast.type}`}>
+          {toast.message}
+        </div>
+      ) : null}
     </div>
   );
 }

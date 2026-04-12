@@ -42,11 +42,12 @@ type Props = {
   sortKey: GroupedSortKey;
   sortDirection: GroupedSortDirection;
   shoppingListTypeIds: Set<number>;
+  shoppingListSourceId: number | null;
   onSortChange: (sortKey: GroupedSortKey) => void;
   onToggleSource: (sourceId: number) => void;
   onShowMoreExpandedRows: () => void;
   onSelectItem: (typeId: number) => void;
-  onToggleShoppingList: (item: OpportunityItem, sourceStationName: string) => void;
+  onToggleShoppingList: (item: OpportunityItem, sourceStationName: string, sourceLocationId: number) => void;
 };
 
 const SORTABLE_COLUMNS: Array<{ key: GroupedSortKey; label: string }> = [
@@ -361,6 +362,7 @@ export function SourceSummaryTable({
   sortKey,
   sortDirection,
   shoppingListTypeIds,
+  shoppingListSourceId,
   onSortChange,
   onToggleSource,
   onShowMoreExpandedRows,
@@ -551,8 +553,9 @@ export function SourceSummaryTable({
                         <input
                           type="checkbox"
                           aria-label={`Add ${item.item_name} to shopping list`}
-                          checked={shoppingListTypeIds.has(item.type_id)}
-                          onChange={() => onToggleShoppingList(item, row.source_market_name)}
+                          checked={shoppingListTypeIds.has(item.type_id) && (shoppingListSourceId === null || shoppingListSourceId === row.source_location_id)}
+                          disabled={shoppingListSourceId !== null && shoppingListSourceId !== row.source_location_id}
+                          onChange={() => onToggleShoppingList(item, row.source_market_name, row.source_location_id)}
                         />
                       </td>
                       <td>

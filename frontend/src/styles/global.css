@@ -732,6 +732,42 @@ button:disabled {
   color: #ff8f8f;
 }
 
+.shopping-list-toast {
+  position: absolute;
+  top: -44px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  pointer-events: none;
+  animation: shopping-list-toast-fade 2.5s ease-in-out;
+  white-space: nowrap;
+  z-index: 110;
+}
+
+.shopping-list-toast--success {
+  background: rgba(46, 160, 67, 0.92);
+  color: #fff;
+  border: 1px solid rgba(46, 160, 67, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.shopping-list-toast--error {
+  background: rgba(220, 60, 60, 0.92);
+  color: #fff;
+  border: 1px solid rgba(220, 60, 60, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes shopping-list-toast-fade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  80% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;

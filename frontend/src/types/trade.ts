@@ -99,4 +99,5 @@ export type ShoppingListEntry = {
   item_volume_m3: number;
   target_demand_day: number;
   source_station_name: string;
+  source_location_id: number;
 };
