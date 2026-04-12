@@ -2,6 +2,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 
 import { refreshTradeOpportunities } from "../api/trade";
 import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
+import { ShoppingListOverlay } from "../components/trade/ShoppingListOverlay";
 import {
   SourceSummaryTable,
   type GroupedSortDirection,
@@ -428,6 +429,15 @@ export function TradePage() {
         </div>
       ) : null}
       <ItemDetailPanel detail={itemDetail.data} isLoading={itemDetail.isLoading} />
+      <ShoppingListOverlay
+        entries={shoppingList}
+        isOpen={isShoppingListOpen}
+        onToggleOpen={() => setIsShoppingListOpen((open) => !open)}
+        onRemove={handleRemoveFromShoppingList}
+        onUpdateQty={handleUpdateShoppingListQty}
+        onClearAll={handleClearShoppingList}
+        onExportMultibuy={handleExportMultibuy}
+      />
     </div>
   );
 }
