@@ -17,7 +17,7 @@ import {
   useSourceSummaries,
   useTargets,
 } from "../hooks/useTradeData";
-import type { OpportunityItem, TradeFilters } from "../types/trade";
+import type { OpportunityItem, ShoppingListEntry, TradeFilters } from "../types/trade";
 
 const INITIAL_EXPANDED_ROW_RENDER_LIMIT = 200;
 const EXPANDED_ROW_RENDER_INCREMENT = 200;
@@ -68,6 +68,8 @@ export function TradePage() {
   const [expandedRowRenderLimit, setExpandedRowRenderLimit] = useState(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [shoppingList, setShoppingList] = useState<ShoppingListEntry[]>([]);
+  const [isShoppingListOpen, setIsShoppingListOpen] = useState(false);
   const [filtersInitialized, setFiltersInitialized] = useState(false);
   const periodDays = useMemo(() => {
     const configuredPeriod = Number(settings.data?.default_analysis_period_days ?? 14);
@@ -233,6 +235,60 @@ export function TradePage() {
     } finally {
       setIsRefreshing(false);
     }
+  };
+
+  const shoppingListTypeIds = useMemo(() => new Set(shoppingList.map((e) => e.type_id)), [shoppingList]);
+
+  const handleToggleShoppingList = (item: OpportunityItem, sourceStationName: string) => {
+    setShoppingList((current) => {
+      const exists = current.some((e) => e.type_id === item.type_id);
+      if (exists) {
+        const next = current.filter((e) => e.type_id !== item.type_id);
+        if (next.length === 0) {
+          setIsShoppingListOpen(false);
+        }
+        return next;
+      }
+      const entry: ShoppingListEntry = {
+        type_id: item.type_id,
+        item_name: item.item_name,
+        quantity: Math.max(1, Math.floor(item.target_demand_day)),
+        source_station_sell_price: item.source_station_sell_price,
+        item_volume_m3: item.item_volume_m3,
+        target_demand_day: item.target_demand_day,
+        source_station_name: sourceStationName,
+      };
+      if (current.length === 0) {
+        setIsShoppingListOpen(true);
+      }
+      return [...current, entry];
+    });
+  };
+
+  const handleRemoveFromShoppingList = (typeId: number) => {
+    setShoppingList((current) => {
+      const next = current.filter((e) => e.type_id !== typeId);
+      if (next.length === 0) {
+        setIsShoppingListOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateShoppingListQty = (typeId: number, quantity: number) => {
+    setShoppingList((current) =>
+      current.map((e) => (e.type_id === typeId ? { ...e, quantity: Math.max(1, quantity) } : e)),
+    );
+  };
+
+  const handleClearShoppingList = () => {
+    setShoppingList([]);
+    setIsShoppingListOpen(false);
+  };
+
+  const handleExportMultibuy = () => {
+    const text = shoppingList.map((e) => `${e.item_name} ${e.quantity}`).join("\n");
+    void navigator.clipboard.writeText(text);
   };
 
   return (
