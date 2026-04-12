@@ -6,15 +6,21 @@ from sqlalchemy.orm import Session
 
 from app.models.all_models import (
     CharacterAccessibleStructure,
+    CharacterAsset,
+    CharacterOrder,
     EsiCharacter,
+    EsiCharacterToken,
     EsiCharacterSyncState,
+    Item,
     Location,
     Region,
+    Station,
     System,
     TrackedStructure,
     User,
 )
 from app.services.characters.service import CharacterService, DiscoveredStructureInput
+from app.services.esi.client import EsiAccessibleStructureRecord, EsiCharacterAssetRecord, EsiCharacterOrderRecord
 from tests.db_test_utils import build_test_session
 
 pytestmark = pytest.mark.integration
@@ -22,6 +28,42 @@ pytestmark = pytest.mark.integration
 
 def build_session() -> Session:
     return build_test_session()
+
+
+class MockCharacterSyncEsiClient:
+    def fetch_character_assets(self, access_token: str) -> list[EsiCharacterAssetRecord]:
+        assert access_token == "test-access-token"
+        return [
+            {"type_id": 34, "quantity": 11, "location_id": 60003760, "location_name": "Jita IV - Moon 4"},
+        ]
+
+    def fetch_character_orders(self, access_token: str) -> list[EsiCharacterOrderRecord]:
+        assert access_token == "test-access-token"
+        return [
+            {
+                "order_id": 7001,
+                "type_id": 34,
+                "location_id": 60003760,
+                "volume_remain": 9,
+                "is_buy_order": False,
+                "price": 120.0,
+                "issued": "2026-03-21T10:00:00+00:00",
+                "duration": 90,
+            }
+        ]
+
+    def fetch_accessible_structures(self, access_token: str) -> list[EsiAccessibleStructureRecord]:
+        assert access_token == "test-access-token"
+        return [
+            {
+                "structure_id": 1022734985687,
+                "structure_name": "Jita Sync Relay",
+                "system_name": "Jita",
+                "region_name": "The Forge",
+                "confidence_score": 0.64,
+                "polling_tier": "user",
+            }
+        ]
 
 
 def seed_character_data(session: Session) -> None:
@@ -36,6 +78,26 @@ def seed_character_data(session: Session) -> None:
         ]
     )
     session.flush()
+    jita_system = session.scalar(select(System).where(System.system_id == 30000142))
+    assert jita_system is not None
+    session.add_all(
+        [
+            Location(
+                location_id=60003760,
+                location_type="npc_station",
+                system_id=jita_system.id,
+                region_id=region.id,
+                name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+            ),
+            Station(
+                station_id=60003760,
+                system_id=jita_system.id,
+                region_id=region.id,
+                name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+            ),
+            Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material"),
+        ]
+    )
 
     user = User(primary_character_id=None)
     session.add(user)
@@ -70,6 +132,16 @@ def seed_character_data(session: Session) -> None:
             orders_sync_status="stale",
             skills_sync_status="pending",
             structures_sync_status="ok",
+        )
+    )
+    first_character_id = session.scalar(select(EsiCharacter.id).where(EsiCharacter.character_id == 90000042))
+    assert first_character_id is not None
+    session.add(
+        EsiCharacterToken(
+            character_id=first_character_id,
+            access_token="test-access-token",
+            refresh_token="refresh-token",
+            expires_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
         )
     )
     session.add_all(
@@ -380,7 +452,7 @@ def test_discover_character_accessible_structures_raises_for_missing_character()
 def test_sync_character_persists_discovery_and_updates_sync_state() -> None:
     session = build_session()
     seed_character_data(session)
-    service = CharacterService(session_factory=lambda: session)
+    service = CharacterService(session_factory=lambda: session, esi_client=MockCharacterSyncEsiClient())
 
     character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
     assert character is not None
@@ -391,7 +463,7 @@ def test_sync_character_persists_discovery_and_updates_sync_state() -> None:
 
     discovered = service.sync_character(90000042)
 
-    assert len(discovered) == 3
+    assert len(discovered) == 1
     rows = session.scalars(select(CharacterAccessibleStructure).order_by(CharacterAccessibleStructure.structure_id)).all()
     assert [row.structure_id for row in rows] == [1022734985679, 1022734985680, 1022734985687]
     assert rows[0].tracking_enabled is True
@@ -399,15 +471,23 @@ def test_sync_character_persists_discovery_and_updates_sync_state() -> None:
 
     sync_state = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
     assert sync_state is not None
+    assert sync_state.assets_sync_status == "ok"
+    assert sync_state.orders_sync_status == "ok"
     assert sync_state.structures_sync_status == "ok"
     assert sync_state.last_successful_sync is not None
     assert sync_state.last_successful_sync != before_last_successful_sync
+    assets = session.scalars(select(CharacterAsset)).all()
+    orders = session.scalars(select(CharacterOrder)).all()
+    assert len(assets) == 1
+    assert assets[0].quantity == 11
+    assert len(orders) == 1
+    assert orders[0].volume_remain == 9
 
 
 def test_sync_character_is_idempotent_and_raises_for_missing_character() -> None:
     session = build_session()
     seed_character_data(session)
-    service = CharacterService(session_factory=lambda: session)
+    service = CharacterService(session_factory=lambda: session, esi_client=MockCharacterSyncEsiClient())
 
     character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
     assert character is not None
@@ -415,8 +495,8 @@ def test_sync_character_is_idempotent_and_raises_for_missing_character() -> None
     first = service.sync_character(90000042)
     second = service.sync_character(90000042)
 
-    assert len(first) == 3
-    assert len(second) == 3
+    assert len(first) == 1
+    assert len(second) == 1
 
     rows = session.scalars(select(CharacterAccessibleStructure).order_by(CharacterAccessibleStructure.structure_id)).all()
     assert [row.structure_id for row in rows] == [1022734985679, 1022734985680, 1022734985687]

@@ -75,6 +75,33 @@ class EsiRegionalOrderRecord(TypedDict):
     duration: int
 
 
+class EsiCharacterAssetRecord(TypedDict):
+    type_id: int
+    quantity: int
+    location_id: int | None
+    location_name: str | None
+
+
+class EsiCharacterOrderRecord(TypedDict):
+    order_id: int
+    type_id: int
+    location_id: int | None
+    volume_remain: int
+    is_buy_order: bool
+    price: float | None
+    issued: str | None
+    duration: int | None
+
+
+class EsiAccessibleStructureRecord(TypedDict):
+    structure_id: int
+    structure_name: str
+    system_name: str | None
+    region_name: str | None
+    confidence_score: float
+    polling_tier: str
+
+
 class EsiClient:
     # Shared rate limit state across all EsiClient instances
     rate_limit_state: EsiRateLimitState = EsiRateLimitState()
@@ -178,6 +205,43 @@ class EsiClient:
             "character_name": "Demo Trader",
             "corporation_name": "Open Traders Union",
         }
+
+    def fetch_character_assets(self, access_token: str) -> list[EsiCharacterAssetRecord]:
+        del access_token
+        return []
+
+    def fetch_character_orders(self, access_token: str) -> list[EsiCharacterOrderRecord]:
+        del access_token
+        return []
+
+    def fetch_accessible_structures(self, access_token: str) -> list[EsiAccessibleStructureRecord]:
+        del access_token
+        return [
+            {
+                "structure_id": 1022734985679,
+                "structure_name": "Perimeter Market Keepstar",
+                "system_name": "Perimeter",
+                "region_name": "The Forge",
+                "confidence_score": 0.88,
+                "polling_tier": "core",
+            },
+            {
+                "structure_id": 1022734985687,
+                "structure_name": "Jita Sync Relay",
+                "system_name": "Jita",
+                "region_name": "The Forge",
+                "confidence_score": 0.64,
+                "polling_tier": "user",
+            },
+            {
+                "structure_id": 1022734985680,
+                "structure_name": "Jita Freeport",
+                "system_name": "Jita",
+                "region_name": "The Forge",
+                "confidence_score": 0.42,
+                "polling_tier": "user",
+            },
+        ]
 
     def fetch_universe_regions(self) -> list[RegionSeed]:
         with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:

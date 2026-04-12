@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
+from app.api.schemas.trade import InTransitAssetUpsertRequest
 from app.models.all_models import (
     AdamMarketOrdersTradeRaw,
     AdamMarketPriceHistoryDaily,
@@ -139,6 +140,33 @@ def test_list_target_options_returns_all_station_and_structure_locations() -> No
     rows = repo.list_target_options()
 
     assert [row.location_id for row in rows] == [60008494, 60003760, 1022734985679]
+
+
+def test_upsert_and_list_in_transit_assets_round_trips_with_display_names() -> None:
+    session = build_session()
+    seed_trade_entities(session)
+    repo = TradeRepository(session_factory=lambda: session)
+
+    saved = repo.upsert_in_transit_asset(
+        InTransitAssetUpsertRequest(
+            source_location_id=60008494,
+            target_location_id=60003760,
+            type_id=34,
+            quantity=7,
+            note="PushX load",
+        )
+    )
+    listed = repo.list_in_transit_assets(60003760)
+
+    assert saved.source_location_id == 60008494
+    assert saved.target_location_id == 60003760
+    assert saved.type_id == 34
+    assert saved.quantity == 7
+    assert saved.source_market_name == "Amarr VIII (Oris) - Emperor Family Academy"
+    assert saved.target_market_name == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+    assert len(listed) == 1
+    assert listed[0].id == saved.id
+    assert listed[0].note == "PushX load"
 
 
 def test_list_source_summaries_reads_computed_rows_when_present() -> None:

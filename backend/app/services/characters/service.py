@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -9,12 +10,22 @@ from app.api.schemas.characters import AccessibleStructureItem, CharacterDetail,
 from app.db.session import SessionLocal
 from app.models.all_models import (
     CharacterAccessibleStructure,
+    CharacterAsset,
+    CharacterOrder,
     EsiCharacter,
     EsiCharacterSyncState,
+    EsiCharacterToken,
     Location,
+    Item,
     Region,
     System,
     TrackedStructure,
+)
+from app.services.esi.client import (
+    EsiAccessibleStructureRecord,
+    EsiCharacterAssetRecord,
+    EsiCharacterOrderRecord,
+    EsiClient,
 )
 
 
@@ -31,9 +42,23 @@ class DiscoveredStructureInput:
     confidence_score: float = 0.0
 
 
+class CharacterSyncCapableEsiClient(Protocol):
+    def fetch_character_assets(self, access_token: str) -> list[EsiCharacterAssetRecord]: ...
+
+    def fetch_character_orders(self, access_token: str) -> list[EsiCharacterOrderRecord]: ...
+
+    def fetch_accessible_structures(self, access_token: str) -> list[EsiAccessibleStructureRecord]: ...
+
+
 class CharacterService:
-    def __init__(self, *, session_factory: Callable[[], Session] = SessionLocal) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session] = SessionLocal,
+        esi_client: CharacterSyncCapableEsiClient | None = None,
+    ) -> None:
         self.session_factory = session_factory
+        self.esi_client = esi_client or EsiClient()
 
     def enable_character_structure_tracking(self, character_id: int, structure_id: int) -> CharacterAccessibleStructure:
         session = self.session_factory()
@@ -66,46 +91,25 @@ class CharacterService:
             character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
             if character is None:
                 raise LookupError(f"Character {character_id} was not found.")
+            token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
+            access_token = token.access_token if token is not None else ""
 
-            discovered_structures = [
-                DiscoveredStructureInput(
-                    structure_id=1022734985679,
-                    structure_name="Perimeter Market Keepstar",
-                    system_name="Perimeter",
-                    region_name="The Forge",
-                    access_verified_at=datetime.now(UTC),
-                    tracking_enabled=False,
-                    polling_tier="core",
-                    last_snapshot_at=datetime.now(UTC),
-                    confidence_score=0.88,
+            self._sync_character_assets(
+                session,
+                character=character,
+                fetched_assets=self.esi_client.fetch_character_assets(access_token),
+            )
+            self._sync_character_orders(
+                session,
+                character=character,
+                fetched_orders=self.esi_client.fetch_character_orders(access_token),
+            )
+            persisted_structures = self._persist_discovered_structures(
+                session,
+                character=character,
+                discovered_structures=self._build_discovered_structure_inputs(
+                    self.esi_client.fetch_accessible_structures(access_token)
                 ),
-                DiscoveredStructureInput(
-                    structure_id=1022734985687,
-                    structure_name="Jita Sync Relay",
-                    system_name="Jita",
-                    region_name="The Forge",
-                    access_verified_at=datetime.now(UTC),
-                    tracking_enabled=False,
-                    polling_tier="user",
-                    last_snapshot_at=datetime.now(UTC),
-                    confidence_score=0.64,
-                ),
-                DiscoveredStructureInput(
-                    structure_id=1022734985680,
-                    structure_name="Jita Freeport",
-                    system_name="Jita",
-                    region_name="The Forge",
-                    access_verified_at=datetime.now(UTC),
-                    tracking_enabled=False,
-                    polling_tier="user",
-                    last_snapshot_at=datetime.now(UTC),
-                    confidence_score=0.42,
-                ),
-            ]
-
-            persisted_structures = self.discover_character_accessible_structures(
-                character.character_id,
-                discovered_structures,
             )
 
             sync_state = session.scalar(
@@ -116,6 +120,8 @@ class CharacterService:
                 session.add(sync_state)
 
             sync_state.last_successful_sync = datetime.now(UTC)
+            sync_state.assets_sync_status = "ok"
+            sync_state.orders_sync_status = "ok"
             sync_state.structures_sync_status = "ok"
             session.commit()
             session.refresh(sync_state)
@@ -133,56 +139,11 @@ class CharacterService:
             character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
             if character is None:
                 raise LookupError(f"Character {character_id} was not found.")
-
-            discovered_by_structure_id: dict[int, DiscoveredStructureInput] = {}
-            for discovered_structure in discovered_structures:
-                discovered_by_structure_id[discovered_structure.structure_id] = discovered_structure
-
-            persisted_structures: list[CharacterAccessibleStructure] = []
-            for structure_id in sorted(discovered_by_structure_id):
-                discovered_structure = discovered_by_structure_id[structure_id]
-                persisted_structure = session.scalar(
-                    select(CharacterAccessibleStructure).where(
-                        CharacterAccessibleStructure.character_id == character.id,
-                        CharacterAccessibleStructure.structure_id == structure_id,
-                    )
-                )
-                if persisted_structure is None:
-                    persisted_structure = CharacterAccessibleStructure(
-                        character_id=character.id,
-                        structure_id=structure_id,
-                        structure_name=discovered_structure.structure_name,
-                        system_name=discovered_structure.system_name,
-                        region_name=discovered_structure.region_name,
-                        access_verified_at=(
-                            discovered_structure.access_verified_at
-                            if discovered_structure.access_verified_at is not None
-                            else datetime.now(UTC)
-                        ),
-                        tracking_enabled=discovered_structure.tracking_enabled,
-                        polling_tier=discovered_structure.polling_tier,
-                        last_snapshot_at=discovered_structure.last_snapshot_at,
-                        confidence_score=discovered_structure.confidence_score,
-                    )
-                    session.add(persisted_structure)
-                else:
-                    persisted_structure.structure_name = discovered_structure.structure_name
-                    persisted_structure.system_name = discovered_structure.system_name
-                    persisted_structure.region_name = discovered_structure.region_name
-                    if discovered_structure.access_verified_at is not None:
-                        persisted_structure.access_verified_at = discovered_structure.access_verified_at
-                    persisted_structure.tracking_enabled = (
-                        persisted_structure.tracking_enabled or discovered_structure.tracking_enabled
-                    )
-                    persisted_structure.polling_tier = discovered_structure.polling_tier
-                    persisted_structure.last_snapshot_at = discovered_structure.last_snapshot_at
-                    persisted_structure.confidence_score = discovered_structure.confidence_score
-
-                persisted_structures.append(persisted_structure)
-
-            for persisted_structure in persisted_structures:
-                if persisted_structure.tracking_enabled:
-                    self._upsert_tracked_structure(session, character.id, persisted_structure)
+            persisted_structures = self._persist_discovered_structures(
+                session,
+                character=character,
+                discovered_structures=discovered_structures,
+            )
 
             session.commit()
             for persisted_structure in persisted_structures:
@@ -311,6 +272,161 @@ class CharacterService:
             last_snapshot_at=structure.last_snapshot_at,
             confidence_score=structure.confidence_score,
         )
+
+    def _sync_character_assets(
+        self,
+        session: Session,
+        *,
+        character: EsiCharacter,
+        fetched_assets: Iterable[EsiCharacterAssetRecord],
+    ) -> None:
+        session.query(CharacterAsset).filter(CharacterAsset.character_id == character.id).delete()
+
+        resolved_item_ids = {
+            type_id: item_id
+            for type_id, item_id in session.execute(select(Item.type_id, Item.id)).all()
+        }
+        resolved_location_ids = {
+            location_id: resolved_id
+            for location_id, resolved_id in session.execute(select(Location.location_id, Location.id)).all()
+        }
+        for asset in fetched_assets:
+            external_type_id = int(asset["type_id"])
+            resolved_type_id = resolved_item_ids.get(external_type_id)
+            if resolved_type_id is None:
+                continue
+            external_location_id = asset.get("location_id")
+            session.add(
+                CharacterAsset(
+                    character_id=character.id,
+                    type_id=resolved_type_id,
+                    quantity=max(int(asset["quantity"]), 0),
+                    external_location_id=external_location_id,
+                    resolved_location_id=resolved_location_ids.get(external_location_id) if external_location_id else None,
+                    location_name=asset.get("location_name"),
+                )
+            )
+
+    def _sync_character_orders(
+        self,
+        session: Session,
+        *,
+        character: EsiCharacter,
+        fetched_orders: Iterable[EsiCharacterOrderRecord],
+    ) -> None:
+        session.query(CharacterOrder).filter(CharacterOrder.character_id == character.id).delete()
+
+        resolved_item_ids = {
+            type_id: item_id
+            for type_id, item_id in session.execute(select(Item.type_id, Item.id)).all()
+        }
+        resolved_location_ids = {
+            location_id: resolved_id
+            for location_id, resolved_id in session.execute(select(Location.location_id, Location.id)).all()
+        }
+        for order in fetched_orders:
+            external_type_id = int(order["type_id"])
+            resolved_type_id = resolved_item_ids.get(external_type_id)
+            if resolved_type_id is None:
+                continue
+            external_location_id = order.get("location_id")
+            issued_raw = order.get("issued")
+            issued_at = datetime.fromisoformat(issued_raw) if isinstance(issued_raw, str) else None
+            price_raw = order.get("price")
+            duration_raw = order.get("duration")
+            session.add(
+                CharacterOrder(
+                    character_id=character.id,
+                    order_id=int(order["order_id"]),
+                    type_id=resolved_type_id,
+                    volume_remain=max(int(order["volume_remain"]), 0),
+                    is_buy_order=bool(order["is_buy_order"]),
+                    price=float(price_raw) if price_raw is not None else None,
+                    external_location_id=external_location_id,
+                    resolved_location_id=resolved_location_ids.get(external_location_id) if external_location_id else None,
+                    issued=issued_at,
+                    duration=int(duration_raw) if duration_raw is not None else None,
+                )
+            )
+
+    def _build_discovered_structure_inputs(
+        self,
+        structures: Iterable[EsiAccessibleStructureRecord],
+    ) -> list[DiscoveredStructureInput]:
+        now = datetime.now(UTC)
+        return [
+            DiscoveredStructureInput(
+                structure_id=int(structure["structure_id"]),
+                structure_name=str(structure["structure_name"]),
+                system_name=str(structure["system_name"]) if structure.get("system_name") is not None else None,
+                region_name=str(structure["region_name"]) if structure.get("region_name") is not None else None,
+                access_verified_at=now,
+                tracking_enabled=False,
+                polling_tier=str(structure.get("polling_tier") or "user"),
+                last_snapshot_at=now,
+                confidence_score=float(structure.get("confidence_score") or 0.0),
+            )
+            for structure in structures
+        ]
+
+    def _persist_discovered_structures(
+        self,
+        session: Session,
+        *,
+        character: EsiCharacter,
+        discovered_structures: Iterable[DiscoveredStructureInput],
+    ) -> list[CharacterAccessibleStructure]:
+        discovered_by_structure_id: dict[int, DiscoveredStructureInput] = {}
+        for discovered_structure in discovered_structures:
+            discovered_by_structure_id[discovered_structure.structure_id] = discovered_structure
+
+        persisted_structures: list[CharacterAccessibleStructure] = []
+        for structure_id in sorted(discovered_by_structure_id):
+            discovered_structure = discovered_by_structure_id[structure_id]
+            persisted_structure = session.scalar(
+                select(CharacterAccessibleStructure).where(
+                    CharacterAccessibleStructure.character_id == character.id,
+                    CharacterAccessibleStructure.structure_id == structure_id,
+                )
+            )
+            if persisted_structure is None:
+                persisted_structure = CharacterAccessibleStructure(
+                    character_id=character.id,
+                    structure_id=structure_id,
+                    structure_name=discovered_structure.structure_name,
+                    system_name=discovered_structure.system_name,
+                    region_name=discovered_structure.region_name,
+                    access_verified_at=(
+                        discovered_structure.access_verified_at
+                        if discovered_structure.access_verified_at is not None
+                        else datetime.now(UTC)
+                    ),
+                    tracking_enabled=discovered_structure.tracking_enabled,
+                    polling_tier=discovered_structure.polling_tier,
+                    last_snapshot_at=discovered_structure.last_snapshot_at,
+                    confidence_score=discovered_structure.confidence_score,
+                )
+                session.add(persisted_structure)
+            else:
+                persisted_structure.structure_name = discovered_structure.structure_name
+                persisted_structure.system_name = discovered_structure.system_name
+                persisted_structure.region_name = discovered_structure.region_name
+                if discovered_structure.access_verified_at is not None:
+                    persisted_structure.access_verified_at = discovered_structure.access_verified_at
+                persisted_structure.tracking_enabled = (
+                    persisted_structure.tracking_enabled or discovered_structure.tracking_enabled
+                )
+                persisted_structure.polling_tier = discovered_structure.polling_tier
+                persisted_structure.last_snapshot_at = discovered_structure.last_snapshot_at
+                persisted_structure.confidence_score = discovered_structure.confidence_score
+
+            persisted_structures.append(persisted_structure)
+
+        for persisted_structure in persisted_structures:
+            if persisted_structure.tracking_enabled:
+                self._upsert_tracked_structure(session, character.id, persisted_structure)
+
+        return persisted_structures
 
     def _split_scopes(self, granted_scopes: str) -> list[str]:
         return granted_scopes.split() if granted_scopes else []

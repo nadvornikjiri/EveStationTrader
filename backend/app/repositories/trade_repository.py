@@ -6,6 +6,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.orm import Session
 
 from app.api.schemas.trade import (
+    InTransitAssetRecord,
+    InTransitAssetUpsertRequest,
     ItemOrderRow,
     OpportunityItemDetail,
     OpportunityItemRow,
@@ -756,6 +758,7 @@ class TradeRepository:
                 item_volume_m3=item.item_volume_m3,
                 shipping_cost=item.shipping_cost,
                 demand_source=item.demand_source,
+                esi_demand_day=item.esi_demand_day,
             )
 
             target_sell_orders = self._query_orders(
@@ -778,6 +781,136 @@ class TradeRepository:
             source_market_buy_orders=source_buy_orders,
             metrics=metrics,
         )
+
+    def list_in_transit_assets(self, target_location_id: int) -> list[InTransitAssetRecord]:
+        from app.models.all_models import InTransitAsset, Item, Location, Station
+
+        session = self.session_factory()
+        try:
+            resolved_target_location_id = self._resolve_location_id(session, target_location_id)
+            if resolved_target_location_id is None:
+                return []
+
+            source_name = self._display_location_name(Location.name, Station.name)
+            target_location = Location.__table__.alias("target_location")
+            target_station = Station.__table__.alias("target_station")
+            target_name = self._display_location_name(target_location.c.name, target_station.c.name)
+
+            rows = session.execute(
+                select(
+                    InTransitAsset.id,
+                    Location.location_id,
+                    source_name,
+                    target_location.c.location_id,
+                    target_name,
+                    Item.type_id,
+                    Item.name,
+                    InTransitAsset.quantity,
+                    InTransitAsset.note,
+                    InTransitAsset.created_at,
+                    InTransitAsset.updated_at,
+                )
+                .join(Location, Location.id == InTransitAsset.source_location_id)
+                .outerjoin(Station, Station.station_id == Location.location_id)
+                .join(target_location, target_location.c.id == InTransitAsset.target_location_id)
+                .outerjoin(target_station, target_station.c.station_id == target_location.c.location_id)
+                .join(Item, Item.id == InTransitAsset.type_id)
+                .where(InTransitAsset.target_location_id == resolved_target_location_id)
+                .order_by(Location.location_id.asc(), Item.name.asc())
+            ).all()
+            return [
+                InTransitAssetRecord(
+                    id=entry_id,
+                    source_location_id=source_external_location_id,
+                    source_market_name=source_market_name,
+                    target_location_id=target_external_location_id,
+                    target_market_name=target_market_name,
+                    type_id=external_type_id,
+                    item_name=item_name,
+                    quantity=quantity,
+                    note=note,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+                for (
+                    entry_id,
+                    source_external_location_id,
+                    source_market_name,
+                    target_external_location_id,
+                    target_market_name,
+                    external_type_id,
+                    item_name,
+                    quantity,
+                    note,
+                    created_at,
+                    updated_at,
+                ) in rows
+            ]
+        finally:
+            session.close()
+
+    def upsert_in_transit_asset(self, payload: InTransitAssetUpsertRequest) -> InTransitAssetRecord:
+        from app.models.all_models import InTransitAsset
+
+        session = self.session_factory()
+        try:
+            resolved_source_location_id = self._resolve_location_id(session, payload.source_location_id)
+            resolved_target_location_id = self._resolve_location_id(session, payload.target_location_id)
+            resolved_type_id = self._resolve_type_id(session, payload.type_id)
+            if resolved_source_location_id is None:
+                raise LookupError(f"Unknown source location {payload.source_location_id}.")
+            if resolved_target_location_id is None:
+                raise LookupError(f"Unknown target location {payload.target_location_id}.")
+            if resolved_type_id is None:
+                raise LookupError(f"Unknown item type {payload.type_id}.")
+            if payload.quantity < 1:
+                raise ValueError("In-transit quantity must be at least 1.")
+
+            entry = session.scalar(
+                select(InTransitAsset).where(
+                    InTransitAsset.source_location_id == resolved_source_location_id,
+                    InTransitAsset.target_location_id == resolved_target_location_id,
+                    InTransitAsset.type_id == resolved_type_id,
+                )
+            )
+            if entry is None:
+                entry = InTransitAsset(
+                    source_location_id=resolved_source_location_id,
+                    target_location_id=resolved_target_location_id,
+                    type_id=resolved_type_id,
+                )
+                session.add(entry)
+
+            entry.quantity = payload.quantity
+            entry.note = payload.note.strip() if payload.note and payload.note.strip() else None
+            session.commit()
+            session.refresh(entry)
+        finally:
+            session.close()
+
+        records = self.list_in_transit_assets(payload.target_location_id)
+        for record in records:
+            if (
+                record.source_location_id == payload.source_location_id
+                and record.target_location_id == payload.target_location_id
+                and record.type_id == payload.type_id
+            ):
+                return record
+        raise LookupError("In-transit asset could not be read back after save.")
+
+    def delete_in_transit_asset(self, entry_id: int) -> bool:
+        from app.models.all_models import InTransitAsset
+
+        session = self.session_factory()
+        try:
+            entry = session.get(InTransitAsset, entry_id)
+            if entry is None:
+                return False
+            session.delete(entry)
+            session.commit()
+            return True
+        finally:
+            session.close()
 
     @staticmethod
     def _query_orders(
@@ -822,6 +955,19 @@ class TradeRepository:
                 or_(
                     Location.id == location_reference,
                     Location.location_id == location_reference,
+                )
+            )
+        )
+
+    @staticmethod
+    def _resolve_type_id(session: Session, type_reference: int) -> int | None:
+        from app.models.all_models import Item
+
+        return session.scalar(
+            select(Item.id).where(
+                or_(
+                    Item.id == type_reference,
+                    Item.type_id == type_reference,
                 )
             )
         )

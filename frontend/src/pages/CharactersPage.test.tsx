@@ -71,6 +71,7 @@ test("renders character list with all spec columns", () => {
 
   expect(within(table).getByText("Demo Trader")).toBeInTheDocument();
   expect(within(table).getByText("Open Traders Union")).toBeInTheDocument();
+  expect(within(table).getByText(/esi-assets\.read_assets\.v1/)).toBeInTheDocument();
   expect(within(table).getByText("Enabled")).toBeInTheDocument();
   expect(within(table).getByText("3")).toBeInTheDocument();
 });

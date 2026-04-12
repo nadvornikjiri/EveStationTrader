@@ -9,8 +9,13 @@ import { TradePage } from "./TradePage";
 const mockUseSettings = vi.fn();
 const mockUseTargets = vi.fn();
 const mockUseSourceSummaries = vi.fn();
+const mockUseSources = vi.fn();
 const mockUseOpportunityItems = vi.fn();
 const mockUseOpportunityItemDetail = vi.fn();
+const mockUseTargetOpportunityItems = vi.fn();
+const mockUseInTransitAssets = vi.fn();
+const mockUseUpsertInTransitAsset = vi.fn();
+const mockUseDeleteInTransitAsset = vi.fn();
 
 vi.mock("../hooks/useSettingsData", () => ({
   useSettings: () => mockUseSettings(),
@@ -20,6 +25,8 @@ vi.mock("../hooks/useTradeData", () => ({
   useTargets: () => mockUseTargets(),
   useSourceSummaries: (targetLocationId: number | null, periodDays: number, filters: unknown, enabled: boolean) =>
     mockUseSourceSummaries(targetLocationId, periodDays, filters, enabled),
+  useSources: (targetLocationId: number | null, periodDays: number, enabled: boolean) =>
+    mockUseSources(targetLocationId, periodDays, enabled),
   useOpportunityItems: (
     targetLocationId: number | null,
     sourceLocationId: number | null,
@@ -33,6 +40,12 @@ vi.mock("../hooks/useTradeData", () => ({
     typeId: number | null,
     periodDays: number,
   ) => mockUseOpportunityItemDetail(targetLocationId, sourceLocationId, typeId, periodDays),
+  useTargetOpportunityItems: (targetLocationId: number | null, periodDays: number, enabled: boolean) =>
+    mockUseTargetOpportunityItems(targetLocationId, periodDays, enabled),
+  useInTransitAssets: (targetLocationId: number | null, enabled: boolean) =>
+    mockUseInTransitAssets(targetLocationId, enabled),
+  useUpsertInTransitAsset: () => mockUseUpsertInTransitAsset(),
+  useDeleteInTransitAsset: () => mockUseDeleteInTransitAsset(),
 }));
 
 const targets = [
@@ -65,6 +78,7 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       total_item_volume_m3: 5,
       shipping_cost_total: 10,
       demand_source_summary: "Adam4EVE",
+      esi_demand_day_total: 0,
     },
     {
       source_location_id: 5,
@@ -89,6 +103,7 @@ const summaryRowsByTarget: Record<number, Array<Record<string, number | string>>
       total_item_volume_m3: 2,
       shipping_cost_total: 8,
       demand_source_summary: "Local",
+      esi_demand_day_total: 0,
     },
   ],
   3: [],
@@ -120,6 +135,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
       item_volume_m3: 0.01,
       shipping_cost: 10,
       demand_source: "Adam4EVE",
+      esi_demand_day: 0,
     },
     {
       type_id: 35,
@@ -145,6 +161,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
       item_volume_m3: 0.01,
       shipping_cost: 12,
       demand_source: "Fallback",
+      esi_demand_day: 0,
     },
   ],
   5: [
@@ -172,6 +189,7 @@ const itemRowsBySource: Record<number, Array<Record<string, number | string>>> =
       item_volume_m3: 0.01,
       shipping_cost: 7,
       demand_source: "Local",
+      esi_demand_day: 0,
     },
   ],
 };
@@ -194,6 +212,7 @@ type TestTradeFilters = {
   sourceType: string;
   minSecurity: string;
   demandSource: string;
+  minEsiDemandDay: string;
 };
 
 function parseFilterNumber(value: string, fallback: number) {
@@ -292,6 +311,15 @@ beforeEach(() => {
     },
   });
   mockUseTargets.mockReturnValue({ data: targets });
+  mockUseSources.mockImplementation((targetLocationId: number | null) => ({
+    data: targetLocationId === null ? [] : summaryRowsByTarget[targetLocationId]?.map((row) => ({
+      location_id: Number(row.source_location_id),
+      name: String(row.source_market_name),
+      location_type: "npc_station",
+      region_name: "The Forge",
+      system_name: String(row.source_market_name),
+    })) ?? [],
+  }));
   mockUseSourceSummaries.mockImplementation((targetLocationId: number | null, _: number, filters: TestTradeFilters, enabled: boolean) => ({
     data:
       !enabled || targetLocationId === null
@@ -315,6 +343,12 @@ beforeEach(() => {
     isLoading: false,
     refetch: vi.fn(),
   }));
+  mockUseTargetOpportunityItems.mockImplementation((targetLocationId: number | null) => ({
+    data: targetLocationId === null ? [] : targetItemsByTarget[targetLocationId] ?? [],
+  }));
+  mockUseInTransitAssets.mockReturnValue({ data: [], error: null });
+  mockUseUpsertInTransitAsset.mockReturnValue({ mutate: vi.fn(), isPending: false, error: null });
+  mockUseDeleteInTransitAsset.mockReturnValue({ mutate: vi.fn(), isPending: false, error: null });
 });
 
 afterEach(() => {
@@ -351,24 +385,24 @@ test("applies semantic metric colors to grouped and expanded trade cells", async
   const groupedRow = screen.getByText("Amarr").closest("tr");
   expect(groupedRow).not.toBeNull();
   const groupedCells = groupedRow?.querySelectorAll("td") ?? [];
-  expect(groupedCells[10]).toHaveClass("metric-cell-source-price");
-  expect(groupedCells[13]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[14]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[15]).toHaveClass("metric-cell-capital");
+  expect(groupedCells[12]).toHaveClass("metric-cell-source-price");
+  expect(groupedCells[15]).toHaveClass("metric-cell-positive");
   expect(groupedCells[16]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[17]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[17]).toHaveClass("metric-cell-capital");
+  expect(groupedCells[18]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[19]).toHaveClass("metric-cell-positive");
 
   await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
 
   const expandedRow = screen.getAllByText("Tritanium")[0].closest("tr");
   expect(expandedRow).not.toBeNull();
   const expandedCells = expandedRow?.querySelectorAll("td") ?? [];
-  expect(expandedCells[10]).toHaveClass("metric-cell-source-price");
-  expect(expandedCells[13]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[14]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[15]).toHaveClass("metric-cell-capital");
+  expect(expandedCells[12]).toHaveClass("metric-cell-source-price");
+  expect(expandedCells[15]).toHaveClass("metric-cell-positive");
   expect(expandedCells[16]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[17]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[17]).toHaveClass("metric-cell-capital");
+  expect(expandedCells[18]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[19]).toHaveClass("metric-cell-positive");
 });
 
 test("formats item volume cells as whole-number m3 values", async () => {
@@ -407,6 +441,7 @@ test("paginates grouped source markets using the configured settings page size",
     source_location_id: 100 + index,
     source_market_name: `Source ${String(index + 1).padStart(2, "0")}`,
     target_now_profit_weighted: 1_000 - index,
+    esi_demand_day_total: 0,
   }));
   mockUseSourceSummaries.mockImplementation(() => ({
     data: pagedSummaryRows,
@@ -475,6 +510,34 @@ test("loads item detail when an expanded inline item is selected", async () => {
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, 2, 35, 14);
   expect(within(detailPanel as HTMLElement).getByText("Pyerite")).toBeInTheDocument();
   expect(within(detailPanel as HTMLElement).getByText("Fallback")).toBeInTheDocument();
+});
+
+test("subtracts same-target in-transit quantity only when adding a new shopping-list item", async () => {
+  const user = userEvent.setup();
+  mockUseInTransitAssets.mockReturnValue({
+    data: [
+      {
+        id: 1,
+        source_location_id: 2,
+        source_market_name: "Amarr",
+        target_location_id: 1,
+        target_market_name: "Jita",
+        type_id: 34,
+        item_name: "Tritanium",
+        quantity: 4,
+        note: "Courier load",
+        created_at: "2026-03-30T12:00:00Z",
+        updated_at: "2026-03-30T12:00:00Z",
+      },
+    ],
+    error: null,
+  });
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.click(screen.getByLabelText("Add Tritanium to shopping list"));
+
+  expect(screen.getByDisplayValue("8")).toBeInTheDocument();
 });
 
 test("shows a MarketBrowser context menu for expanded item rows", async () => {

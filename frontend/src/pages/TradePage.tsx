@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useMemo, useState } from "react";
 
 import { refreshTradeOpportunities } from "../api/trade";
+import { InTransitOverlay } from "../components/trade/InTransitOverlay";
 import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
 import { ShoppingListOverlay } from "../components/trade/ShoppingListOverlay";
 import {
@@ -13,10 +14,15 @@ import {
 import { useSettings } from "../hooks/useSettingsData";
 import { TradeControls } from "../components/trade/TradeControls";
 import {
+  useDeleteInTransitAsset,
+  useInTransitAssets,
   useOpportunityItems,
   useOpportunityItemDetail,
+  useSources,
   useSourceSummaries,
+  useTargetOpportunityItems,
   useTargets,
+  useUpsertInTransitAsset,
 } from "../hooks/useTradeData";
 import type { OpportunityItem, ShoppingListEntry, TradeFilters } from "../types/trade";
 
@@ -71,6 +77,7 @@ export function TradePage() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [shoppingList, setShoppingList] = useState<ShoppingListEntry[]>([]);
   const [isShoppingListOpen, setIsShoppingListOpen] = useState(false);
+  const [isInTransitOpen, setIsInTransitOpen] = useState(false);
   const [filtersInitialized, setFiltersInitialized] = useState(false);
   const periodDays = useMemo(() => {
     const configuredPeriod = Number(settings.data?.default_analysis_period_days ?? 14);
@@ -131,7 +138,12 @@ export function TradePage() {
   );
 
   const queriesEnabled = targetId !== null && filtersInitialized;
+  const selectedTarget = useMemo(
+    () => targets.find((target) => target.location_id === targetId) ?? null,
+    [targetId, targets],
+  );
   const summaries = useSourceSummaries(targetId, periodDays, filters, queriesEnabled);
+  const sources = useSources(targetId, periodDays, queriesEnabled);
   const filteredSummaries = summaries.data ?? [];
   const sortedSummaries = useMemo(
     () => sortSummaries(filteredSummaries, sortKey, sortDirection),
@@ -167,7 +179,18 @@ export function TradePage() {
   }, [pagedSummaries, sourceId]);
 
   const items = useOpportunityItems(targetId, sourceId, periodDays, filters, sourceId !== null && queriesEnabled);
+  const targetItems = useTargetOpportunityItems(targetId, periodDays, queriesEnabled);
+  const inTransitAssets = useInTransitAssets(targetId, queriesEnabled);
+  const upsertInTransitAsset = useUpsertInTransitAsset();
+  const deleteInTransitAsset = useDeleteInTransitAsset();
   const expandedItems = useMemo(() => items.data ?? [], [items.data]);
+  const inTransitByTargetType = useMemo(() => {
+    const totals = new Map<number, number>();
+    for (const entry of inTransitAssets.data ?? []) {
+      totals.set(entry.type_id, (totals.get(entry.type_id) ?? 0) + entry.quantity);
+    }
+    return totals;
+  }, [inTransitAssets.data]);
   const sortedFilteredItems = useMemo(
     () => sortOpportunityItems(expandedItems, sortKey, sortDirection),
     [expandedItems, sortDirection, sortKey],
@@ -262,7 +285,7 @@ export function TradePage() {
       const entry: ShoppingListEntry = {
         type_id: item.type_id,
         item_name: item.item_name,
-        quantity: Math.max(1, Math.floor(item.target_demand_day)),
+        quantity: Math.max(1, Math.floor(item.target_demand_day) - (inTransitByTargetType.get(item.type_id) ?? 0)),
         source_station_sell_price: item.source_station_sell_price,
         item_volume_m3: item.item_volume_m3,
         target_demand_day: item.target_demand_day,
@@ -296,6 +319,13 @@ export function TradePage() {
     setShoppingList([]);
     setIsShoppingListOpen(false);
   };
+
+  const inTransitErrorMessage =
+    upsertInTransitAsset.error instanceof Error
+      ? upsertInTransitAsset.error.message
+      : deleteInTransitAsset.error instanceof Error
+        ? deleteInTransitAsset.error.message
+        : null;
 
   const handleExportMultibuy = async (): Promise<boolean> => {
     const text = shoppingList.map((e) => `${e.item_name} ${e.quantity}`).join("\n");
@@ -357,6 +387,9 @@ export function TradePage() {
                 setSelectedTypeId(null);
                 setCurrentGroupPage(1);
                 setExpandedRowRenderLimit(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
+                setShoppingList([]);
+                setIsShoppingListOpen(false);
+                setIsInTransitOpen(false);
         }}
         onItemSearchChange={setItemSearch}
         onMinProfitChange={setMinProfit}
@@ -466,6 +499,19 @@ export function TradePage() {
         onUpdateQty={handleUpdateShoppingListQty}
         onClearAll={handleClearShoppingList}
         onExportMultibuy={handleExportMultibuy}
+      />
+      <InTransitOverlay
+        target={selectedTarget}
+        sourceOptions={sources.data ?? []}
+        itemOptions={targetItems.data ?? []}
+        entries={inTransitAssets.data ?? []}
+        isOpen={isInTransitOpen}
+        isSaving={upsertInTransitAsset.isPending}
+        isDeleting={deleteInTransitAsset.isPending}
+        errorMessage={inTransitErrorMessage}
+        onToggleOpen={() => setIsInTransitOpen((open) => !open)}
+        onSave={(payload) => upsertInTransitAsset.mutate(payload)}
+        onDelete={(entryId) => deleteInTransitAsset.mutate({ entryId })}
       />
     </div>
   );

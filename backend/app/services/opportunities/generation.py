@@ -15,8 +15,12 @@ from app.domain.rules import (
     calculate_target_period_profit,
 )
 from app.models.all_models import (
+    CharacterAsset,
+    CharacterOrder,
     EsiHistoryDaily,
     EsiMarketOrder,
+    EsiCharacter,
+    InTransitAsset,
     Item,
     Location,
     MarketDemandResolved,
@@ -105,6 +109,47 @@ class OpportunityGenerationService:
         generated_count = 0
         all_location_ids = [target_location_id] + normalized_source_ids
         type_loop_started_at = perf_counter()
+        asset_totals_by_type = {
+            type_id: float(quantity)
+            for type_id, quantity in session.execute(
+                select(CharacterAsset.type_id, func.sum(CharacterAsset.quantity))
+                .join(EsiCharacter, EsiCharacter.id == CharacterAsset.character_id)
+                .where(
+                    EsiCharacter.sync_enabled.is_(True),
+                    CharacterAsset.type_id.in_(normalized_type_ids),
+                )
+                .group_by(CharacterAsset.type_id)
+            ).all()
+            if quantity is not None
+        }
+        target_order_totals_by_type = {
+            type_id: float(quantity)
+            for type_id, quantity in session.execute(
+                select(CharacterOrder.type_id, func.sum(CharacterOrder.volume_remain))
+                .join(EsiCharacter, EsiCharacter.id == CharacterOrder.character_id)
+                .where(
+                    EsiCharacter.sync_enabled.is_(True),
+                    CharacterOrder.type_id.in_(normalized_type_ids),
+                    CharacterOrder.is_buy_order.is_(False),
+                    CharacterOrder.resolved_location_id == target_location_id,
+                )
+                .group_by(CharacterOrder.type_id)
+            ).all()
+            if quantity is not None
+        }
+        in_transit_totals_by_pair = {
+            (source_location_id, type_id): float(quantity)
+            for source_location_id, type_id, quantity in session.execute(
+                select(InTransitAsset.source_location_id, InTransitAsset.type_id, func.sum(InTransitAsset.quantity))
+                .where(
+                    InTransitAsset.target_location_id == target_location_id,
+                    InTransitAsset.source_location_id.in_(normalized_source_ids),
+                    InTransitAsset.type_id.in_(normalized_type_ids),
+                )
+                .group_by(InTransitAsset.source_location_id, InTransitAsset.type_id)
+            ).all()
+            if quantity is not None
+        }
 
         for type_id in normalized_type_ids:
             if cancellation_check is not None:
@@ -245,6 +290,9 @@ class OpportunityGenerationService:
                 roi_now = calculate_roi(target_now_profit, source_now_price)
                 roi_period = calculate_roi(target_period_profit, source_now_price)
                 target_dos = calculate_target_dos(target_supply_units, target_demand_day)
+                in_transit_units = in_transit_totals_by_pair.get((source_location_id, type_id), 0.0)
+                assets_units = asset_totals_by_type.get(type_id, 0.0)
+                active_sell_orders_units = target_order_totals_by_type.get(type_id, 0.0)
 
                 session.add(
                     OpportunityItem(
@@ -257,9 +305,9 @@ class OpportunityGenerationService:
                         target_demand_day=target_demand_day,
                         target_supply_units=target_supply_units,
                         target_dos=target_dos,
-                        in_transit_units=0.0,
-                        assets_units=0.0,
-                        active_sell_orders_units=0.0,
+                        in_transit_units=in_transit_units,
+                        assets_units=assets_units,
+                        active_sell_orders_units=active_sell_orders_units,
                         source_station_sell_price=source_now_price,
                         target_station_sell_price=float(target_now_price),
                         target_period_avg_price=target_period_avg_price,

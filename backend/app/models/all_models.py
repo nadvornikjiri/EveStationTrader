@@ -155,6 +155,52 @@ class CharacterAccessibleStructure(Base):
     confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class CharacterAsset(Base):
+    __tablename__ = "character_assets"
+    __table_args__ = (UniqueConstraint("character_id", "type_id", "external_location_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("esi_characters.id"), index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    quantity: Mapped[int] = mapped_column(BigInteger, default=0)
+    external_location_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    resolved_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True, index=True)
+    location_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CharacterOrder(Base):
+    __tablename__ = "character_orders"
+    __table_args__ = (UniqueConstraint("order_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("esi_characters.id"), index=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    volume_remain: Mapped[int] = mapped_column(Integer, default=0)
+    is_buy_order: Mapped[bool] = mapped_column(Boolean, default=False)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    external_location_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    resolved_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True, index=True)
+    issued: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class InTransitAsset(Base):
+    __tablename__ = "in_transit_assets"
+    __table_args__ = (UniqueConstraint("source_location_id", "target_location_id", "type_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"), index=True)
+    target_location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"), index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class AdamMarketPriceHistoryDaily(Base):
     __tablename__ = "adam_market_price_history_daily"
     __table_args__ = (UniqueConstraint("location_id", "type_id", "date"),)

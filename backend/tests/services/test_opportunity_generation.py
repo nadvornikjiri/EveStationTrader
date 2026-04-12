@@ -5,8 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
+    CharacterAsset,
+    CharacterOrder,
     EsiHistoryDaily,
+    EsiCharacter,
     EsiMarketOrder,
+    InTransitAsset,
     Item,
     Location,
     MarketDemandResolved,
@@ -15,6 +19,7 @@ from app.models.all_models import (
     OpportunitySourceSummary,
     Region,
     System,
+    User,
 )
 from app.services.opportunities.generation import OpportunityGenerationService
 from tests.db_test_utils import build_test_session
@@ -366,6 +371,102 @@ def test_generate_opportunities_uses_regionwide_esi_history_volume() -> None:
 
     row = session.scalars(select(OpportunityItem)).one()
     assert row.esi_demand_day == pytest.approx((70 + 44) / 14.0)
+
+
+def test_generate_opportunities_populates_assets_target_orders_and_in_transit_metrics() -> None:
+    session = build_session()
+    ids = seed_trade_inputs(session)
+
+    user = User(primary_character_id=None)
+    session.add(user)
+    session.flush()
+    characters = [
+        EsiCharacter(
+            user_id=user.id,
+            character_id=90000042,
+            character_name="Audit Trader",
+            corporation_name="Signal Cartel",
+            granted_scopes="esi-assets.read_assets.v1 esi-markets.read_character_orders.v1",
+            sync_enabled=True,
+        ),
+        EsiCharacter(
+            user_id=user.id,
+            character_id=90000077,
+            character_name="Alt Hauler",
+            corporation_name="PushX",
+            granted_scopes="esi-assets.read_assets.v1 esi-markets.read_character_orders.v1",
+            sync_enabled=True,
+        ),
+    ]
+    session.add_all(characters)
+    session.flush()
+
+    session.add_all(
+        [
+            CharacterAsset(
+                character_id=characters[0].id,
+                type_id=ids["tritanium_id"],
+                quantity=12,
+                external_location_id=7_000_000_001,
+                location_name="Asset Hangar",
+            ),
+            CharacterAsset(
+                character_id=characters[1].id,
+                type_id=ids["tritanium_id"],
+                quantity=8,
+                external_location_id=7_000_000_002,
+                location_name="Freighter Hold",
+            ),
+            CharacterOrder(
+                character_id=characters[0].id,
+                order_id=8001,
+                type_id=ids["tritanium_id"],
+                volume_remain=21,
+                is_buy_order=False,
+                price=119.0,
+                external_location_id=60003760,
+                resolved_location_id=ids["target_location_id"],
+            ),
+            CharacterOrder(
+                character_id=characters[1].id,
+                order_id=8002,
+                type_id=ids["tritanium_id"],
+                volume_remain=5,
+                is_buy_order=False,
+                price=118.0,
+                external_location_id=60008494,
+                resolved_location_id=ids["source_location_id"],
+            ),
+            InTransitAsset(
+                source_location_id=ids["source_location_id"],
+                target_location_id=ids["target_location_id"],
+                type_id=ids["tritanium_id"],
+                quantity=6,
+                note="Courier contract",
+            ),
+        ]
+    )
+    session.commit()
+
+    OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_location_id"],
+        source_location_ids=[ids["source_location_id"]],
+        type_ids=[ids["tritanium_id"]],
+        period_days=14,
+    )
+
+    row = session.scalar(select(OpportunityItem).where(OpportunityItem.type_id == ids["tritanium_id"]))
+    summary = session.scalar(select(OpportunitySourceSummary))
+
+    assert row is not None
+    assert summary is not None
+    assert row.assets_units == pytest.approx(20.0)
+    assert row.active_sell_orders_units == pytest.approx(21.0)
+    assert row.in_transit_units == pytest.approx(6.0)
+    assert summary.assets_units == pytest.approx(20.0)
+    assert summary.active_sell_orders_units == pytest.approx(21.0)
+    assert summary.in_transit_units == pytest.approx(6.0)
 
 
 def test_generate_opportunities_uses_weighted_source_acquisition_price_when_lowest_order_cannot_fill_purchase_units() -> None:

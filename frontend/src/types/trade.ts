@@ -101,3 +101,17 @@ export type ShoppingListEntry = {
   source_station_name: string;
   source_location_id: number;
 };
+
+export type InTransitAssetRecord = {
+  id: number;
+  source_location_id: number;
+  source_market_name: string;
+  target_location_id: number;
+  target_market_name: string;
+  type_id: number;
+  item_name: string;
+  quantity: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};

@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPost } from "./client";
 
 export type TargetLocation = {
   location_id: number;
@@ -96,12 +96,30 @@ export type TradeRefreshState = {
   last_refresh_at: string;
 };
 
+export type InTransitAssetRecord = {
+  id: number;
+  source_location_id: number;
+  source_market_name: string;
+  target_location_id: number;
+  target_market_name: string;
+  type_id: number;
+  item_name: string;
+  quantity: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export async function getTargets(): Promise<TargetLocation[]> {
   return apiGet<TargetLocation[]>("/targets");
 }
 
 export async function getTargetOptions(): Promise<TargetLocation[]> {
   return apiGet<TargetLocation[]>("/targets/options");
+}
+
+export async function getSources(targetLocationId: number, periodDays: number): Promise<TargetLocation[]> {
+  return apiGet<TargetLocation[]>(`/sources?target_location_id=${targetLocationId}&period_days=${periodDays}`);
 }
 
 export async function getSourceSummaries(
@@ -203,4 +221,22 @@ export async function refreshTradeOpportunities(
   return apiPost<TradeRefreshState>(
     `/opportunities/refresh?target_location_id=${targetLocationId}&period_days=${periodDays}`,
   );
+}
+
+export async function getInTransitAssets(targetLocationId: number): Promise<InTransitAssetRecord[]> {
+  return apiGet<InTransitAssetRecord[]>(`/opportunities/in-transit?target_location_id=${targetLocationId}`);
+}
+
+export async function upsertInTransitAsset(body: {
+  source_location_id: number;
+  target_location_id: number;
+  type_id: number;
+  quantity: number;
+  note?: string;
+}): Promise<InTransitAssetRecord> {
+  return apiPost<InTransitAssetRecord>("/opportunities/in-transit", body);
+}
+
+export async function deleteInTransitAsset(entryId: number): Promise<void> {
+  return apiDelete(`/opportunities/in-transit/${entryId}`);
 }

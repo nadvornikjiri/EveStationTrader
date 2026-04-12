@@ -7,7 +7,7 @@ import signal
 import tempfile
 from threading import Event, Lock, Thread, current_thread, main_thread
 from time import perf_counter
-from typing import Callable, Protocol, Sequence, TypeVar, cast
+from typing import Any, Callable, Protocol, Sequence, TypeVar, cast
 
 from sqlalchemy import and_, delete, distinct, func, select
 from sqlalchemy.orm import Session
@@ -28,6 +28,8 @@ from app.models.all_models import (
     BulkImportCursor,
     BulkImportFile,
     CharacterAccessibleStructure,
+    CharacterAsset,
+    CharacterOrder,
     EsiCharacter,
     EsiCharacterSyncState,
     EsiHistoryDaily,
@@ -867,6 +869,9 @@ class SyncService:
 
     def _clear_character_sync_data(self, session: Session) -> int:
         records_deleted = 0
+        records_deleted += self._clear_opportunity_data(session)
+        records_deleted += self._delete_rows(session, delete(CharacterOrder))
+        records_deleted += self._delete_rows(session, delete(CharacterAsset))
         records_deleted += self._delete_rows(session, delete(CharacterAccessibleStructure))
         records_deleted += self._delete_rows(session, delete(EsiCharacterSyncState))
         return records_deleted
@@ -1077,7 +1082,10 @@ class SyncService:
             else:
                 from app.services.characters.service import CharacterService
 
-                character_service = CharacterService(session_factory=self.session_factory)
+                character_service = CharacterService(
+                    session_factory=self.session_factory,
+                    esi_client=cast(Any, self.esi_client),
+                )
                 synced_count = 0
                 discovered_count = 0
                 for character_id in character_ids:
@@ -1085,6 +1093,8 @@ class SyncService:
                     discovered_structures = character_service.sync_character(character_id)
                     synced_count += 1
                     discovered_count += len(discovered_structures)
+
+                self._clear_opportunity_data(session)
 
                 records_processed = discovered_count
                 target_type = "characters"

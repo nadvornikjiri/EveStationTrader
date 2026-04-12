@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
 from app.api.schemas.trade import (
+    InTransitAssetRecord,
+    InTransitAssetUpsertRequest,
     OpportunityItemDetail,
     OpportunityItemRow,
     SourceSummary,
@@ -103,3 +105,25 @@ def refresh_trade_opportunities(target_location_id: int, period_days: int = 14) 
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return TradeRefreshState(last_refresh_at=repository.get_last_refresh())
+
+
+@router.get("/in-transit", response_model=list[InTransitAssetRecord])
+def get_in_transit_assets(target_location_id: int) -> list[InTransitAssetRecord]:
+    return TradeRepository().list_in_transit_assets(target_location_id)
+
+
+@router.post("/in-transit", response_model=InTransitAssetRecord)
+def upsert_in_transit_asset(payload: InTransitAssetUpsertRequest) -> InTransitAssetRecord:
+    try:
+        return TradeRepository().upsert_in_transit_asset(payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/in-transit/{entry_id}", status_code=204)
+def delete_in_transit_asset(entry_id: int) -> None:
+    deleted = TradeRepository().delete_in_transit_asset(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"In-transit entry {entry_id} was not found.")

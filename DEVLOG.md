@@ -2609,3 +2609,13 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_everef_history_ingestion.py::test_ingest_history_file_replaces_existing_rows_and_runs_cancellation_checks`
   - `cd backend && ./.venv/bin/ruff check . --fix`
   - note: full backend `mypy .` is currently blocked by pre-existing failures in `app/services/opportunities/aggregator.py` and `tests/services/test_aggregator.py`; full backend `pytest` is currently blocked by pre-existing failures in `tests/services/test_adam4eve_client.py` and `tests/services/test_aggregator.py`
+
+## 2026-04-12 - CHARACTER-HOLDINGS-AND-IN-TRANSIT-TRADE-METRICS
+- Added persisted character asset, character order, and manual in-transit tables plus Alembic migration `20260412_0017`, then wired trade opportunity generation to populate `Assets`, `Active Sell Orders`, and `In Transit` from those sources instead of hard-coded zeroes.
+- Extended character sync to refresh asset and character-order holdings alongside accessible structures, and updated the Characters page so the connect flow surfaces the requested scope set instead of only a count.
+- Added trade-side in-transit APIs and a new `/trade` overlay for creating/removing target-specific in-transit entries, and updated shopping-list adds to subtract same-item in-transit quantity aggregated across all sources for the selected target while clamping the added quantity to at least `1`.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_character_service.py tests/services/test_opportunity_generation.py tests/services/test_trade_repository.py`
+  - note: backend `mypy .` is still blocked by pre-existing failures in `app/services/npc_stations/deltas.py`, `app/services/demand/market_demand.py`, and older Alembic migration typing
+  - note: frontend tests were not runnable because `frontend/node_modules` is root-owned and `npm ci` fails with `EACCES`, leaving no local `vitest` binary available

@@ -86,3 +86,25 @@ class OpportunityItemDetail(BaseModel):
 
 class TradeRefreshState(BaseModel):
     last_refresh_at: datetime
+
+
+class InTransitAssetRecord(BaseModel):
+    id: int
+    source_location_id: int
+    source_market_name: str
+    target_location_id: int
+    target_market_name: str
+    type_id: int
+    item_name: str
+    quantity: int
+    note: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class InTransitAssetUpsertRequest(BaseModel):
+    source_location_id: int
+    target_location_id: int
+    type_id: int
+    quantity: int
+    note: str | None = None

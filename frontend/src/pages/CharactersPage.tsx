@@ -26,6 +26,10 @@ export function CharactersPage() {
           <h2>Character Management</h2>
           <span>{characters.length} connected</span>
         </div>
+        <p>
+          New connections request the scopes needed for asset visibility, character sell orders, skills, and structure
+          access.
+        </p>
         {isLoading ? (
           <p>Loading characters...</p>
         ) : characters.length === 0 ? (
@@ -55,7 +59,7 @@ export function CharactersPage() {
                       <Link to={`/characters/${char.id}`}>{char.character_name}</Link>
                     </td>
                     <td>{char.corporation_name ?? "\u2014"}</td>
-                    <td>{char.granted_scopes.length}</td>
+                    <td>{char.granted_scopes.join(", ") || "\u2014"}</td>
                     <td>{char.sync_enabled ? "Enabled" : "Disabled"}</td>
                     <td>{char.last_token_refresh ? new Date(char.last_token_refresh).toLocaleString() : "\u2014"}</td>
                     <td>{char.last_successful_sync ? new Date(char.last_successful_sync).toLocaleString() : "\u2014"}</td>
