@@ -74,6 +74,8 @@ select {
 
 .main-content {
   padding: 28px;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .page-stack {
@@ -299,6 +301,13 @@ button:disabled {
   overflow-x: auto;
 }
 
+.job-history-message-col {
+  white-space: normal;
+  word-break: break-word;
+  min-width: 180px;
+  max-width: 320px;
+}
+
 .database-table td {
   vertical-align: top;
   white-space: nowrap;
@@ -309,6 +318,7 @@ button:disabled {
   text-align: left;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
 }
 
 .metric-cell {
@@ -351,12 +361,14 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  min-width: 100%;
   border: 0;
   padding: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
   font: inherit;
+  white-space: nowrap;
 }
 
 .group-toggle-indicator {
@@ -368,6 +380,12 @@ button:disabled {
 .grouped-item-label {
   display: inline-block;
   padding-left: 26px;
+  white-space: nowrap;
+}
+
+.source-market-item-col {
+  min-width: 320px;
+  width: 320px;
 }
 
 .grouped-item-more-row td {
@@ -553,12 +571,19 @@ button:disabled {
 
 /* Shopping List Overlay */
 
-.shopping-list-tab {
+.trade-bottom-tabs {
   position: fixed;
-  bottom: 0;
   left: 50%;
+  bottom: 0;
   transform: translateX(-50%);
-  z-index: 100;
+  z-index: 102;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.shopping-list-tab {
+  position: static;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -576,6 +601,12 @@ button:disabled {
 
 .shopping-list-tab:hover {
   background: linear-gradient(180deg, rgba(40, 60, 90, 0.98), rgba(18, 30, 52, 0.98));
+}
+
+.shopping-list-tab--active {
+  border-color: rgba(240, 180, 79, 0.55);
+  background: linear-gradient(180deg, rgba(56, 84, 122, 0.99), rgba(20, 35, 58, 0.99));
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
 }
 
 .shopping-list-tab__count {
@@ -607,8 +638,10 @@ button:disabled {
   bottom: 0;
   left: 0;
   right: 0;
-  z-index: 100;
-  max-height: 55vh;
+  z-index: 99;
+  height: 20vh;
+  min-height: 220px;
+  max-height: 20vh;
   display: flex;
   flex-direction: column;
   border: 1px solid rgba(240, 180, 79, 0.3);
@@ -623,14 +656,14 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 18px;
+  padding: 8px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
 }
 
 .shopping-list-overlay__title {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--accent);
   min-width: 0;
   overflow: hidden;
@@ -641,15 +674,15 @@ button:disabled {
 .shopping-list-overlay__summary-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-shrink: 0;
 }
 
 .shopping-list-overlay__total {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 0.9rem;
+  gap: 6px;
+  font-size: 0.8rem;
 }
 
 .shopping-list-overlay__total-label {
@@ -657,21 +690,20 @@ button:disabled {
 }
 
 .shopping-list-overlay__total-price {
-  color: var(--metric-capital);
   font-weight: 600;
 }
 
 .shopping-list-overlay__total-volume {
   color: var(--accent-soft);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 .shopping-list-overlay__export-btn {
   border-color: rgba(240, 180, 79, 0.34);
   background: linear-gradient(135deg, rgba(240, 180, 79, 0.22), rgba(102, 183, 255, 0.12));
   color: #eef5ff;
-  padding: 7px 14px;
-  font-size: 0.88rem;
+  padding: 6px 12px;
+  font-size: 0.8rem;
 }
 
 .shopping-list-overlay__export-btn:hover {
@@ -679,16 +711,16 @@ button:disabled {
 }
 
 .shopping-list-overlay__clear-btn {
-  padding: 7px 14px;
-  font-size: 0.88rem;
+  padding: 6px 12px;
+  font-size: 0.8rem;
 }
 
 .shopping-list-overlay__minimize-btn {
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 6px 10px;
-  font-size: 0.9rem;
+  padding: 4px 8px;
+  font-size: 0.82rem;
   flex-shrink: 0;
 }
 
@@ -697,33 +729,53 @@ button:disabled {
 }
 
 .shopping-list-overlay__body {
-  overflow-y: auto;
   flex: 1;
-  padding: 0 18px 14px;
+  min-height: 0;
+  padding: 0 16px 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .shopping-list-table tbody tr {
   cursor: default;
 }
 
+.shopping-list-table {
+  font-size: 0.82rem;
+}
+
+.shopping-list-table th,
+.shopping-list-table td {
+  padding: 7px 10px;
+}
+
 .shopping-list-table td {
   white-space: nowrap;
 }
 
+.shopping-list-overlay__body .table-scroll,
+.in-transit-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 .shopping-list-qty-input {
-  width: 80px;
-  padding: 5px 8px;
+  width: 68px;
+  padding: 4px 6px;
   border-radius: 8px;
   text-align: right;
+  font-size: 0.8rem;
 }
 
 .shopping-list-remove-btn {
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 4px 8px;
+  padding: 3px 6px;
   border-radius: 8px;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   line-height: 1;
 }
 
@@ -762,20 +814,30 @@ button:disabled {
 }
 
 .in-transit-tab {
-  position: fixed;
-  right: 22px;
-  bottom: 104px;
-  z-index: 95;
+  position: static;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  border-radius: 14px 14px 0 0;
-  background: rgba(18, 24, 36, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 20px;
+  border: 1px solid rgba(102, 183, 255, 0.26);
   border-bottom: 0;
-  box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.28);
+  border-radius: 14px 14px 0 0;
+  background: linear-gradient(180deg, rgba(24, 40, 66, 0.98), rgba(12, 22, 37, 0.98));
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
   cursor: pointer;
+  color: #eef5ff;
+  user-select: none;
+  transition: background 150ms ease;
+}
+
+.in-transit-tab:hover {
+  background: linear-gradient(180deg, rgba(34, 54, 84, 0.98), rgba(16, 28, 48, 0.98));
+}
+
+.in-transit-tab--active {
+  border-color: rgba(102, 183, 255, 0.42);
+  background: linear-gradient(180deg, rgba(48, 74, 110, 0.99), rgba(18, 32, 54, 0.99));
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
 }
 
 .in-transit-tab__count {
@@ -802,11 +864,14 @@ button:disabled {
 
 .in-transit-overlay {
   position: fixed;
-  right: 22px;
-  bottom: 84px;
-  width: min(760px, calc(100vw - 44px));
-  max-height: 52vh;
-  z-index: 96;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 20vh;
+  min-height: 220px;
+  max-height: 20vh;
+  z-index: 99;
   border-radius: 18px 18px 0 0;
   background: rgba(14, 20, 31, 0.98);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -819,38 +884,55 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 18px 10px;
+  padding: 8px 16px;
+  flex-shrink: 0;
 }
 
 .in-transit-overlay__subtitle {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.76rem;
 }
 
 .in-transit-overlay__body {
-  padding: 0 18px 14px;
-  overflow: auto;
+  padding: 0 16px 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .in-transit-form {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
   align-items: end;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .in-transit-form label {
   display: grid;
-  gap: 6px;
-  font-size: 0.82rem;
+  gap: 4px;
+  font-size: 0.74rem;
   color: var(--muted);
 }
 
 .in-transit-form select,
 .in-transit-form input {
   width: 100%;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+}
+
+.in-transit-table {
+  font-size: 0.82rem;
+}
+
+.in-transit-table th,
+.in-transit-table td {
+  padding: 7px 10px;
 }
 
 @keyframes shopping-list-toast-fade {
@@ -883,13 +965,24 @@ button:disabled {
   }
 
   .in-transit-overlay,
-  .in-transit-tab {
+  .trade-bottom-tabs {
+    left: 12px;
     right: 12px;
+    transform: none;
+    justify-content: center;
+    flex-wrap: wrap;
   }
 
   .in-transit-overlay {
-    width: calc(100vw - 24px);
-    max-height: 48vh;
+    height: 28vh;
+    min-height: 220px;
+    max-height: 28vh;
+  }
+
+  .shopping-list-overlay {
+    height: 28vh;
+    min-height: 220px;
+    max-height: 28vh;
   }
 
   .in-transit-form {
