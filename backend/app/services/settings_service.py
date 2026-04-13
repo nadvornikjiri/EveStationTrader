@@ -16,6 +16,13 @@ _DEFAULT_TARGET_MARKET_LOCATION_IDS = [
     60005686,  # Hek VIII - Moon 12 - Boundless Creation Factory
     60004588,  # Rens VI - Moon 8 - Brutor Tribe Treasury
 ]
+_DEFAULT_SOURCE_REGION_IDS = [
+    10000002,  # The Forge
+    10000043,  # Domain
+    10000032,  # Sinq Laison
+    10000042,  # Metropolis
+    10000030,  # Heimatar
+]
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "default_analysis_period_days": 14,
     "trade_groups_page_size": 20,
@@ -27,6 +34,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "fallback_policy": "regional_fallback",
     "shipping_cost_per_m3": 350.0,
     "target_market_location_ids": list(_DEFAULT_TARGET_MARKET_LOCATION_IDS),
+    "source_region_ids": list(_DEFAULT_SOURCE_REGION_IDS),
     "default_filters": {
         "min_item_profit": 15_000_000,
         "roi_now": 0.20,
@@ -112,6 +120,7 @@ class SettingsService:
             fallback_policy=str(value["fallback_policy"]),
             shipping_cost_per_m3=float(value["shipping_cost_per_m3"]),
             target_market_location_ids=[int(location_id) for location_id in list(value["target_market_location_ids"])],
+            source_region_ids=[int(r) for r in list(value.get("source_region_ids", []))],
             default_filters=dict(value["default_filters"]),
         )
 

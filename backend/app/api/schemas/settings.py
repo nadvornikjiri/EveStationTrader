@@ -12,6 +12,7 @@ class UserSettingsResponse(BaseModel):
     fallback_policy: str = "regional_fallback"
     shipping_cost_per_m3: float = 350.0
     target_market_location_ids: list[int] = []
+    source_region_ids: list[int] = []
     default_filters: dict = {}
 
 
