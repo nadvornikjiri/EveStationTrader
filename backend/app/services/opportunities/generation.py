@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
-from typing import Callable
+from typing import Callable, cast as type_cast
 
+from psycopg import Connection as PsycopgConnection
+from psycopg import sql
 from sqlalchemy import Float, bindparam, case, cast, delete, func, insert, select
 from sqlalchemy.orm import Session
 
@@ -50,6 +52,31 @@ def _insert_rows_in_batches(
 ) -> None:
     for index in range(0, len(rows), batch_size):
         session.execute(insert(model), rows[index : index + batch_size])
+
+
+def _copy_rows_in_batches(
+    session: Session,
+    *,
+    table_name: str,
+    columns: list[str],
+    rows: list[dict[str, object]],
+    batch_size: int = 5000,
+) -> None:
+    if not rows:
+        return
+
+    connection = session.connection()
+    driver_connection = type_cast(PsycopgConnection, connection.connection.driver_connection)
+    copy_sql = sql.SQL("COPY {} ({}) FROM STDIN").format(
+        sql.Identifier(table_name),
+        sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+    )
+    with driver_connection.cursor() as cursor:
+        for index in range(0, len(rows), batch_size):
+            batch = rows[index : index + batch_size]
+            with cursor.copy(copy_sql) as copy:
+                for row in batch:
+                    copy.write_row([row[column] for column in columns])
 
 
 class OpportunityGenerationService:
@@ -458,7 +485,12 @@ class OpportunityGenerationService:
                 generated_count += 1
 
         if item_rows:
-            _insert_rows_in_batches(session, model=OpportunityItem, rows=item_rows)
+            _copy_rows_in_batches(
+                session,
+                table_name=OpportunityItem.__tablename__,
+                columns=list(item_rows[0].keys()),
+                rows=item_rows,
+            )
 
         record_stage(
             "generate_item_rows",
