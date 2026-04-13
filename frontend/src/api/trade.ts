@@ -70,6 +70,7 @@ export type TradeFilters = {
   minRoiNowPct: string;
   minDemandDay: string;
   maxDos: string;
+  maxItemVolumeM3: string;
   sourceType: string;
   minSecurity: string;
   demandSource: string;
@@ -149,6 +150,9 @@ export async function getSourceSummaries(
   if (filters.maxDos.trim().length > 0) {
     params.set("max_dos", filters.maxDos);
   }
+  if (filters.maxItemVolumeM3.trim().length > 0) {
+    params.set("max_item_volume_m3", filters.maxItemVolumeM3);
+  }
   if (filters.minEsiDemandDay.trim().length > 0) {
     params.set("min_esi_demand_day", filters.minEsiDemandDay);
   }
@@ -185,6 +189,9 @@ export async function getOpportunityItems(
   }
   if (filters.maxDos.trim().length > 0) {
     params.set("max_dos", filters.maxDos);
+  }
+  if (filters.maxItemVolumeM3.trim().length > 0) {
+    params.set("max_item_volume_m3", filters.maxItemVolumeM3);
   }
   if (filters.minEsiDemandDay.trim().length > 0) {
     params.set("min_esi_demand_day", filters.minEsiDemandDay);

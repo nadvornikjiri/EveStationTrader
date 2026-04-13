@@ -211,6 +211,46 @@ def test_list_source_summaries_reads_computed_rows_when_present() -> None:
     assert rows[0].roi_now_weighted == 0.12
 
 
+def test_list_source_summaries_filter_by_max_item_volume_m3() -> None:
+    session = build_session()
+    target_location_id, source_location_id, item_id = seed_trade_entities(session)
+    session.add(
+        OpportunityItem(
+            target_location_id=target_location_id,
+            source_location_id=source_location_id,
+            type_id=item_id,
+            period_days=14,
+            purchase_units=10.0,
+            source_units_available=25.0,
+            target_demand_day=12.0,
+            target_supply_units=24.0,
+            target_dos=2.0,
+            in_transit_units=1.0,
+            assets_units=2.0,
+            active_sell_orders_units=3.0,
+            source_station_sell_price=100.0,
+            target_station_sell_price=125.0,
+            target_period_avg_price=130.0,
+            target_now_profit=16.75,
+            target_period_profit=21.4,
+            capital_required=1200.0,
+            roi_now=0.1675,
+            roi_period=0.214,
+            source_security_status=1.0,
+            item_volume_m3=0.01,
+            shipping_cost=15.0,
+            demand_source="adam4eve",
+            computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+
+    assert repo.list_source_summaries(target_location_id, 14, max_item_volume_m3=0.02)
+    assert repo.list_source_summaries(target_location_id, 14, max_item_volume_m3=0.009) == []
+
+
 def test_list_source_summaries_falls_back_from_placeholder_station_name() -> None:
     session = build_session()
     target_location_id, source_location_id, _item_id = seed_trade_entities(session)
@@ -341,6 +381,46 @@ def test_list_items_reads_computed_rows_when_present() -> None:
     assert rows[0].purchase_units == 10.0
     assert rows[0].demand_source == "adam4eve"
     assert rows[0].market_browser_url == "https://evemarketbrowser.com/region/10000002/type/34"
+
+
+def test_list_items_filters_by_max_item_volume_m3() -> None:
+    session = build_session()
+    target_location_id, source_location_id, item_id = seed_trade_entities(session)
+    session.add(
+        OpportunityItem(
+            target_location_id=target_location_id,
+            source_location_id=source_location_id,
+            type_id=item_id,
+            period_days=14,
+            purchase_units=10.0,
+            source_units_available=25.0,
+            target_demand_day=12.0,
+            target_supply_units=24.0,
+            target_dos=2.0,
+            in_transit_units=1.0,
+            assets_units=2.0,
+            active_sell_orders_units=3.0,
+            source_station_sell_price=100.0,
+            target_station_sell_price=125.0,
+            target_period_avg_price=130.0,
+            target_now_profit=16.75,
+            target_period_profit=21.4,
+            capital_required=1200.0,
+            roi_now=0.1675,
+            roi_period=0.214,
+            source_security_status=1.0,
+            item_volume_m3=0.01,
+            shipping_cost=15.0,
+            demand_source="adam4eve",
+            computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+
+    assert repo.list_items(target_location_id, source_location_id, 14, max_item_volume_m3=0.02)
+    assert repo.list_items(target_location_id, source_location_id, 14, max_item_volume_m3=0.009) == []
 
 
 def test_list_target_items_reads_computed_rows_when_present() -> None:

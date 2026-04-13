@@ -2619,3 +2619,12 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_character_service.py tests/services/test_opportunity_generation.py tests/services/test_trade_repository.py`
   - note: backend `mypy .` is still blocked by pre-existing failures in `app/services/npc_stations/deltas.py`, `app/services/demand/market_demand.py`, and older Alembic migration typing
   - note: frontend tests were not runnable because `frontend/node_modules` is root-owned and `npm ci` fails with `EACCES`, leaving no local `vitest` binary available
+
+## 2026-04-12 - TRADE-MAX-ITEM-VOLUME-FILTER
+- Added a new trade filter for maximum item volume in cubic meters, threaded from the trade controls through frontend query params, FastAPI opportunity routes, and trade repository filtering for both grouped source summaries and expanded item rows.
+- Removed the grouped-trade helper note under the source summary table so the filter panel no longer shows that comment.
+- Added regression coverage for the new volume-cap behavior in the trade page and repository tests, including the case where a strict cap removes every candidate item and drops the grouped source row entirely.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check app/api/routes/opportunities.py app/repositories/trade_repository.py tests/services/test_trade_repository.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_trade_repository.py`
+  - `cd frontend && npm test -- --run src/pages/TradePage.test.tsx`

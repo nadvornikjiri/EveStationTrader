@@ -64,6 +64,7 @@ export function TradePage() {
   const [minRoiNowPct, setMinRoiNowPct] = useState(DEFAULT_MIN_ROI_NOW_PCT);
   const [minDemandDay, setMinDemandDay] = useState(DEFAULT_MIN_DEMAND_DAY);
   const [maxDos, setMaxDos] = useState("");
+  const [maxItemVolumeM3, setMaxItemVolumeM3] = useState("");
   const [sourceType, setSourceType] = useState("all");
   const [minSecurity, setMinSecurity] = useState("all");
   const [demandSource, setDemandSource] = useState("all");
@@ -129,12 +130,24 @@ export function TradePage() {
       minRoiNowPct,
       minDemandDay,
       maxDos,
+      maxItemVolumeM3,
       sourceType,
       minSecurity,
       demandSource,
       minEsiDemandDay,
     }),
-    [demandSource, itemSearch, maxDos, minDemandDay, minEsiDemandDay, minProfit, minRoiNowPct, minSecurity, sourceType],
+    [
+      demandSource,
+      itemSearch,
+      maxDos,
+      maxItemVolumeM3,
+      minDemandDay,
+      minEsiDemandDay,
+      minProfit,
+      minRoiNowPct,
+      minSecurity,
+      sourceType,
+    ],
   );
 
   const queriesEnabled = targetId !== null && filtersInitialized;
@@ -377,6 +390,7 @@ export function TradePage() {
         minRoiNowPct={minRoiNowPct}
         minDemandDay={minDemandDay}
         maxDos={maxDos}
+        maxItemVolumeM3={maxItemVolumeM3}
         sourceType={sourceType}
         minSecurity={minSecurity}
         demandSource={demandSource}
@@ -396,6 +410,7 @@ export function TradePage() {
         onMinRoiNowPctChange={setMinRoiNowPct}
         onMinDemandDayChange={setMinDemandDay}
         onMaxDosChange={setMaxDos}
+        onMaxItemVolumeM3Change={setMaxItemVolumeM3}
         onSourceTypeChange={setSourceType}
         onMinSecurityChange={setMinSecurity}
         onDemandSourceChange={setDemandSource}

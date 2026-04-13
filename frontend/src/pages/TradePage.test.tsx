@@ -209,6 +209,7 @@ type TestTradeFilters = {
   minRoiNowPct: string;
   minDemandDay: string;
   maxDos: string;
+  maxItemVolumeM3: string;
   sourceType: string;
   minSecurity: string;
   demandSource: string;
@@ -238,6 +239,10 @@ function filterTargetItems(targetLocationId: number | null, filters: TestTradeFi
   const minRoiNowThreshold = parseFilterNumber(filters.minRoiNowPct, 0) / 100;
   const minDemandDayValue = parseFilterNumber(filters.minDemandDay, 0);
   const maxDosValue = filters.maxDos.trim().length === 0 ? Number.POSITIVE_INFINITY : parseFilterNumber(filters.maxDos, Number.POSITIVE_INFINITY);
+  const maxItemVolumeValue =
+    filters.maxItemVolumeM3.trim().length === 0
+      ? Number.POSITIVE_INFINITY
+      : parseFilterNumber(filters.maxItemVolumeM3, Number.POSITIVE_INFINITY);
   const minSecurityValue = securityThreshold(filters.minSecurity);
   return rows.filter((row) => {
     const sourceSummary = (summaryRowsByTarget[targetLocationId ?? 0] ?? []).find(
@@ -250,6 +255,7 @@ function filterTargetItems(targetLocationId: number | null, filters: TestTradeFi
       (minRoiNowThreshold <= 0 || Number(row.roi_now) > minRoiNowThreshold) &&
       Number(row.target_demand_day) >= minDemandDayValue &&
       Number(row.target_dos) <= maxDosValue &&
+      Number(row.item_volume_m3) <= maxItemVolumeValue &&
       Number(row.source_security_status) >= minSecurityValue &&
       (filters.demandSource === "all" || row.demand_source === filters.demandSource) &&
       (filters.sourceType === "all" || sourceType === filters.sourceType)
@@ -360,9 +366,7 @@ test("renders grouped opportunities collapsed by source market on first load", (
   renderPage();
 
   expect(screen.getByText("Grouped Opportunities")).toBeInTheDocument();
-  expect(
-    screen.getByText(/Grouped source rows show purchase-unit-weighted price averages\./),
-  ).toBeInTheDocument();
+  expect(screen.queryByText(/Grouped source rows show purchase-unit-weighted price averages\./)).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Analysis Period")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Min ROI")).not.toBeInTheDocument();
   const groupedTable = screen.getByRole("table");
@@ -681,6 +685,23 @@ test("filters apply to expanded inline item rows", async () => {
   expect(within(groupedTable).queryByText("Mexallon")).not.toBeInTheDocument();
 });
 
+test("max item volume filters grouped source rows when no inline items remain", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  const groupedTable = screen.getByRole("table");
+  expect(within(groupedTable).getByText("Tritanium")).toBeInTheDocument();
+  expect(within(groupedTable).getByText("Pyerite")).toBeInTheDocument();
+
+  await user.type(screen.getByLabelText("Max Item Volume M3"), "0.009");
+
+  expect(within(groupedTable).queryByText("Amarr")).not.toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Tritanium")).not.toBeInTheDocument();
+  expect(within(groupedTable).queryByText("Pyerite")).not.toBeInTheDocument();
+  expect(within(groupedTable).getByText("No computed source markets available for this target yet.")).toBeInTheDocument();
+});
+
 test("min profit filters against target now profit using a strict greater-than threshold", async () => {
   const user = userEvent.setup();
   renderPage();
@@ -704,6 +725,7 @@ test("numeric filter inputs expose step controls for the configured increments",
   expect(screen.getByLabelText("Min ROI Now Pct")).toHaveAttribute("step", "5");
   expect(screen.getByLabelText("Min Demand Day")).toHaveAttribute("step", "0.1");
   expect(screen.getByLabelText("Max DOS")).toHaveAttribute("step", "0.1");
+  expect(screen.getByLabelText("Max Item Volume M3")).toHaveAttribute("step", "0.01");
 });
 
 test("uses the settings analysis period for data queries and refreshes", async () => {

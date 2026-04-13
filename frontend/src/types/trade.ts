@@ -69,6 +69,7 @@ export type TradeFilters = {
   minRoiNowPct: string;
   minDemandDay: string;
   maxDos: string;
+  maxItemVolumeM3: string;
   sourceType: string;
   minSecurity: string;
   demandSource: string;

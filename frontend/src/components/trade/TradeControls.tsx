@@ -10,6 +10,7 @@ type Props = {
   minRoiNowPct: string;
   minDemandDay: string;
   maxDos: string;
+  maxItemVolumeM3: string;
   sourceType: string;
   minSecurity: string;
   demandSource: string;
@@ -20,6 +21,7 @@ type Props = {
   onMinRoiNowPctChange: (value: string) => void;
   onMinDemandDayChange: (value: string) => void;
   onMaxDosChange: (value: string) => void;
+  onMaxItemVolumeM3Change: (value: string) => void;
   onSourceTypeChange: (value: string) => void;
   onMinSecurityChange: (value: string) => void;
   onDemandSourceChange: (value: string) => void;
@@ -39,6 +41,7 @@ export function TradeControls({
   minRoiNowPct,
   minDemandDay,
   maxDos,
+  maxItemVolumeM3,
   sourceType,
   minSecurity,
   demandSource,
@@ -49,6 +52,7 @@ export function TradeControls({
   onMinRoiNowPctChange,
   onMinDemandDayChange,
   onMaxDosChange,
+  onMaxItemVolumeM3Change,
   onSourceTypeChange,
   onMinSecurityChange,
   onDemandSourceChange,
@@ -130,6 +134,19 @@ export function TradeControls({
         />
       </label>
       <label>
+        <span>Max Item Volume (m3)</span>
+        <input
+          aria-label="Max Item Volume M3"
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          value={maxItemVolumeM3}
+          placeholder=""
+          onChange={(event) => onMaxItemVolumeM3Change(event.target.value)}
+        />
+      </label>
+      <label>
         <span>Source Type</span>
         <select aria-label="Source Type" value={sourceType} onChange={(event) => onSourceTypeChange(event.target.value)}>
           <option value="all">All</option>
@@ -178,10 +195,6 @@ export function TradeControls({
           onChange={(event) => onMinEsiDemandDayChange(event.target.value)}
         />
       </label>
-      <div className="trade-filter-note" role="status">
-        Analysis period follows settings. Min Profit filters `target now profit`, and Min ROI Now % filters `ROI Now`,
-        so `20` means `ROI Now` must be above `20%`. Expand a source market row to inspect its item opportunities inline.
-      </div>
     </section>
   );
 }

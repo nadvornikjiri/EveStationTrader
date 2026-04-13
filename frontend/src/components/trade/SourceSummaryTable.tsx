@@ -427,11 +427,6 @@ export function SourceSummaryTable({
                 : "0 tracked"}
         </span>
       </div>
-      <p className="trade-summary-note">
-        Grouped source rows show purchase-unit-weighted price averages. Expanded item rows show raw station prices:
-        target now price is the lowest live sell order in that station, and target period avg price is the selected-period
-        station average.
-      </p>
       <div className="table-scroll">
         <table className="data-table">
           <thead>

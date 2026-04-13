@@ -48,6 +48,7 @@ class TradeRepository:
         roi_now_column: Any,
         target_demand_day_column: Any,
         target_dos_column: Any,
+        item_volume_m3_column: Any,
         demand_source_column: Any,
         esi_demand_day_column: Any,
         item_search: str,
@@ -55,6 +56,7 @@ class TradeRepository:
         min_roi_now_pct: float,
         min_demand_day: float,
         max_dos: float | None,
+        max_item_volume_m3: float | None,
         source_type: str,
         min_security: str,
         demand_source: str,
@@ -72,6 +74,8 @@ class TradeRepository:
             conditions.append(target_demand_day_column >= min_demand_day)
         if max_dos is not None:
             conditions.append(target_dos_column <= max_dos)
+        if max_item_volume_m3 is not None:
+            conditions.append(item_volume_m3_column <= max_item_volume_m3)
         conditions.append(source_security_column >= TradeRepository._min_security_threshold(min_security))
         if source_type == "npc":
             conditions.append(location_type_column == LocationType.NPC_STATION.value)
@@ -231,6 +235,7 @@ class TradeRepository:
         min_roi_now_pct: float = 0.0,
         min_demand_day: float = 0.0,
         max_dos: float | None = None,
+        max_item_volume_m3: float | None = None,
         source_type: str = "all",
         min_security: str = "all",
         demand_source: str = "all",
@@ -265,6 +270,7 @@ class TradeRepository:
                     min_roi_now_pct > 0,
                     min_demand_day > 0,
                     max_dos is not None,
+                    max_item_volume_m3 is not None,
                     source_type != "all",
                     min_security != "all",
                     demand_source != "all",
@@ -374,6 +380,7 @@ class TradeRepository:
                 roi_now_column=OpportunityItem.roi_now,
                 target_demand_day_column=OpportunityItem.target_demand_day,
                 target_dos_column=OpportunityItem.target_dos,
+                item_volume_m3_column=OpportunityItem.item_volume_m3,
                 demand_source_column=OpportunityItem.demand_source,
                 esi_demand_day_column=OpportunityItem.esi_demand_day,
                 item_search=item_search,
@@ -381,6 +388,7 @@ class TradeRepository:
                 min_roi_now_pct=min_roi_now_pct,
                 min_demand_day=min_demand_day,
                 max_dos=max_dos,
+                max_item_volume_m3=max_item_volume_m3,
                 source_type=source_type,
                 min_security=min_security,
                 demand_source=demand_source,
@@ -491,6 +499,7 @@ class TradeRepository:
         min_roi_now_pct: float = 0.0,
         min_demand_day: float = 0.0,
         max_dos: float | None = None,
+        max_item_volume_m3: float | None = None,
         source_type: str = "all",
         min_security: str = "all",
         demand_source: str = "all",
@@ -533,6 +542,7 @@ class TradeRepository:
                 roi_now_column=OpportunityItem.roi_now,
                 target_demand_day_column=OpportunityItem.target_demand_day,
                 target_dos_column=OpportunityItem.target_dos,
+                item_volume_m3_column=OpportunityItem.item_volume_m3,
                 demand_source_column=OpportunityItem.demand_source,
                 esi_demand_day_column=OpportunityItem.esi_demand_day,
                 item_search=item_search,
@@ -540,6 +550,7 @@ class TradeRepository:
                 min_roi_now_pct=min_roi_now_pct,
                 min_demand_day=min_demand_day,
                 max_dos=max_dos,
+                max_item_volume_m3=max_item_volume_m3,
                 source_type=source_type,
                 min_security=min_security,
                 demand_source=demand_source,
