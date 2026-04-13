@@ -1224,7 +1224,20 @@ class SyncService:
     ) -> tuple[int, str, str | None, str]:
         universe_client = cast(UniverseCapableEsiClient, self.esi_client)
         sync_started_at = perf_counter()
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        target_eve_ids = settings.target_market_location_ids or []
+        desired_region_ids: set[int] = set(settings.source_region_ids or [])
+        if target_eve_ids:
+            desired_region_ids.update(
+                region_id
+                for region_id in session.scalars(
+                    select(Location.region_id).where(Location.location_id.in_(target_eve_ids))
+                ).all()
+                if region_id is not None
+            )
         regions = self._all_regions(session, debug_enabled=debug_enabled)
+        if desired_region_ids:
+            regions = [region for region in regions if region.region_id in desired_region_ids]
         if not regions:
             return (0, "manual", None, "Skipped ESI market orders sync because imported regions are missing.")
 
@@ -1278,8 +1291,6 @@ class SyncService:
             message=f"Processing 0 / {total_downloaded_orders} downloaded ESI market orders.",
         )
         # Resolve target station internal IDs for delta computation
-        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
-        target_eve_ids = settings.target_market_location_ids or []
         target_internal_ids: set[int] = set()
         if target_eve_ids:
             target_internal_ids = set(
