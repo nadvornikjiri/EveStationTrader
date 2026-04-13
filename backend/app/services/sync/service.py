@@ -5,6 +5,8 @@ from pathlib import Path
 import resource
 import signal
 import tempfile
+
+import httpx
 from threading import Event, Lock, Thread, current_thread, main_thread
 from time import perf_counter
 from typing import Any, Callable, Protocol, Sequence, TypeVar, cast
@@ -1454,7 +1456,16 @@ class SyncService:
             )
 
             def ingest_date() -> int:
-                csv_path = download_history_file(history_date, cache_dir)
+                try:
+                    csv_path = download_history_file(history_date, cache_dir)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        logger.info(
+                            "EVE Ref history file not yet available for %s (404), skipping.",
+                            history_date.isoformat(),
+                        )
+                        return 0
+                    raise
                 try:
                     inserted = ingestion_service.ingest_history_file(
                         session,
