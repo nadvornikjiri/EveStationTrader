@@ -159,8 +159,8 @@ class OpportunityGenerationService:
         for type_id_chunk in type_id_chunks:
             items_by_id.update(
                 {
-                    item.type_id: item
-                    for item in session.scalars(select(Item).where(Item.type_id.in_(type_id_chunk))).all()
+                    item.id: item
+                    for item in session.scalars(select(Item).where(Item.id.in_(type_id_chunk))).all()
                 }
             )
 
@@ -190,7 +190,7 @@ class OpportunityGenerationService:
                             EsiHistoryDaily.type_id,
                             (
                                 cast(func.sum(EsiHistoryDaily.volume), Float)
-                                / cast(func.count(), Float)
+                                / normalized_period_days
                             ).label("avg_volume"),
                         )
                         .where(
