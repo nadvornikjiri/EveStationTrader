@@ -2628,3 +2628,28 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && ./.venv/bin/ruff check app/api/routes/opportunities.py app/repositories/trade_repository.py tests/services/test_trade_repository.py --fix`
   - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_trade_repository.py`
   - `cd frontend && npm test -- --run src/pages/TradePage.test.tsx`
+
+## 2026-04-12 - SHOPPING-LIST-PROFIT-TOTALS
+- Extended shopping-list entries to retain per-unit `target_now_profit` and `target_period_profit`, and updated the shopping list overlay to show quantity-scaled row totals for both profit columns alongside total price and volume.
+- Renamed the summary label from `Total` to `Total Price` and added aggregate `Total Now Profit` and `Total Period Profit` figures next to it so the overlay shows full list-level profit totals.
+- Added frontend regression coverage that verifies both the row values and the summary totals update when the shopping-list quantity changes.
+- validation:
+  - `cd frontend && npm test -- --run src/pages/TradePage.test.tsx`
+
+## 2026-04-13 - ESI-LIVE-DEMAND-FALLBACK-IN-RESOLVED-DEMAND
+- Added nullable ESI-live diagnostics columns to `market_demand_resolved` and Alembic migration `20260412_0018` so resolved demand can persist fallback metadata directly.
+- Reworked `MarketDemandResolutionService` so Adam4EVE wins when it resolves nonzero buy-from-sell demand, otherwise resolved demand falls back to a region-history ESI interpolation that estimates daily buy-from-sell vs sell-to-buy volume from the imported central price within the daily high/low range.
+- Applied the same ESI-live fallback for structures when no local structure demand period exists, kept yesterday at `0` when the latest history day is missing or zero-volume, and stored diagnostics for valid day count, yesterday/period ratios, and fallback reason.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check app/services/demand/market_demand.py app/models/all_models.py tests/services/test_market_demand.py alembic/versions/20260412_0018_market_demand_esi_live_diagnostics.py --fix`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_market_demand.py`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_opportunity_generation.py`
+
+## 2026-04-13 - BACKEND-TEST-FAILURE-FIXES
+- Updated Adam4EVE market-order export resolution to fetch each weekly CSV and derive `covered_through_date` from the maximum `scanDate` present in the file instead of assuming the ISO week Sunday.
+- Changed `fetch_totals_json()` to return the raw Everef `totals.json` payload and adjusted Everef sync date resolution to extract nested `size` values when building the download queue.
+- validation:
+  - `cd backend && ./.venv/bin/pytest tests/services/test_adam4eve_client.py tests/services/test_everef_client.py --tb=short -q`
+  - `cd backend && ./.venv/bin/pytest tests --tb=short -q`
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - note: `cd backend && ./.venv/bin/mypy .` is still blocked by pre-existing failures in `app/services/npc_stations/deltas.py` and older Alembic migrations unrelated to this change

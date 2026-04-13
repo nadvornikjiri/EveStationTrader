@@ -1,7 +1,7 @@
 import bz2
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any  # kept for potential future use
+from typing import Any
 
 import httpx
 
@@ -9,31 +9,13 @@ EVEREF_HISTORY_BASE_URL = "https://data.everef.net/market-history"
 TOTALS_URL = f"{EVEREF_HISTORY_BASE_URL}/totals.json"
 
 
-def fetch_totals_json() -> dict[str, int | None]:
-    """Fetch totals.json which maps date strings to file sizes (integers).
-
-    The actual format is ``{"2026-04-10": 181, ...}`` — values are plain
-    integers (compressed file size in bytes), not nested dicts.
-    """
+def fetch_totals_json() -> dict[str, Any]:
     response = httpx.get(TOTALS_URL, timeout=120.0, follow_redirects=True)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
         raise ValueError("Unexpected totals.json payload; expected a JSON object.")
-    result: dict[str, int | None] = {}
-    for key, value in payload.items():
-        if isinstance(value, int):
-            result[str(key)] = value
-        elif isinstance(value, dict):
-            # Handle possible nested format: {"size": 123}
-            raw_size = value.get("size")
-            try:
-                result[str(key)] = int(raw_size) if raw_size is not None else None
-            except (TypeError, ValueError):
-                result[str(key)] = None
-        else:
-            result[str(key)] = None
-    return result
+    return payload
 
 
 def get_available_dates(days_back: int = 30) -> list[date]:

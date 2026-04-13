@@ -1404,11 +1404,22 @@ class SyncService:
             existing_by_date = {row.history_date: row for row in state_rows}
 
             totals_by_date: dict[date, int | None] = {}
-            for raw_date, file_size in totals.items():
+            for raw_date, payload in totals.items():
                 try:
                     parsed_date = date.fromisoformat(raw_date)
                 except ValueError:
                     continue
+                file_size: int | None
+                if isinstance(payload, dict):
+                    raw_size = payload.get("size")
+                    try:
+                        file_size = int(raw_size) if raw_size is not None else None
+                    except (TypeError, ValueError):
+                        file_size = None
+                elif isinstance(payload, int):
+                    file_size = payload
+                else:
+                    file_size = None
                 totals_by_date[parsed_date] = file_size
 
             analysis_window_dates = set(get_available_dates(analysis_period_days))

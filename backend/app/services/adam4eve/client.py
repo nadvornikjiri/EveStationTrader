@@ -214,10 +214,23 @@ class Adam4EveClient:
             year_response.raise_for_status()
             weekly_exports = self._extract_weekly_exports(year, year_response.text)
             for week, export_name in weekly_exports:
-                covered_through_date = date.fromisocalendar(year, week, 7)
+                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
+                export_response = client.get(export_path)
+                export_response.raise_for_status()
+                scan_dates = []
+                for row in DictReader(StringIO(export_response.text), delimiter=";"):
+                    raw_scan_date = row.get("scanDate")
+                    if not raw_scan_date:
+                        continue
+                    try:
+                        scan_dates.append(date.fromisoformat(raw_scan_date))
+                    except ValueError:
+                        continue
+                if not scan_dates:
+                    continue
+                covered_through_date = max(scan_dates)
                 if since_date is not None and covered_through_date <= since_date:
                     continue
-                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
                 exports.append(
                     AdamMarketOrdersExport(
                         path=export_path,
