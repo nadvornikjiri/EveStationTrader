@@ -4,6 +4,14 @@ import type { UserSettings } from "../api/settings";
 import { useTargetOptions } from "../hooks/useTradeData";
 import { useSettings, useUpdateSettings } from "../hooks/useSettingsData";
 
+const KNOWN_SOURCE_REGIONS = [
+  { region_id: 10000002, name: "The Forge" },
+  { region_id: 10000043, name: "Domain" },
+  { region_id: 10000032, name: "Sinq Laison" },
+  { region_id: 10000042, name: "Metropolis" },
+  { region_id: 10000030, name: "Heimatar" },
+] as const;
+
 const DEFAULT_SETTINGS: UserSettings = {
   default_analysis_period_days: 14,
   trade_groups_page_size: 20,
@@ -15,6 +23,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   fallback_policy: "regional_fallback",
   shipping_cost_per_m3: 350,
   target_market_location_ids: [],
+  source_region_ids: [],
   default_filters: {
     min_item_profit: 15_000_000,
     roi_now: 0.20,
@@ -90,6 +99,16 @@ export function SettingsPage() {
         ? current.target_market_location_ids.filter((id) => id !== locationId)
         : [...current.target_market_location_ids, locationId];
       return { ...current, target_market_location_ids: selectedIds };
+    });
+  }
+
+  function toggleSourceRegion(regionId: number) {
+    setHasLocalEdits(true);
+    setFormState((current) => {
+      const selectedIds = current.source_region_ids.includes(regionId)
+        ? current.source_region_ids.filter((id) => id !== regionId)
+        : [...current.source_region_ids, regionId];
+      return { ...current, source_region_ids: selectedIds };
     });
   }
 
@@ -246,6 +265,28 @@ export function SettingsPage() {
                     type="checkbox"
                     checked={formState.target_market_location_ids.includes(location.location_id)}
                     onChange={() => toggleTargetLocation(location.location_id)}
+                  />
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-card">
+            <div className="settings-card-header">
+              <h2>Source Regions</h2>
+              <p>Select which EVE regions are scanned when syncing market orders.</p>
+            </div>
+            <div className="settings-checkbox-list" role="group" aria-label="Source Regions">
+              {KNOWN_SOURCE_REGIONS.map((region) => (
+                <label key={region.region_id} className="settings-toggle">
+                  <div>
+                    <span>{region.name}</span>
+                  </div>
+                  <input
+                    aria-label={region.name}
+                    type="checkbox"
+                    checked={formState.source_region_ids.includes(region.region_id)}
+                    onChange={() => toggleSourceRegion(region.region_id)}
                   />
                 </label>
               ))}

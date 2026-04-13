@@ -19,6 +19,7 @@ const hookState = vi.hoisted(() => ({
       fallback_policy: "regional_fallback",
       shipping_cost_per_m3: 350,
       target_market_location_ids: [60003760],
+      source_region_ids: [],
       default_filters: {},
     },
   },
@@ -75,6 +76,12 @@ test("renders persisted debug setting", () => {
 
   expect(screen.getByRole("heading", { name: "Trading Defaults" })).toBeInTheDocument();
   expect(screen.getByLabelText("Debug Mode")).not.toBeChecked();
+  expect(screen.getByRole("heading", { name: "Source Regions" })).toBeInTheDocument();
+  expect(screen.getByLabelText("The Forge")).not.toBeChecked();
+  expect(screen.getByLabelText("Domain")).not.toBeChecked();
+  expect(screen.getByLabelText("Sinq Laison")).not.toBeChecked();
+  expect(screen.getByLabelText("Metropolis")).not.toBeChecked();
+  expect(screen.getByLabelText("Heimatar")).not.toBeChecked();
 });
 
 test("submits updated debug setting", async () => {
@@ -85,6 +92,7 @@ test("submits updated debug setting", async () => {
   await user.click(screen.getByLabelText("Trade Groups per Page"));
   await user.keyboard("{Control>}a{/Control}30");
   await user.click(screen.getByLabelText("Amarr VIII (Oris) - Emperor Family Academy"));
+  await user.click(screen.getByLabelText("Domain"));
   await user.click(screen.getByRole("button", { name: "Save Settings" }));
 
   expect(hookState.updateSettings.mutate).toHaveBeenCalledWith(
@@ -92,6 +100,7 @@ test("submits updated debug setting", async () => {
       debug_enabled: true,
       trade_groups_page_size: 30,
       target_market_location_ids: [60003760, 60008494],
+      source_region_ids: [10000043],
     }),
     expect.objectContaining({ onSuccess: expect.any(Function) }),
   );

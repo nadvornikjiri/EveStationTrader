@@ -11,6 +11,7 @@ export type UserSettings = {
   fallback_policy: string;
   shipping_cost_per_m3: number;
   target_market_location_ids: number[];
+  source_region_ids: number[];
   default_filters: Record<string, unknown>;
 };
 
