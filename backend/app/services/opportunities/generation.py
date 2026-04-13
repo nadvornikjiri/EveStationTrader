@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Callable
 
-from sqlalchemy import Float, bindparam, case, cast, delete, func, select
+from sqlalchemy import Float, bindparam, case, cast, delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from app.domain.rules import (
@@ -39,6 +39,17 @@ class OpportunityGenerationResult:
 
 def _chunked_in(ids: list[int], chunk_size: int = 5000) -> list[list[int]]:
     return [ids[index : index + chunk_size] for index in range(0, len(ids), chunk_size)]
+
+
+def _insert_rows_in_batches(
+    session: Session,
+    *,
+    model,
+    rows: list[dict[str, object]],
+    batch_size: int = 5000,
+) -> None:
+    for index in range(0, len(rows), batch_size):
+        session.execute(insert(model), rows[index : index + batch_size])
 
 
 class OpportunityGenerationService:
@@ -368,6 +379,7 @@ class OpportunityGenerationService:
         for source_ids in actual_source_ids_by_type.values():
             source_ids.sort()
 
+        item_rows: list[dict[str, object]] = []
         for type_id in normalized_type_ids:
             if cancellation_check is not None:
                 cancellation_check()
@@ -413,37 +425,40 @@ class OpportunityGenerationService:
                 assets_units = asset_totals_by_type.get(type_id, 0.0)
                 active_sell_orders_units = target_order_totals_by_type.get(type_id, 0.0)
 
-                session.add(
-                    OpportunityItem(
-                        target_location_id=target_location_id,
-                        source_location_id=source_location_id,
-                        type_id=type_id,
-                        period_days=period_days,
-                        purchase_units=purchase_units,
-                        source_units_available=source_units_available,
-                        target_demand_day=target_demand_day,
-                        target_supply_units=target_supply_units,
-                        target_dos=target_dos,
-                        in_transit_units=in_transit_units,
-                        assets_units=assets_units,
-                        active_sell_orders_units=active_sell_orders_units,
-                        source_station_sell_price=source_now_price,
-                        target_station_sell_price=float(target_now_price),
-                        target_period_avg_price=target_period_avg_price,
-                        target_now_profit=target_now_profit,
-                        target_period_profit=target_period_profit,
-                        capital_required=capital_required,
-                        roi_now=roi_now,
-                        roi_period=roi_period,
-                        source_security_status=source_security_status,
-                        item_volume_m3=item.volume_m3,
-                        shipping_cost=shipping_cost,
-                        demand_source=demand.demand_source,
-                        esi_demand_day=esi_demand_day,
-                        computed_at=computed_at,
-                    )
+                item_rows.append(
+                    {
+                        "target_location_id": target_location_id,
+                        "source_location_id": source_location_id,
+                        "type_id": type_id,
+                        "period_days": period_days,
+                        "purchase_units": purchase_units,
+                        "source_units_available": source_units_available,
+                        "target_demand_day": target_demand_day,
+                        "target_supply_units": target_supply_units,
+                        "target_dos": target_dos,
+                        "in_transit_units": in_transit_units,
+                        "assets_units": assets_units,
+                        "active_sell_orders_units": active_sell_orders_units,
+                        "source_station_sell_price": source_now_price,
+                        "target_station_sell_price": float(target_now_price),
+                        "target_period_avg_price": target_period_avg_price,
+                        "target_now_profit": target_now_profit,
+                        "target_period_profit": target_period_profit,
+                        "capital_required": capital_required,
+                        "roi_now": roi_now,
+                        "roi_period": roi_period,
+                        "source_security_status": source_security_status,
+                        "item_volume_m3": item.volume_m3,
+                        "shipping_cost": shipping_cost,
+                        "demand_source": demand.demand_source,
+                        "esi_demand_day": esi_demand_day,
+                        "computed_at": computed_at,
+                    }
                 )
                 generated_count += 1
+
+        if item_rows:
+            _insert_rows_in_batches(session, model=OpportunityItem, rows=item_rows)
 
         record_stage(
             "generate_item_rows",
@@ -453,7 +468,6 @@ class OpportunityGenerationService:
         )
 
         summary_started_at = perf_counter()
-        session.flush()
         summary_rows = self._summaries_for_sources(
             session,
             target_location_id=target_location_id,
