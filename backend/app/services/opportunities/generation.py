@@ -475,8 +475,8 @@ class OpportunityGenerationService:
             period_days=period_days,
             computed_at=computed_at,
         )
-        for summary_row in summary_rows:
-            session.add(summary_row)
+        if summary_rows:
+            _insert_rows_in_batches(session, model=OpportunitySourceSummary, rows=summary_rows)
 
         session.commit()
         record_stage(
@@ -495,7 +495,7 @@ class OpportunityGenerationService:
         source_location_ids: list[int],
         period_days: int,
         computed_at: datetime,
-    ) -> list[OpportunitySourceSummary]:
+    ) -> list[dict[str, object]]:
         if not source_location_ids:
             return []
 
@@ -537,33 +537,33 @@ class OpportunityGenerationService:
         )
         rows = session.execute(summary_query).all()
         return [
-            OpportunitySourceSummary(
-                target_location_id=target_location_id,
-                source_location_id=source_location_id,
-                source_security_status=float(source_security_status),
-                period_days=period_days,
-                purchase_units_total=float(purchase_units_total),
-                source_units_available_total=float(source_units_available_total),
-                target_demand_day_total=float(target_demand_day_total),
-                target_supply_units_total=float(target_supply_units_total),
-                target_dos_weighted=float(target_dos_weighted),
-                in_transit_units=float(in_transit_units),
-                assets_units=float(assets_units),
-                active_sell_orders_units=float(active_sell_orders_units),
-                source_avg_price_weighted=float(source_avg_price_weighted),
-                target_now_price_weighted=float(target_now_price_weighted),
-                target_period_avg_price_weighted=float(target_period_avg_price_weighted),
-                target_now_profit_weighted=float(target_now_profit_weighted),
-                target_period_profit_weighted=float(target_period_profit_weighted),
-                capital_required_total=float(capital_required_total),
-                roi_now_weighted=float(roi_now_weighted),
-                roi_period_weighted=float(roi_period_weighted),
-                total_item_volume_m3=float(total_item_volume_m3),
-                shipping_cost_total=float(shipping_cost_total),
-                demand_source_summary=str(demand_source_summary),
-                esi_demand_day_total=float(esi_demand_day_total),
-                computed_at=computed_at,
-            )
+            {
+                "target_location_id": target_location_id,
+                "source_location_id": source_location_id,
+                "source_security_status": float(source_security_status),
+                "period_days": period_days,
+                "purchase_units_total": float(purchase_units_total),
+                "source_units_available_total": float(source_units_available_total),
+                "target_demand_day_total": float(target_demand_day_total),
+                "target_supply_units_total": float(target_supply_units_total),
+                "target_dos_weighted": float(target_dos_weighted),
+                "in_transit_units": float(in_transit_units),
+                "assets_units": float(assets_units),
+                "active_sell_orders_units": float(active_sell_orders_units),
+                "source_avg_price_weighted": float(source_avg_price_weighted),
+                "target_now_price_weighted": float(target_now_price_weighted),
+                "target_period_avg_price_weighted": float(target_period_avg_price_weighted),
+                "target_now_profit_weighted": float(target_now_profit_weighted),
+                "target_period_profit_weighted": float(target_period_profit_weighted),
+                "capital_required_total": float(capital_required_total),
+                "roi_now_weighted": float(roi_now_weighted),
+                "roi_period_weighted": float(roi_period_weighted),
+                "total_item_volume_m3": float(total_item_volume_m3),
+                "shipping_cost_total": float(shipping_cost_total),
+                "demand_source_summary": str(demand_source_summary),
+                "esi_demand_day_total": float(esi_demand_day_total),
+                "computed_at": computed_at,
+            }
             for (
                 source_location_id,
                 source_security_status,
