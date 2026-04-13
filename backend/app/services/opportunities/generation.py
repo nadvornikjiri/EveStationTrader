@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Callable
 
-from sqlalchemy import Float, case, cast, delete, func, select
+from sqlalchemy import Float, bindparam, case, cast, delete, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.rules import (
@@ -35,6 +35,10 @@ from app.models.all_models import (
 class OpportunityGenerationResult:
     item_count: int
     summary_count: int
+
+
+def _chunked_in(ids: list[int], chunk_size: int = 5000) -> list[list[int]]:
+    return [ids[index : index + chunk_size] for index in range(0, len(ids), chunk_size)]
 
 
 class OpportunityGenerationService:
@@ -150,134 +154,249 @@ class OpportunityGenerationService:
             ).all()
             if quantity is not None
         }
+        type_id_chunks = _chunked_in(normalized_type_ids)
+        items_by_id: dict[int, Item] = {}
+        for type_id_chunk in type_id_chunks:
+            items_by_id.update(
+                {
+                    item.type_id: item
+                    for item in session.scalars(select(Item).where(Item.type_id.in_(type_id_chunk))).all()
+                }
+            )
+
+        demands_by_type: dict[int, MarketDemandResolved] = {}
+        for type_id_chunk in type_id_chunks:
+            demands_by_type.update(
+                {
+                    demand.type_id: demand
+                    for demand in session.scalars(
+                        select(MarketDemandResolved).where(
+                            MarketDemandResolved.location_id == target_location_id,
+                            MarketDemandResolved.type_id.in_(type_id_chunk),
+                            MarketDemandResolved.period_days == normalized_period_days,
+                        )
+                    ).all()
+                }
+            )
+
+        cutoff: date = computed_at.date() - timedelta(days=normalized_period_days)
+        esi_history_avg_by_type: dict[int, float] = {}
+        for type_id_chunk in type_id_chunks:
+            esi_history_avg_by_type.update(
+                {
+                    type_id: float(avg_volume)
+                    for type_id, avg_volume in session.execute(
+                        select(
+                            EsiHistoryDaily.type_id,
+                            (
+                                cast(func.sum(EsiHistoryDaily.volume), Float)
+                                / cast(func.count(), Float)
+                            ).label("avg_volume"),
+                        )
+                        .where(
+                            EsiHistoryDaily.region_id == target_location.region_id,
+                            EsiHistoryDaily.type_id.in_(type_id_chunk),
+                            EsiHistoryDaily.date >= cutoff,
+                        )
+                        .group_by(EsiHistoryDaily.type_id)
+                    ).all()
+                    if avg_volume is not None
+                }
+            )
+
+        target_prices_by_type: dict[int, MarketPricePeriod] = {}
+        for type_id_chunk in type_id_chunks:
+            target_prices_by_type.update(
+                {
+                    price_period.type_id: price_period
+                    for price_period in session.scalars(
+                        select(MarketPricePeriod).where(
+                            MarketPricePeriod.location_id == target_location_id,
+                            MarketPricePeriod.type_id.in_(type_id_chunk),
+                            MarketPricePeriod.period_days == normalized_period_days,
+                        )
+                    ).all()
+                }
+            )
+
+        sell_volumes_by_loc_type: dict[tuple[int, int], float] = {}
+        for type_id_chunk in type_id_chunks:
+            sell_volumes_by_loc_type.update(
+                {
+                    (location_id, type_id): float(volume)
+                    for location_id, type_id, volume in session.execute(
+                        select(
+                            EsiMarketOrder.location_id,
+                            EsiMarketOrder.type_id,
+                            func.sum(EsiMarketOrder.volume_remain),
+                        )
+                        .where(
+                            EsiMarketOrder.location_id.in_(all_location_ids),
+                            EsiMarketOrder.type_id.in_(type_id_chunk),
+                            EsiMarketOrder.is_buy_order.is_(False),
+                        )
+                        .group_by(EsiMarketOrder.location_id, EsiMarketOrder.type_id)
+                    ).all()
+                    if volume is not None
+                }
+            )
+
+        target_min_price_by_type: dict[int, float] = {}
+        for type_id_chunk in type_id_chunks:
+            target_min_price_by_type.update(
+                {
+                    type_id: float(min_price)
+                    for type_id, min_price in session.execute(
+                        select(EsiMarketOrder.type_id, func.min(EsiMarketOrder.price))
+                        .where(
+                            EsiMarketOrder.location_id == target_location_id,
+                            EsiMarketOrder.type_id.in_(type_id_chunk),
+                            EsiMarketOrder.is_buy_order.is_(False),
+                        )
+                        .group_by(EsiMarketOrder.type_id)
+                    ).all()
+                    if min_price is not None
+                }
+            )
+
+        source_effective_price_by_loc_type: dict[tuple[int, int], tuple[float, float]] = {}
+        for type_id_chunk in type_id_chunks:
+            demand_cte = (
+                select(
+                    MarketDemandResolved.type_id.label("type_id"),
+                    cast(MarketDemandResolved.buy_from_sell_yesterday, Float).label("buy_from_sell_yesterday"),
+                )
+                .where(
+                    MarketDemandResolved.location_id == target_location_id,
+                    MarketDemandResolved.type_id.in_(bindparam("type_ids", expanding=True)),
+                    MarketDemandResolved.period_days == normalized_period_days,
+                )
+                .cte("demand_cte")
+            )
+            partition_by_location_type = (EsiMarketOrder.location_id, EsiMarketOrder.type_id)
+            source_orders_cte = (
+                select(
+                    EsiMarketOrder.location_id.label("location_id"),
+                    EsiMarketOrder.type_id.label("type_id"),
+                    cast(EsiMarketOrder.price, Float).label("price"),
+                    cast(EsiMarketOrder.volume_remain, Float).label("volume_remain"),
+                    cast(
+                        func.sum(EsiMarketOrder.volume_remain).over(partition_by=partition_by_location_type),
+                        Float,
+                    ).label("total_vol"),
+                    cast(
+                        func.sum(EsiMarketOrder.volume_remain).over(
+                            partition_by=partition_by_location_type,
+                            order_by=(
+                                EsiMarketOrder.price.asc(),
+                                EsiMarketOrder.issued.asc(),
+                                EsiMarketOrder.order_id.asc(),
+                            ),
+                        ),
+                        Float,
+                    ).label("running_vol"),
+                )
+                .where(
+                    EsiMarketOrder.location_id.in_(normalized_source_ids),
+                    EsiMarketOrder.type_id.in_(bindparam("type_ids", expanding=True)),
+                    EsiMarketOrder.is_buy_order.is_(False),
+                )
+                .cte("source_orders_cte")
+            )
+            purchase_units_expr = func.least(
+                source_orders_cte.c.total_vol,
+                demand_cte.c.buy_from_sell_yesterday,
+            )
+            volume_before_expr = source_orders_cte.c.running_vol - source_orders_cte.c.volume_remain
+            consumed_volume_expr = func.least(
+                source_orders_cte.c.volume_remain,
+                func.greatest(purchase_units_expr - volume_before_expr, 0.0),
+            )
+            with_purchase_units_cte = (
+                select(
+                    source_orders_cte.c.location_id.label("location_id"),
+                    source_orders_cte.c.type_id.label("type_id"),
+                    source_orders_cte.c.price.label("price"),
+                    purchase_units_expr.label("purchase_units"),
+                    consumed_volume_expr.label("consumed_vol"),
+                )
+                .join(demand_cte, demand_cte.c.type_id == source_orders_cte.c.type_id)
+                .cte("with_purchase_units_cte")
+            )
+            source_effective_price_by_loc_type.update(
+                {
+                    (location_id, type_id): (float(effective_price), float(purchase_units))
+                    for location_id, type_id, effective_price, purchase_units in session.execute(
+                        select(
+                            with_purchase_units_cte.c.location_id,
+                            with_purchase_units_cte.c.type_id,
+                            (
+                                func.sum(
+                                    with_purchase_units_cte.c.price * with_purchase_units_cte.c.consumed_vol
+                                )
+                                / func.max(with_purchase_units_cte.c.purchase_units)
+                            ).label("effective_price"),
+                            func.max(with_purchase_units_cte.c.purchase_units).label("purchase_units"),
+                        )
+                        .where(
+                            with_purchase_units_cte.c.consumed_vol > 0,
+                            with_purchase_units_cte.c.purchase_units > 0,
+                        )
+                        .group_by(
+                            with_purchase_units_cte.c.location_id,
+                            with_purchase_units_cte.c.type_id,
+                        ),
+                        {"type_ids": type_id_chunk},
+                    ).all()
+                    if effective_price is not None and purchase_units is not None
+                }
+            )
+
+        source_locations = {
+            row.id: row
+            for row in session.scalars(select(Location).where(Location.id.in_(normalized_source_ids))).all()
+        }
+        source_system_ids = list(dict.fromkeys(location.system_id for location in source_locations.values()))
+        source_systems = {
+            row.id: row
+            for row in session.scalars(select(System).where(System.id.in_(source_system_ids))).all()
+        }
+
+        actual_source_ids_by_type: dict[int, list[int]] = {}
+        for location_id, type_id in source_effective_price_by_loc_type:
+            actual_source_ids_by_type.setdefault(type_id, []).append(location_id)
+        for source_ids in actual_source_ids_by_type.values():
+            source_ids.sort()
 
         for type_id in normalized_type_ids:
             if cancellation_check is not None:
                 cancellation_check()
-            item = session.get(Item, type_id)
-            demand = session.scalar(
-                select(MarketDemandResolved).where(
-                    MarketDemandResolved.location_id == target_location_id,
-                    MarketDemandResolved.type_id == type_id,
-                    MarketDemandResolved.period_days == period_days,
-                )
-            )
-            if item is None or demand is None:
+            item = items_by_id.get(type_id)
+            if item is None:
+                continue
+            demand = demands_by_type.get(type_id)
+            if demand is None:
                 continue
             if demand.buy_from_sell_yesterday <= 0:
                 continue
-
-            # Show ESI traded volume using region-level market history for every target.
-            esi_demand_day = 0.0
-            history_rows = session.execute(
-                select(EsiHistoryDaily.volume)
-                .where(
-                    EsiHistoryDaily.region_id == target_location.region_id,
-                    EsiHistoryDaily.type_id == type_id,
-                )
-                .order_by(EsiHistoryDaily.date.desc())
-                .limit(normalized_period_days)
-            ).all()
-            if history_rows:
-                esi_demand_day = sum(int(volume) for (volume,) in history_rows) / normalized_period_days
-
-            target_price = session.scalar(
-                select(MarketPricePeriod).where(
-                    MarketPricePeriod.location_id == target_location_id,
-                    MarketPricePeriod.type_id == type_id,
-                    MarketPricePeriod.period_days == period_days,
-                )
-            )
-            sell_volume_rows = session.execute(
-                select(
-                    EsiMarketOrder.location_id,
-                    func.sum(EsiMarketOrder.volume_remain),
-                )
-                .where(
-                    EsiMarketOrder.location_id.in_(all_location_ids),
-                    EsiMarketOrder.type_id == type_id,
-                    EsiMarketOrder.is_buy_order.is_(False),
-                )
-                .group_by(EsiMarketOrder.location_id)
-            ).all()
-            sell_volume = {
-                location_id: float(volume)
-                for location_id, volume in sell_volume_rows
-                if volume is not None
-            }
-            target_now_price = session.scalar(
-                select(func.min(EsiMarketOrder.price)).where(
-                    EsiMarketOrder.location_id == target_location_id,
-                    EsiMarketOrder.type_id == type_id,
-                    EsiMarketOrder.is_buy_order.is_(False),
-                )
-            )
+            esi_demand_day = esi_history_avg_by_type.get(type_id, 0.0)
+            target_price = target_prices_by_type.get(type_id)
+            target_now_price = target_min_price_by_type.get(type_id)
             if target_now_price is None:
                 continue
-
-            partition_by_location_type = (EsiMarketOrder.location_id, EsiMarketOrder.type_id)
-            total_source_volume = func.sum(EsiMarketOrder.volume_remain).over(partition_by=partition_by_location_type)
-            running_source_volume = func.sum(EsiMarketOrder.volume_remain).over(
-                partition_by=partition_by_location_type,
-                order_by=(EsiMarketOrder.price.asc(), EsiMarketOrder.issued.asc(), EsiMarketOrder.order_id.asc()),
-            )
-            purchase_units_expr = func.least(cast(total_source_volume, Float), demand.buy_from_sell_yesterday)
-            volume_before_expr = cast(running_source_volume - EsiMarketOrder.volume_remain, Float)
-            consumed_volume_expr = func.least(
-                cast(EsiMarketOrder.volume_remain, Float),
-                func.greatest(purchase_units_expr - volume_before_expr, 0.0),
-            )
-            source_price_stage = (
-                select(
-                    EsiMarketOrder.location_id.label("location_id"),
-                    purchase_units_expr.label("purchase_units"),
-                    EsiMarketOrder.price.label("price"),
-                    consumed_volume_expr.label("consumed_volume"),
-                )
-                .where(
-                    EsiMarketOrder.location_id.in_(normalized_source_ids),
-                    EsiMarketOrder.type_id == type_id,
-                    EsiMarketOrder.is_buy_order.is_(False),
-                )
-            ).subquery()
-            source_effective_price_rows = session.execute(
-                select(
-                    source_price_stage.c.location_id,
-                    (
-                        func.sum(source_price_stage.c.price * source_price_stage.c.consumed_volume)
-                        / func.max(source_price_stage.c.purchase_units)
-                    ).label("effective_price"),
-                )
-                .where(source_price_stage.c.consumed_volume > 0)
-                .group_by(source_price_stage.c.location_id)
-            ).all()
-            source_effective_price = {
-                location_id: float(effective_price)
-                for location_id, effective_price in source_effective_price_rows
-                if effective_price is not None
-            }
-            actual_source_ids = sorted(source_effective_price)
+            actual_source_ids = actual_source_ids_by_type.get(type_id, [])
             if not actual_source_ids:
                 continue
-            source_locations = {
-                row.id: row
-                for row in session.scalars(select(Location).where(Location.id.in_(actual_source_ids))).all()
-            }
-            systems = {
-                row.id: row
-                for row in session.scalars(
-                    select(System).where(System.id.in_([location.system_id for location in source_locations.values()]))
-                ).all()
-            }
 
-            for source_location_id, source_now_price in source_effective_price.items():
+            for source_location_id in actual_source_ids:
+                source_now_price, _ = source_effective_price_by_loc_type[(source_location_id, type_id)]
                 source_location = source_locations.get(source_location_id)
                 if source_location is None:
                     continue
-                source_system = systems.get(source_location.system_id)
+                source_system = source_systems.get(source_location.system_id)
                 source_security_status = source_system.security_status if source_system is not None else 0.0
-                source_units_available = sell_volume.get(source_location_id, 0.0)
-                target_supply_units = sell_volume.get(target_location_id, 0.0)
+                source_units_available = sell_volumes_by_loc_type.get((source_location_id, type_id), 0.0)
+                target_supply_units = sell_volumes_by_loc_type.get((target_location_id, type_id), 0.0)
                 purchase_units = calculate_purchase_units(source_units_available, demand.buy_from_sell_yesterday)
                 shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
                 target_period_avg_price = (
