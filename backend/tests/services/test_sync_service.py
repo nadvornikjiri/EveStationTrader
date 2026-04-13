@@ -1459,6 +1459,81 @@ def test_everef_history_sync_first_run_succeeds_with_mocked_downloads(
     assert all(not path.exists() for path in tmp_path.glob("everef_cache/*.csv"))
 
 
+def test_everef_history_sync_limits_downloads_to_analysis_window_even_with_existing_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([region, item])
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 2,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "default_filters": {
+                    "min_item_profit": 15_000_000,
+                    "roi_now": 0.20,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.add(
+        EveRefHistorySyncState(history_date=date(2026, 4, 8), file_size=100, loaded_at=datetime(2026, 4, 8, tzinfo=UTC))
+    )
+    session.commit()
+    service = SyncService(session_factory=lambda: session)
+
+    monkeypatch.setattr(
+        "app.services.sync.service.fetch_totals_json",
+        lambda: {
+            "2026-04-08": 101,
+            "2026-04-09": 123,
+            "2026-04-10": 456,
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.sync.service.get_available_dates",
+        lambda days_back=30: [date(2026, 4, 9), date(2026, 4, 10)] if days_back == 2 else [],
+    )
+
+    downloaded_dates: list[date] = []
+
+    def fake_download_history_file(target_date: date, cache_dir: Path) -> Path:
+        downloaded_dates.append(target_date)
+        csv_path = cache_dir / f"market-history-{target_date.isoformat()}.csv"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(
+            "average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id\n"
+            f"10.5,{target_date.isoformat()},11.0,9.5,7,999,2026-04-11T00:00:00Z,10000002,34\n",
+            encoding="utf-8",
+        )
+        return csv_path
+
+    monkeypatch.setattr("app.services.sync.service.download_history_file", fake_download_history_file)
+    monkeypatch.setattr(
+        "app.services.sync.service.tempfile.gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    result = service.trigger_job("everef_history_sync")
+
+    assert result.status == "success"
+    assert downloaded_dates == [date(2026, 4, 9), date(2026, 4, 10)]
+
+
 def test_opportunity_rebuild_does_not_refresh_esi_history_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     session = build_session()
     seed_opportunity_inputs(session)

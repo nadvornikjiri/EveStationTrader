@@ -1378,6 +1378,10 @@ class SyncService:
     ) -> tuple[int, str, str | None, str]:
         cache_dir = Path(tempfile.gettempdir()) / "everef_cache"
         sync_started_at = perf_counter()
+        analysis_period_days = max(
+            SettingsService(session_factory=lambda: session).get_settings_for_session(session).default_analysis_period_days,
+            1,
+        )
 
         def resolve_dates() -> list[tuple[date, int | None]]:
             totals = fetch_totals_json()
@@ -1394,10 +1398,18 @@ class SyncService:
                     continue
                 totals_by_date[parsed_date] = file_size
 
+            analysis_window_dates = set(get_available_dates(analysis_period_days))
+            if analysis_window_dates:
+                totals_by_date = {
+                    history_date: file_size
+                    for history_date, file_size in totals_by_date.items()
+                    if history_date in analysis_window_dates
+                }
+
             if not existing_by_date:
                 return [
                     (history_date, totals_by_date[history_date])
-                    for history_date in get_available_dates(30)
+                    for history_date in get_available_dates(analysis_period_days)
                     if history_date in totals_by_date
                 ]
 
