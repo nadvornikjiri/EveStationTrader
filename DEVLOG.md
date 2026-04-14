@@ -2664,3 +2664,13 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd frontend && npm test -- src/pages/SettingsPage.test.tsx`
   - note: `cd backend && ./.venv/bin/mypy .` is still blocked by pre-existing typing failures in older Alembic migrations and `app/services/npc_stations/deltas.py`
   - note: API endpoint integration tests are currently blocked by a pre-existing duplicate-table migration issue when `TestClient` boot runs migrations in the shared test database
+
+## 2026-04-14 - FOUNDATION-IMPORT-TEST-ESI-STUB
+- Added a test-only `_resolve_station_names_from_esi()` override to `StubCcpSdeClient` so foundation import tests never make live ESI HTTP calls when station names are absent from the fixture zip.
+- Kept the change scoped to `backend/tests/services/test_foundation_import.py`, preserving production fallback behavior while enforcing the no-external-API test constraint.
+- validation:
+  - `cd backend && .venv/bin/pytest tests/services/test_foundation_import.py -m integration --tb=short -q`
+  - `cd backend && .venv/bin/pytest -m "not integration" --tb=short -q`
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/pytest`
+  - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0012_restore_esi_history_daily.py`, and `alembic/versions/20260409_0013_widen_esi_history_volume.py`

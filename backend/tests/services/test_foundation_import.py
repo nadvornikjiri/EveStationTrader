@@ -81,6 +81,10 @@ class StubCcpSdeClient(CcpSdeClient):
             raise ValueError("Unable to download CCP SDE zip from latest JSONL archive URL.")
         return self.download
 
+    @staticmethod
+    def _resolve_station_names_from_esi(station_ids: list[int]) -> dict[int, str]:
+        return {}
+
 
 def test_ccp_sde_client_builds_seed_source_from_bulk_jsonl_zip() -> None:
     client = StubCcpSdeClient(download=_build_fixture_zip(include_station_names=True))
