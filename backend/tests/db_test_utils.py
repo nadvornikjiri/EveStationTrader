@@ -11,7 +11,7 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session, close_all_sessions, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.db.base import Base
@@ -181,32 +181,39 @@ def create_test_engine() -> Engine:
 _schema_initialized = False
 
 
+def _rebuild_schema(engine: Engine) -> None:
+    for attempt in range(3):
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+                connection.exec_driver_sql("CREATE SCHEMA public")
+                Base.metadata.create_all(connection)
+            break
+        except OperationalError:
+            if attempt == 2:
+                raise
+            engine.dispose()
+            time.sleep(0.1)
+    alembic_cfg = AlembicConfig(REPO_ROOT / "backend" / "alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+    alembic_command.stamp(alembic_cfg, "head")
+
+
 def _ensure_schema(engine: Engine) -> None:
     global _schema_initialized
     if _schema_initialized:
         return
     _terminate_test_database_connections()
-    with engine.begin() as connection:
-        connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
-        connection.exec_driver_sql("CREATE SCHEMA public")
-        Base.metadata.create_all(connection)
-    alembic_cfg = AlembicConfig(REPO_ROOT / "backend" / "alembic.ini")
-    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
-    alembic_command.stamp(alembic_cfg, "head")
+    _rebuild_schema(engine)
     _schema_initialized = True
 
 
 def reset_schema(engine: Engine) -> None:
     _close_active_test_sessions()
-    close_all_sessions()
     engine.dispose()
     _terminate_test_database_connections()
-    _ensure_schema(engine)
-    table_names = ", ".join(
-        _quote_identifier(name) for name in Base.metadata.tables
-    )
-    with engine.begin() as connection:
-        connection.exec_driver_sql(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE")
+    engine.dispose()
+    _rebuild_schema(engine)
 
 
 @lru_cache(maxsize=1)
