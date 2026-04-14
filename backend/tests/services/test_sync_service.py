@@ -907,6 +907,7 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
     region_id, target_location_id, source_location_id, type_id = seed_raw_trade_inputs(session)
     service = SyncService(session_factory=lambda: session)
     today = datetime.now(UTC).date()
+    recent_date = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
     session.add(
         BulkImportCursor(
             import_kind=service.IMPORT_KIND_ADAM_PRICE_HISTORY,
@@ -923,7 +924,7 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
                 "location_id": target_location_id,
                 "type_id": type_id,
                 "demand_day": 12.0,
-                "date": "2026-03-20",
+                "date": recent_date,
                 "source": "adam4eve",
             }
         ],
@@ -933,7 +934,7 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
                     "location_id": target_location_id,
                     "region_id": region_id,
                     "type_id": type_id,
-                    "date": "2026-03-20",
+                    "date": recent_date,
                     "buy_price_low": 110.0,
                     "buy_price_avg": 115.0,
                     "buy_price_high": 118.0,
@@ -945,7 +946,7 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
                     "location_id": source_location_id,
                     "region_id": region_id,
                     "type_id": type_id,
-                    "date": "2026-03-20",
+                    "date": recent_date,
                     "buy_price_low": 90.0,
                     "buy_price_avg": 95.0,
                     "buy_price_high": 98.0,
@@ -2098,6 +2099,8 @@ def test_trigger_job_character_sync_processes_all_enabled_characters() -> None:
 def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() -> None:
     session = build_session()
     region_id, target_location_id, source_location_id, type_id = seed_raw_trade_inputs(session)
+    recent_date = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
+    recent_date_prev = (datetime.now(UTC).date() - timedelta(days=3)).isoformat()
     service = SyncService(
         session_factory=lambda: session,
         adam_client=StubAdamClient(
@@ -2106,7 +2109,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
                     "location_id": target_location_id,
                     "type_id": type_id,
                     "demand_day": 12.0,
-                    "date": "2026-03-20",
+                    "date": recent_date,
                     "source": "adam4eve",
                 }
             ],
@@ -2116,7 +2119,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
                             "location_id": target_location_id,
                             "region_id": region_id,
                         "type_id": type_id,
-                        "date": "2026-03-20",
+                        "date": recent_date,
                         "buy_price_low": 110.0,
                         "buy_price_avg": 115.0,
                         "buy_price_high": 118.0,
@@ -2128,7 +2131,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
                         "location_id": target_location_id,
                         "region_id": region_id,
                         "type_id": type_id,
-                        "date": "2026-03-19",
+                        "date": recent_date_prev,
                         "buy_price_low": 108.0,
                         "buy_price_avg": 113.0,
                         "buy_price_high": 116.0,
@@ -2140,7 +2143,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
                             "location_id": source_location_id,
                             "region_id": region_id,
                             "type_id": type_id,
-                            "date": "2026-03-20",
+                            "date": recent_date,
                             "buy_price_low": 90.0,
                             "buy_price_avg": 95.0,
                             "buy_price_high": 98.0,
@@ -2152,7 +2155,7 @@ def test_raw_sync_jobs_refresh_derived_trade_rows_and_rebuild_opportunities() ->
                             "location_id": source_location_id,
                             "region_id": region_id,
                             "type_id": type_id,
-                            "date": "2026-03-19",
+                            "date": recent_date_prev,
                             "buy_price_low": 92.0,
                             "buy_price_avg": 96.0,
                             "buy_price_high": 99.0,
