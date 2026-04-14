@@ -304,9 +304,11 @@ def test_get_source_summaries_passes_trade_filters(client, monkeypatch) -> None:
             "min_roi_now_pct": 20.0,
             "min_demand_day": 2.5,
             "max_dos": 7.5,
+            "max_item_volume_m3": None,
             "source_type": "npc",
             "min_security": "highsec",
             "demand_source": "adam4eve",
+            "min_esi_demand_day": 0.0,
         },
     }
 
@@ -359,9 +361,11 @@ def test_get_items_passes_trade_filters(client, monkeypatch) -> None:
             "min_roi_now_pct": 20.0,
             "min_demand_day": 2.5,
             "max_dos": 7.5,
+            "max_item_volume_m3": None,
             "source_type": "npc",
             "min_security": "highsec",
             "demand_source": "adam4eve",
+            "min_esi_demand_day": 0.0,
         },
     }
 
@@ -574,9 +578,19 @@ def test_get_database_table_rows_enriches_opportunity_item_references_and_filter
     try:
         target_location = session.scalar(select(Location).where(Location.location_id == 60008494))
         source_location = session.scalar(select(Location).where(Location.location_id == 60003760))
+        if target_location is None or source_location is None:
+            raise AssertionError("Expected seeded target and source locations to exist.")
         item = session.scalar(select(Item).where(Item.type_id == 14084))
-        if target_location is None or source_location is None or item is None:
-            raise AssertionError("Expected seeded target, source, and item to exist.")
+        if item is None:
+            item = Item(
+                type_id=14084,
+                name="True Sansha Explosive Energized Membrane",
+                volume_m3=1.0,
+                group_name="Armor",
+                category_name="Module",
+            )
+            session.add(item)
+            session.flush()
 
         session.execute(delete(OpportunityItem))
         session.execute(
