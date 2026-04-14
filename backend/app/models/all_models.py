@@ -462,6 +462,10 @@ class MarketDemandResolved(Base):
     sell_to_buy_period: Mapped[float] = mapped_column(Float)
     buy_from_sell_yesterday: Mapped[float] = mapped_column(Float)
     sell_to_buy_yesterday: Mapped[float] = mapped_column(Float)
+    esi_live_valid_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    esi_live_buy_from_sell_ratio_period: Mapped[float | None] = mapped_column(Float, nullable=True)
+    esi_live_buy_from_sell_ratio_yesterday: Mapped[float | None] = mapped_column(Float, nullable=True)
+    esi_live_fallback_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

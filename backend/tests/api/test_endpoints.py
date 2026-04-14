@@ -1005,6 +1005,7 @@ def test_get_settings(client) -> None:
     assert response.json()["trade_groups_page_size"] == 20
     assert response.json()["debug_enabled"] is False
     assert response.json()["target_market_location_ids"]
+    assert response.json()["source_region_ids"]
 
 
 def test_put_settings_persists_debug_flag(client) -> None:
@@ -1021,6 +1022,7 @@ def test_put_settings_persists_debug_flag(client) -> None:
             "fallback_policy": "regional_fallback",
             "shipping_cost_per_m3": 350.0,
             "target_market_location_ids": [60003760, 60008494],
+            "source_region_ids": [10000002, 10000043],
             "default_filters": {
                 "min_item_profit": 15_000_000,
                 "min_order_margin_pct": 0.20,
@@ -1033,6 +1035,7 @@ def test_put_settings_persists_debug_flag(client) -> None:
     assert response.status_code == 200
     assert response.json()["debug_enabled"] is True
     assert response.json()["trade_groups_page_size"] == 30
+    assert response.json()["source_region_ids"] == [10000002, 10000043]
 
     session = SessionLocal()
     try:
@@ -1041,6 +1044,7 @@ def test_put_settings_persists_debug_flag(client) -> None:
         assert row.value["debug_enabled"] is True
         assert row.value["trade_groups_page_size"] == 30
         assert row.value["target_market_location_ids"] == [60003760, 60008494]
+        assert row.value["source_region_ids"] == [10000002, 10000043]
     finally:
         session.close()
 

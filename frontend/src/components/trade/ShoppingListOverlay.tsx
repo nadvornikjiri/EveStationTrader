@@ -5,11 +5,11 @@ import type { ShoppingListEntry } from "../../types/trade";
 type Props = {
   entries: ShoppingListEntry[];
   isOpen: boolean;
-  onToggleOpen: () => void;
   onRemove: (typeId: number) => void;
   onUpdateQty: (typeId: number, quantity: number) => void;
   onClearAll: () => void;
   onExportMultibuy: () => Promise<boolean>;
+  onMinimize: () => void;
 };
 
 function formatIsk(value: number): string {
@@ -35,14 +35,24 @@ function formatVolume(value: number): string {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} m³`;
 }
 
+function metricToneClass(value: number): string | null {
+  if (value > 0) {
+    return "metric-cell-positive";
+  }
+  if (value < 0) {
+    return "metric-cell-negative";
+  }
+  return null;
+}
+
 export function ShoppingListOverlay({
   entries,
   isOpen,
-  onToggleOpen,
   onRemove,
   onUpdateQty,
   onClearAll,
   onExportMultibuy,
+  onMinimize,
 }: Props) {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
@@ -54,6 +64,8 @@ export function ShoppingListOverlay({
   const title = stationNames.length > 0 ? `Shopping List — ${stationNames.join(", ")}` : "Shopping List";
 
   const totalPrice = entries.reduce((sum, e) => sum + e.quantity * e.source_station_sell_price, 0);
+  const totalTargetNowProfit = entries.reduce((sum, e) => sum + e.quantity * e.target_now_profit, 0);
+  const totalTargetPeriodProfit = entries.reduce((sum, e) => sum + e.quantity * e.target_period_profit, 0);
   const totalVolume = entries.reduce((sum, e) => sum + e.quantity * e.item_volume_m3, 0);
 
   const handleExport = async () => {
@@ -71,13 +83,7 @@ export function ShoppingListOverlay({
   };
 
   if (!isOpen) {
-    return (
-      <div className="shopping-list-tab" onClick={onToggleOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggleOpen(); }}>
-        <span className="shopping-list-tab__count">{entries.length}</span>
-        <span className="shopping-list-tab__label">Shopping List</span>
-        <span className="shopping-list-tab__chevron">▲</span>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -86,8 +92,16 @@ export function ShoppingListOverlay({
         <span className="shopping-list-overlay__title">{title}</span>
         <div className="shopping-list-overlay__summary-bar">
           <span className="shopping-list-overlay__total">
-            <span className="shopping-list-overlay__total-label">Total:</span>
-            <span className="shopping-list-overlay__total-price">{formatIsk(totalPrice)}</span>
+            <span className="shopping-list-overlay__total-label">Total Price:</span>
+            <span className="shopping-list-overlay__total-price metric-cell-source-price">{formatIsk(totalPrice)}</span>
+            <span className="shopping-list-overlay__total-label">Total Now Profit:</span>
+            <span className={`shopping-list-overlay__total-price ${metricToneClass(totalTargetNowProfit) ?? ""}`.trim()}>
+              {formatIsk(totalTargetNowProfit)}
+            </span>
+            <span className="shopping-list-overlay__total-label">Total Period Profit:</span>
+            <span className={`shopping-list-overlay__total-price ${metricToneClass(totalTargetPeriodProfit) ?? ""}`.trim()}>
+              {formatIsk(totalTargetPeriodProfit)}
+            </span>
             <span className="shopping-list-overlay__total-volume">{formatVolume(totalVolume)}</span>
           </span>
           <button
@@ -107,7 +121,7 @@ export function ShoppingListOverlay({
           <button
             type="button"
             className="shopping-list-overlay__minimize-btn"
-            onClick={onToggleOpen}
+            onClick={onMinimize}
             aria-label="Minimize shopping list"
           >
             ▼
@@ -115,60 +129,68 @@ export function ShoppingListOverlay({
         </div>
       </div>
       <div className="shopping-list-overlay__body">
-        <table className="data-table shopping-list-table">
-          <thead>
-            <tr>
-              <th>Item Name</th>
-              <th>Quantity</th>
-              <th>Days of Demand</th>
-              <th>Total Price</th>
-              <th>Total Volume</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => {
-              const rowTotal = entry.quantity * entry.source_station_sell_price;
-              const rowVolume = entry.quantity * entry.item_volume_m3;
-              const daysOfDemand = entry.target_demand_day > 0
-                ? (entry.quantity / entry.target_demand_day).toFixed(1)
-                : "—";
+        <div className="table-scroll">
+          <table className="data-table shopping-list-table">
+            <thead>
+              <tr>
+                <th>Item Name</th>
+                <th>Quantity</th>
+                <th>Days of Demand</th>
+                <th>Total Price</th>
+                <th>Target Now Profit</th>
+                <th>Target Period Profit</th>
+                <th>Total Volume</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => {
+                const rowTotal = entry.quantity * entry.source_station_sell_price;
+                const rowTargetNowProfit = entry.quantity * entry.target_now_profit;
+                const rowTargetPeriodProfit = entry.quantity * entry.target_period_profit;
+                const rowVolume = entry.quantity * entry.item_volume_m3;
+                const daysOfDemand = entry.target_demand_day > 0
+                  ? (entry.quantity / entry.target_demand_day).toFixed(1)
+                  : "—";
 
-              return (
-                <tr key={entry.type_id}>
-                  <td>{entry.item_name}</td>
-                  <td>
-                    <input
-                      className="shopping-list-qty-input"
-                      type="number"
-                      min={1}
-                      value={entry.quantity}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        if (!isNaN(val) && val >= 1) {
-                          onUpdateQty(entry.type_id, val);
-                        }
-                      }}
-                    />
-                  </td>
-                  <td>{daysOfDemand}</td>
-                  <td>{formatIsk(rowTotal)}</td>
-                  <td>{formatVolume(rowVolume)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="shopping-list-remove-btn"
-                      onClick={() => onRemove(entry.type_id)}
-                      aria-label={`Remove ${entry.item_name}`}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                return (
+                  <tr key={entry.type_id}>
+                    <td>{entry.item_name}</td>
+                    <td>
+                      <input
+                        className="shopping-list-qty-input"
+                        type="number"
+                        min={1}
+                        value={entry.quantity}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          if (!isNaN(val) && val >= 1) {
+                            onUpdateQty(entry.type_id, val);
+                          }
+                        }}
+                      />
+                    </td>
+                    <td>{daysOfDemand}</td>
+                    <td className="metric-cell-source-price">{formatIsk(rowTotal)}</td>
+                    <td className={metricToneClass(rowTargetNowProfit) ?? undefined}>{formatIsk(rowTargetNowProfit)}</td>
+                    <td className={metricToneClass(rowTargetPeriodProfit) ?? undefined}>{formatIsk(rowTargetPeriodProfit)}</td>
+                    <td>{formatVolume(rowVolume)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="shopping-list-remove-btn"
+                        onClick={() => onRemove(entry.type_id)}
+                        aria-label={`Remove ${entry.item_name}`}
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
       {toast ? (
         <div className={`shopping-list-toast shopping-list-toast--${toast.type}`}>

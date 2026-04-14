@@ -1231,7 +1231,9 @@ class SyncService:
             desired_region_ids.update(
                 region_id
                 for region_id in session.scalars(
-                    select(Location.region_id).where(Location.location_id.in_(target_eve_ids))
+                    select(Region.region_id)
+                    .join(Location, Location.region_id == Region.id)
+                    .where(Location.location_id.in_(target_eve_ids))
                 ).all()
                 if region_id is not None
             )

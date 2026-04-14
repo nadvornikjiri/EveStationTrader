@@ -274,6 +274,24 @@ export function TradePage() {
     }
   };
 
+  const handleOpenShoppingList = () => {
+    setIsShoppingListOpen(true);
+    setIsInTransitOpen(false);
+  };
+
+  const handleOpenInTransit = () => {
+    setIsInTransitOpen(true);
+    setIsShoppingListOpen(false);
+  };
+
+  const handleMinimizeShoppingList = () => {
+    setIsShoppingListOpen(false);
+  };
+
+  const handleMinimizeInTransit = () => {
+    setIsInTransitOpen(false);
+  };
+
   const shoppingListSourceId = useMemo(() => {
     if (shoppingList.length === 0) return null;
     return shoppingList[0].source_location_id;
@@ -300,6 +318,8 @@ export function TradePage() {
         item_name: item.item_name,
         quantity: Math.max(1, Math.floor(item.target_demand_day) - (inTransitByTargetType.get(item.type_id) ?? 0)),
         source_station_sell_price: item.source_station_sell_price,
+        target_now_profit: item.target_now_profit,
+        target_period_profit: item.target_period_profit,
         item_volume_m3: item.item_volume_m3,
         target_demand_day: item.target_demand_day,
         source_station_name: sourceStationName,
@@ -307,6 +327,7 @@ export function TradePage() {
       };
       if (current.length === 0) {
         setIsShoppingListOpen(true);
+        setIsInTransitOpen(false);
       }
       return [...current, entry];
     });
@@ -506,14 +527,62 @@ export function TradePage() {
         </div>
       ) : null}
       <ItemDetailPanel detail={itemDetail.data} isLoading={itemDetail.isLoading} />
+      {shoppingList.length > 0 || selectedTarget !== null ? (
+        <div className="trade-bottom-tabs">
+          {shoppingList.length > 0 ? (
+            <div
+              className={`shopping-list-tab${isShoppingListOpen ? " shopping-list-tab--active" : ""}`}
+              onClick={isShoppingListOpen ? handleMinimizeShoppingList : handleOpenShoppingList}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isShoppingListOpen}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  if (isShoppingListOpen) {
+                    handleMinimizeShoppingList();
+                  } else {
+                    handleOpenShoppingList();
+                  }
+                }
+              }}
+            >
+              <span className="shopping-list-tab__count">{shoppingList.length}</span>
+              <span className="shopping-list-tab__label">Shopping List</span>
+              <span className="shopping-list-tab__chevron">{isShoppingListOpen ? "▼" : "▲"}</span>
+            </div>
+          ) : null}
+          {selectedTarget !== null ? (
+            <div
+              className={`in-transit-tab${isInTransitOpen ? " in-transit-tab--active" : ""}`}
+              onClick={isInTransitOpen ? handleMinimizeInTransit : handleOpenInTransit}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isInTransitOpen}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  if (isInTransitOpen) {
+                    handleMinimizeInTransit();
+                  } else {
+                    handleOpenInTransit();
+                  }
+                }
+              }}
+            >
+              <span className="in-transit-tab__count">{(inTransitAssets.data ?? []).length}</span>
+              <span className="in-transit-tab__label">In Transit</span>
+              <span className="in-transit-tab__chevron">{isInTransitOpen ? "▼" : "▲"}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <ShoppingListOverlay
         entries={shoppingList}
         isOpen={isShoppingListOpen}
-        onToggleOpen={() => setIsShoppingListOpen((open) => !open)}
         onRemove={handleRemoveFromShoppingList}
         onUpdateQty={handleUpdateShoppingListQty}
         onClearAll={handleClearShoppingList}
         onExportMultibuy={handleExportMultibuy}
+        onMinimize={handleMinimizeShoppingList}
       />
       <InTransitOverlay
         target={selectedTarget}
@@ -524,7 +593,7 @@ export function TradePage() {
         isSaving={upsertInTransitAsset.isPending}
         isDeleting={deleteInTransitAsset.isPending}
         errorMessage={inTransitErrorMessage}
-        onToggleOpen={() => setIsInTransitOpen((open) => !open)}
+        onMinimize={handleMinimizeInTransit}
         onSave={(payload) => upsertInTransitAsset.mutate(payload)}
         onDelete={(entryId) => deleteInTransitAsset.mutate({ entryId })}
       />

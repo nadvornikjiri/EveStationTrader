@@ -433,7 +433,7 @@ export function SourceSummaryTable({
             <tr>
               <th className="checkbox-col" />
               {SORTABLE_COLUMNS.map((column) => (
-                <th key={column.key}>
+                <th key={column.key} className={column.key === "name" ? "source-market-item-col" : undefined}>
                   <button
                     type="button"
                     className="sort-button"
@@ -469,7 +469,7 @@ export function SourceSummaryTable({
                     className={isExpanded ? "selected-row grouped-source-row" : "grouped-source-row"}
                   >
                     <td className="checkbox-col" />
-                    <td>
+                    <td className="source-market-item-col">
                       <button
                         type="button"
                         className="group-toggle"
@@ -553,7 +553,7 @@ export function SourceSummaryTable({
                           onChange={() => onToggleShoppingList(item, row.source_market_name, row.source_location_id)}
                         />
                       </td>
-                      <td>
+                      <td className="source-market-item-col">
                         <span className="grouped-item-label">{item.item_name}</span>
                       </td>
                       {SORTABLE_COLUMNS.slice(1).map((column) => (

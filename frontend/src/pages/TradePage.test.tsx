@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -542,6 +542,76 @@ test("subtracts same-target in-transit quantity only when adding a new shopping-
   await user.click(screen.getByLabelText("Add Tritanium to shopping list"));
 
   expect(screen.getByDisplayValue("8")).toBeInTheDocument();
+});
+
+test("shopping list shows quantity-scaled target profits and total profit summaries", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.click(screen.getByLabelText("Add Tritanium to shopping list"));
+
+  expect(screen.getByText("Total Price:")).toBeInTheDocument();
+  expect(screen.getByText("Total Now Profit:")).toBeInTheDocument();
+  expect(screen.getByText("Total Period Profit:")).toBeInTheDocument();
+  expect(screen.getAllByText("1.20K ISK")).toHaveLength(2);
+  expect(screen.getAllByText("144 ISK")).toHaveLength(2);
+  expect(screen.getAllByText("216 ISK")).toHaveLength(2);
+
+  const quantityInput = screen.getByDisplayValue("12");
+  fireEvent.change(quantityInput, { target: { value: "3" } });
+
+  expect(screen.getByDisplayValue("3")).toBeInTheDocument();
+
+  expect(screen.getAllByText("300 ISK")).toHaveLength(2);
+  expect(screen.getAllByText("36 ISK")).toHaveLength(2);
+  expect(screen.getAllByText("54 ISK")).toHaveLength(2);
+});
+
+test("opening one bottom overlay minimizes the other and keeps tabs aligned", async () => {
+  const user = userEvent.setup();
+  mockUseInTransitAssets.mockReturnValue({
+    data: [
+      {
+        id: 1,
+        source_location_id: 2,
+        source_market_name: "Amarr",
+        target_location_id: 1,
+        target_market_name: "Jita",
+        type_id: 34,
+        item_name: "Tritanium",
+        quantity: 4,
+        note: "Courier load",
+        created_at: "2026-03-30T12:00:00Z",
+        updated_at: "2026-03-30T12:00:00Z",
+      },
+    ],
+    error: null,
+  });
+  renderPage();
+
+  const openInTransitTab = () => screen.getAllByRole("button", { name: /In Transit/ }).at(-1) as HTMLElement;
+  const openShoppingListTab = () => screen.getByRole("button", { name: /Shopping List/ });
+
+  await user.click(openInTransitTab());
+  expect(screen.getByText("Target: Jita")).toBeInTheDocument();
+  expect(openInTransitTab()).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
+  await user.click(screen.getByLabelText("Add Tritanium to shopping list"));
+
+  expect(screen.queryByText("Target: Jita")).not.toBeInTheDocument();
+  expect(screen.getByText(/Shopping List —/)).toBeInTheDocument();
+  expect(openInTransitTab()).toBeInTheDocument();
+  expect(openInTransitTab()).toHaveAttribute("aria-pressed", "false");
+  expect(openShoppingListTab()).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(openInTransitTab());
+
+  expect(screen.getByText("Target: Jita")).toBeInTheDocument();
+  expect(screen.queryByText(/Shopping List —/)).not.toBeInTheDocument();
+  expect(openShoppingListTab()).toHaveAttribute("aria-pressed", "false");
+  expect(openInTransitTab()).toHaveAttribute("aria-pressed", "true");
 });
 
 test("shows a MarketBrowser context menu for expanded item rows", async () => {

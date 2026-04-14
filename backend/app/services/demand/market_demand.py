@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import DemandSource, LocationType
-from app.models.all_models import AdamMarketOrdersTradeRaw, Item, Location, MarketDemandResolved, NpcStationDemandPeriod, StructureDemandPeriod
-from app.services.postgres_copy import copy_rows
+from app.models.all_models import AdamMarketOrdersTradeRaw, EsiHistoryDaily, Item, Location, MarketDemandResolved, StructureDemandPeriod
 
 
 @dataclass
@@ -14,6 +13,18 @@ class MarketDemandResolutionResult:
     created: bool
     row: MarketDemandResolved | None
     points_used: int
+
+
+@dataclass
+class EsiLiveDemandEstimate:
+    buy_from_sell_period: float
+    sell_to_buy_period: float
+    buy_from_sell_yesterday: float
+    sell_to_buy_yesterday: float
+    valid_days: int
+    buy_from_sell_ratio_period: float | None
+    buy_from_sell_ratio_yesterday: float | None
+    fallback_reason: str
 
 
 class MarketDemandResolutionService:
@@ -26,232 +37,16 @@ class MarketDemandResolutionService:
     ) -> int:
         if not demand_keys:
             return 0
-
-        if session.get_bind().dialect.name != "postgresql":
-            refreshed_count = 0
-            for location_id, type_id in dict.fromkeys(demand_keys):
-                result = self.upsert_for_location(
-                    session,
-                    location_id=location_id,
-                    type_id=type_id,
-                    period_days=period_days,
-                )
-                if result.row is not None:
-                    refreshed_count += 1
-            return refreshed_count
-
-        normalized_keys = list(dict.fromkeys(demand_keys))
-        self._prepare_npc_refresh_key_table(session, demand_keys=normalized_keys)
-        window_days = max(period_days - 1, 0)
-        session.execute(
-            text(
-                """
-                DELETE FROM market_demand_resolved AS resolved
-                USING adam_npc_demand_refresh_keys AS keys
-                LEFT JOIN (
-                    WITH latest_per_key AS (
-                        SELECT
-                            keys.location_id,
-                            keys.type_id,
-                            locations.location_id AS external_location_id,
-                            items.type_id AS external_type_id,
-                            MAX(raw."scanDate") AS latest_scan_date
-                        FROM adam_npc_demand_refresh_keys AS keys
-                        JOIN locations ON locations.id = keys.location_id
-                        JOIN items ON items.id = keys.type_id
-                        LEFT JOIN adam_market_orders_trade_raw AS raw
-                          ON raw.location_id = locations.location_id
-                         AND raw.type_id = items.type_id
-                        GROUP BY keys.location_id, keys.type_id, locations.location_id, items.type_id
-                    )
-                    SELECT latest_per_key.location_id, latest_per_key.type_id
-                    FROM latest_per_key
-                    WHERE latest_per_key.latest_scan_date IS NOT NULL
-                ) AS aggregated
-                  ON aggregated.location_id = keys.location_id
-                 AND aggregated.type_id = keys.type_id
-                WHERE resolved.location_id = keys.location_id
-                  AND resolved.type_id = keys.type_id
-                  AND resolved.period_days = :period_days
-                  AND aggregated.location_id IS NULL
-                """
-            ),
-            {"period_days": period_days},
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO market_demand_resolved (
-                    location_id,
-                    type_id,
-                    period_days,
-                    demand_source,
-                    buy_from_sell_period,
-                    sell_to_buy_period,
-                    buy_from_sell_yesterday,
-                    sell_to_buy_yesterday,
-                    computed_at
-                )
-                WITH latest_per_key AS (
-                    SELECT
-                        keys.location_id,
-                        keys.type_id,
-                        locations.location_id AS external_location_id,
-                        items.type_id AS external_type_id,
-                        MAX(raw."scanDate") AS latest_scan_date
-                    FROM adam_npc_demand_refresh_keys AS keys
-                    JOIN locations ON locations.id = keys.location_id
-                    JOIN items ON items.id = keys.type_id
-                    LEFT JOIN adam_market_orders_trade_raw AS raw
-                      ON raw.location_id = locations.location_id
-                     AND raw.type_id = items.type_id
-                    GROUP BY keys.location_id, keys.type_id, locations.location_id, items.type_id
-                ),
-                aggregated AS (
-                    SELECT
-                        latest_per_key.location_id,
-                        latest_per_key.type_id,
-                        SUM(CASE WHEN raw.is_buy_order = 0 THEN raw.amount ELSE 0 END) AS buy_from_sell_period,
-                        SUM(CASE WHEN raw.is_buy_order = 1 THEN raw.amount ELSE 0 END) AS sell_to_buy_period,
-                        SUM(
-                            CASE
-                                WHEN raw.is_buy_order = 0 AND raw."scanDate" = latest_per_key.latest_scan_date
-                                THEN raw.amount
-                                ELSE 0
-                            END
-                        ) AS buy_from_sell_yesterday,
-                        SUM(
-                            CASE
-                                WHEN raw.is_buy_order = 1 AND raw."scanDate" = latest_per_key.latest_scan_date
-                                THEN raw.amount
-                                ELSE 0
-                            END
-                        ) AS sell_to_buy_yesterday,
-                        COUNT(DISTINCT raw."scanDate") AS points_used
-                    FROM latest_per_key
-                    JOIN adam_market_orders_trade_raw AS raw
-                      ON raw.location_id = latest_per_key.external_location_id
-                     AND raw.type_id = latest_per_key.external_type_id
-                     AND raw."scanDate" >= latest_per_key.latest_scan_date - :window_days
-                     AND raw."scanDate" <= latest_per_key.latest_scan_date
-                    WHERE latest_per_key.latest_scan_date IS NOT NULL
-                    GROUP BY latest_per_key.location_id, latest_per_key.type_id, latest_per_key.latest_scan_date
-                )
-                SELECT
-                    aggregated.location_id,
-                    aggregated.type_id,
-                    :period_days,
-                    :demand_source,
-                    aggregated.buy_from_sell_period,
-                    aggregated.sell_to_buy_period,
-                    aggregated.buy_from_sell_yesterday,
-                    aggregated.sell_to_buy_yesterday,
-                    :computed_at
-                FROM aggregated
-                ON CONFLICT (location_id, type_id, period_days) DO UPDATE
-                SET demand_source = EXCLUDED.demand_source,
-                    buy_from_sell_period = EXCLUDED.buy_from_sell_period,
-                    sell_to_buy_period = EXCLUDED.sell_to_buy_period,
-                    buy_from_sell_yesterday = EXCLUDED.buy_from_sell_yesterday,
-                    sell_to_buy_yesterday = EXCLUDED.sell_to_buy_yesterday,
-                    computed_at = EXCLUDED.computed_at
-                """
-            ),
-            {
-                "window_days": window_days,
-                "period_days": period_days,
-                "demand_source": DemandSource.ADAM4EVE.value,
-                "computed_at": datetime.now(UTC),
-            },
-        )
-        refreshed_count = int(
-            session.scalar(
-                text(
-                    """
-                    WITH latest_per_key AS (
-                        SELECT
-                            keys.location_id,
-                            keys.type_id,
-                            MAX(raw."scanDate") AS latest_scan_date
-                        FROM adam_npc_demand_refresh_keys AS keys
-                        JOIN locations ON locations.id = keys.location_id
-                        JOIN items ON items.id = keys.type_id
-                        LEFT JOIN adam_market_orders_trade_raw AS raw
-                          ON raw.location_id = locations.location_id
-                         AND raw.type_id = items.type_id
-                        GROUP BY keys.location_id, keys.type_id
-                    )
-                    SELECT COUNT(*)
-                    FROM latest_per_key
-                    WHERE latest_scan_date IS NOT NULL
-                    """
-                )
+        refreshed_count = 0
+        for location_id, type_id in dict.fromkeys(demand_keys):
+            result = self.upsert_for_location(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=period_days,
             )
-            or 0
-        )
-
-        # ESI live override: for any demand key where npc_station_demand_period has
-        # a higher buy_from_sell_yesterday than what Adam4EVE provided, switch to ESI_LIVE.
-        # Also insert ESI_LIVE rows for keys that Adam4EVE had no data for.
-        esi_live_count = 0
-        has_npc_demand_table = session.scalar(
-            text(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = 'npc_station_demand_period')"
-            )
-        )
-        if has_npc_demand_table:
-            esi_live_result = session.execute(
-                text(
-                    """
-                    INSERT INTO market_demand_resolved (
-                        location_id, type_id, period_days, demand_source,
-                        buy_from_sell_period, sell_to_buy_period,
-                        buy_from_sell_yesterday, sell_to_buy_yesterday,
-                        computed_at
-                    )
-                    SELECT
-                        nsp.location_id,
-                        nsp.type_id,
-                        nsp.period_days,
-                        :demand_source,
-                        nsp.buy_from_sell_period,
-                        nsp.sell_to_buy_period,
-                        nsp.buy_from_sell_yesterday,
-                        nsp.sell_to_buy_yesterday,
-                        :computed_at
-                    FROM adam_npc_demand_refresh_keys AS keys
-                    JOIN npc_station_demand_period AS nsp
-                      ON nsp.location_id = keys.location_id
-                     AND nsp.type_id = keys.type_id
-                     AND nsp.period_days = :period_days
-                    WHERE nsp.buy_from_sell_yesterday > COALESCE(
-                        (SELECT resolved.buy_from_sell_yesterday
-                         FROM market_demand_resolved AS resolved
-                         WHERE resolved.location_id = keys.location_id
-                           AND resolved.type_id = keys.type_id
-                           AND resolved.period_days = :period_days),
-                        0
-                    )
-                    ON CONFLICT (location_id, type_id, period_days) DO UPDATE SET
-                        demand_source = EXCLUDED.demand_source,
-                        buy_from_sell_period = EXCLUDED.buy_from_sell_period,
-                        sell_to_buy_period = EXCLUDED.sell_to_buy_period,
-                        buy_from_sell_yesterday = EXCLUDED.buy_from_sell_yesterday,
-                        sell_to_buy_yesterday = EXCLUDED.sell_to_buy_yesterday,
-                        computed_at = EXCLUDED.computed_at
-                    """
-                ),
-                {
-                    "period_days": period_days,
-                    "demand_source": DemandSource.ESI_LIVE.value,
-                    "computed_at": datetime.now(UTC),
-                },
-            )
-            esi_live_count = esi_live_result.rowcount
-        refreshed_count += esi_live_count
-
-        session.commit()
+            if result.row is not None:
+                refreshed_count += 1
         return refreshed_count
 
     def upsert_for_location(
@@ -293,6 +88,10 @@ class MarketDemandResolutionService:
                 buy_from_sell_yesterday=structure_period.buy_from_sell_yesterday,
                 sell_to_buy_yesterday=structure_period.sell_to_buy_yesterday,
                 points_used=1,
+                esi_live_valid_days=None,
+                esi_live_buy_from_sell_ratio_period=None,
+                esi_live_buy_from_sell_ratio_yesterday=None,
+                esi_live_fallback_reason=None,
             )
 
         return self._upsert_structure_fallback(
@@ -354,31 +153,6 @@ class MarketDemandResolutionService:
                         adam_stb_yesterday += amount
             adam_points = len(distinct_dates)
 
-        # Gather ESI live demand data
-        esi_period = session.scalar(
-            select(NpcStationDemandPeriod).where(
-                NpcStationDemandPeriod.location_id == location_id,
-                NpcStationDemandPeriod.type_id == type_id,
-                NpcStationDemandPeriod.period_days == period_days,
-            )
-        )
-        esi_bfs_yesterday = esi_period.buy_from_sell_yesterday if esi_period else 0.0
-
-        # Pick the source with higher buy_from_sell_yesterday
-        if esi_bfs_yesterday > adam_bfs_yesterday and esi_period is not None:
-            return self._upsert_row(
-                session,
-                location_id=location_id,
-                type_id=type_id,
-                period_days=period_days,
-                demand_source=DemandSource.ESI_LIVE.value,
-                buy_from_sell_period=esi_period.buy_from_sell_period,
-                sell_to_buy_period=esi_period.sell_to_buy_period,
-                buy_from_sell_yesterday=esi_period.buy_from_sell_yesterday,
-                sell_to_buy_yesterday=esi_period.sell_to_buy_yesterday,
-                points_used=1,
-            )
-
         if adam_bfs_yesterday > 0 or adam_bfs_period > 0:
             return self._upsert_row(
                 session,
@@ -391,9 +165,37 @@ class MarketDemandResolutionService:
                 buy_from_sell_yesterday=adam_bfs_yesterday,
                 sell_to_buy_yesterday=adam_stb_yesterday,
                 points_used=adam_points,
+                esi_live_valid_days=None,
+                esi_live_buy_from_sell_ratio_period=None,
+                esi_live_buy_from_sell_ratio_yesterday=None,
+                esi_live_fallback_reason=None,
             )
 
-        # Neither source has data
+        esi_live_estimate = self._estimate_esi_live_demand(
+            session,
+            location_id=location_id,
+            type_id=type_id,
+            period_days=period_days,
+            fallback_reason="adam_zero_buy_from_sell",
+        )
+        if esi_live_estimate is not None:
+            return self._upsert_row(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=period_days,
+                demand_source=DemandSource.ESI_LIVE.value,
+                buy_from_sell_period=esi_live_estimate.buy_from_sell_period,
+                sell_to_buy_period=esi_live_estimate.sell_to_buy_period,
+                buy_from_sell_yesterday=esi_live_estimate.buy_from_sell_yesterday,
+                sell_to_buy_yesterday=esi_live_estimate.sell_to_buy_yesterday,
+                points_used=esi_live_estimate.valid_days,
+                esi_live_valid_days=esi_live_estimate.valid_days,
+                esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
+                esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
+                esi_live_fallback_reason=esi_live_estimate.fallback_reason,
+            )
+
         return self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
 
     def _upsert_structure_fallback(
@@ -404,39 +206,47 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
     ) -> MarketDemandResolutionResult:
-        existing = session.scalar(
-            select(MarketDemandResolved).where(
-                MarketDemandResolved.location_id == location_id,
-                MarketDemandResolved.type_id == type_id,
-                MarketDemandResolved.period_days == period_days,
-            )
+        esi_live_estimate = self._estimate_esi_live_demand(
+            session,
+            location_id=location_id,
+            type_id=type_id,
+            period_days=period_days,
+            fallback_reason="missing_structure_period",
         )
-        if existing is None:
-            existing = MarketDemandResolved(
+        if esi_live_estimate is not None:
+            return self._upsert_row(
+                session,
                 location_id=location_id,
                 type_id=type_id,
                 period_days=period_days,
-                demand_source=DemandSource.REGIONAL_FALLBACK.value,
-                buy_from_sell_period=0.0,
-                sell_to_buy_period=0.0,
-                buy_from_sell_yesterday=0.0,
-                sell_to_buy_yesterday=0.0,
-                computed_at=datetime.now(UTC),
+                demand_source=DemandSource.ESI_LIVE.value,
+                buy_from_sell_period=esi_live_estimate.buy_from_sell_period,
+                sell_to_buy_period=esi_live_estimate.sell_to_buy_period,
+                buy_from_sell_yesterday=esi_live_estimate.buy_from_sell_yesterday,
+                sell_to_buy_yesterday=esi_live_estimate.sell_to_buy_yesterday,
+                points_used=esi_live_estimate.valid_days,
+                esi_live_valid_days=esi_live_estimate.valid_days,
+                esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
+                esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
+                esi_live_fallback_reason=esi_live_estimate.fallback_reason,
             )
-            session.add(existing)
-            session.commit()
-            session.refresh(existing)
-            return MarketDemandResolutionResult(created=True, row=existing, points_used=0)
 
-        existing.demand_source = DemandSource.REGIONAL_FALLBACK.value
-        existing.buy_from_sell_period = 0.0
-        existing.sell_to_buy_period = 0.0
-        existing.buy_from_sell_yesterday = 0.0
-        existing.sell_to_buy_yesterday = 0.0
-        existing.computed_at = datetime.now(UTC)
-        session.commit()
-        session.refresh(existing)
-        return MarketDemandResolutionResult(created=False, row=existing, points_used=0)
+        return self._upsert_row(
+            session,
+            location_id=location_id,
+            type_id=type_id,
+            period_days=period_days,
+            demand_source=DemandSource.REGIONAL_FALLBACK.value,
+            buy_from_sell_period=0.0,
+            sell_to_buy_period=0.0,
+            buy_from_sell_yesterday=0.0,
+            sell_to_buy_yesterday=0.0,
+            points_used=0,
+            esi_live_valid_days=0,
+            esi_live_buy_from_sell_ratio_period=None,
+            esi_live_buy_from_sell_ratio_yesterday=None,
+            esi_live_fallback_reason="missing_structure_period_and_esi_history",
+        )
 
     def _delete_existing(
         self,
@@ -471,6 +281,10 @@ class MarketDemandResolutionService:
         buy_from_sell_yesterday: float,
         sell_to_buy_yesterday: float,
         points_used: int,
+        esi_live_valid_days: int | None,
+        esi_live_buy_from_sell_ratio_period: float | None,
+        esi_live_buy_from_sell_ratio_yesterday: float | None,
+        esi_live_fallback_reason: str | None,
     ) -> MarketDemandResolutionResult:
         record = session.scalar(
             select(MarketDemandResolved).where(
@@ -490,6 +304,10 @@ class MarketDemandResolutionService:
                 sell_to_buy_period=sell_to_buy_period,
                 buy_from_sell_yesterday=buy_from_sell_yesterday,
                 sell_to_buy_yesterday=sell_to_buy_yesterday,
+                esi_live_valid_days=esi_live_valid_days,
+                esi_live_buy_from_sell_ratio_period=esi_live_buy_from_sell_ratio_period,
+                esi_live_buy_from_sell_ratio_yesterday=esi_live_buy_from_sell_ratio_yesterday,
+                esi_live_fallback_reason=esi_live_fallback_reason,
                 computed_at=datetime.now(UTC),
             )
             session.add(record)
@@ -499,32 +317,86 @@ class MarketDemandResolutionService:
             record.sell_to_buy_period = sell_to_buy_period
             record.buy_from_sell_yesterday = buy_from_sell_yesterday
             record.sell_to_buy_yesterday = sell_to_buy_yesterday
+            record.esi_live_valid_days = esi_live_valid_days
+            record.esi_live_buy_from_sell_ratio_period = esi_live_buy_from_sell_ratio_period
+            record.esi_live_buy_from_sell_ratio_yesterday = esi_live_buy_from_sell_ratio_yesterday
+            record.esi_live_fallback_reason = esi_live_fallback_reason
             record.computed_at = datetime.now(UTC)
 
         session.commit()
         session.refresh(record)
         return MarketDemandResolutionResult(created=created, row=record, points_used=points_used)
 
-    def _prepare_npc_refresh_key_table(
+    @staticmethod
+    def _estimate_buy_from_sell_ratio(*, median_price: float, lowest_price: float, highest_price: float) -> float:
+        if highest_price <= lowest_price:
+            return 0.5
+        ratio = (median_price - lowest_price) / (highest_price - lowest_price)
+        return min(max(ratio, 0.0), 1.0)
+
+    def _estimate_esi_live_demand(
         self,
         session: Session,
         *,
-        demand_keys: list[tuple[int, int]],
-    ) -> None:
-        session.execute(
-            text(
-                """
-                CREATE TEMP TABLE IF NOT EXISTS adam_npc_demand_refresh_keys (
-                    location_id INTEGER NOT NULL,
-                    type_id INTEGER NOT NULL
-                ) ON COMMIT DROP
-                """
+        location_id: int,
+        type_id: int,
+        period_days: int,
+        fallback_reason: str,
+    ) -> EsiLiveDemandEstimate | None:
+        location = session.get(Location, location_id)
+        if location is None:
+            return None
+
+        history_rows = session.scalars(
+            select(EsiHistoryDaily)
+            .where(
+                EsiHistoryDaily.region_id == location.region_id,
+                EsiHistoryDaily.type_id == type_id,
             )
-        )
-        session.execute(text("TRUNCATE TABLE adam_npc_demand_refresh_keys"))
-        copy_rows(
-            session,
-            table_name="adam_npc_demand_refresh_keys",
-            columns=("location_id", "type_id"),
-            rows=((location_id, type_id) for location_id, type_id in demand_keys),
+            .order_by(EsiHistoryDaily.date.desc())
+            .limit(max(period_days, 1))
+        ).all()
+        if not history_rows:
+            return None
+
+        latest_history_date = max(row.date for row in history_rows)
+        buy_from_sell_period = 0.0
+        sell_to_buy_period = 0.0
+        buy_from_sell_yesterday = 0.0
+        sell_to_buy_yesterday = 0.0
+        valid_days = 0
+        valid_volume_period = 0.0
+        buy_from_sell_ratio_yesterday: float | None = None
+
+        for row in history_rows:
+            if row.volume <= 0:
+                continue
+            ratio = self._estimate_buy_from_sell_ratio(
+                median_price=row.average,
+                lowest_price=row.lowest,
+                highest_price=row.highest,
+            )
+            day_buy_from_sell = float(row.volume) * ratio
+            day_sell_to_buy = float(row.volume) * (1.0 - ratio)
+            buy_from_sell_period += day_buy_from_sell
+            sell_to_buy_period += day_sell_to_buy
+            valid_volume_period += float(row.volume)
+            valid_days += 1
+            if row.date == latest_history_date:
+                buy_from_sell_yesterday = day_buy_from_sell
+                sell_to_buy_yesterday = day_sell_to_buy
+                buy_from_sell_ratio_yesterday = ratio
+
+        if valid_days == 0:
+            return None
+
+        return EsiLiveDemandEstimate(
+            buy_from_sell_period=buy_from_sell_period,
+            sell_to_buy_period=sell_to_buy_period,
+            buy_from_sell_yesterday=buy_from_sell_yesterday,
+            sell_to_buy_yesterday=sell_to_buy_yesterday,
+            valid_days=valid_days,
+            buy_from_sell_ratio_period=(buy_from_sell_period / valid_volume_period) if valid_volume_period > 0 else None,
+            buy_from_sell_ratio_yesterday=buy_from_sell_ratio_yesterday,
+            fallback_reason=fallback_reason,
         )

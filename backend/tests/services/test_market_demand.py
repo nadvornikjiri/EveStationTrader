@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.all_models import (
     AdamMarketOrdersTradeRaw,
+    EsiHistoryDaily,
     Item,
     Location,
     MarketDemandResolved,
@@ -89,6 +90,40 @@ def add_adam_raw_history(
     session.commit()
 
 
+def add_esi_history(
+    session: Session,
+    *,
+    region_id: int,
+    type_id: int,
+    values: list[tuple[str, float, float, float, int]],
+) -> None:
+    resolved_region_id = session.scalar(
+        select(Region.id).where((Region.id == region_id) | (Region.region_id == region_id))
+    )
+    resolved_type_id = session.scalar(
+        select(Item.id).where((Item.id == type_id) | (Item.type_id == type_id))
+    )
+    assert resolved_region_id is not None
+    assert resolved_type_id is not None
+    session.execute(
+        insert(EsiHistoryDaily),
+        [
+            {
+                "region_id": resolved_region_id,
+                "type_id": resolved_type_id,
+                "date": date.fromisoformat(row_date),
+                "average": average,
+                "highest": highest,
+                "lowest": lowest,
+                "order_count": 1,
+                "volume": volume,
+            }
+            for row_date, average, highest, lowest, volume in values
+        ],
+    )
+    session.commit()
+
+
 def test_upsert_market_demand_uses_adam4eve_for_npc_targets() -> None:
     session = build_session()
     npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
@@ -118,6 +153,10 @@ def test_upsert_market_demand_uses_adam4eve_for_npc_targets() -> None:
     assert result.row.sell_to_buy_period == 7.0
     assert result.row.buy_from_sell_yesterday == 12.0
     assert result.row.sell_to_buy_yesterday == 3.0
+    assert result.row.esi_live_valid_days is None
+    assert result.row.esi_live_buy_from_sell_ratio_period is None
+    assert result.row.esi_live_buy_from_sell_ratio_yesterday is None
+    assert result.row.esi_live_fallback_reason is None
 
 
 def test_upsert_market_demand_deletes_stale_npc_row_when_no_history_exists() -> None:
@@ -181,6 +220,7 @@ def test_upsert_market_demand_uses_local_structure_period_when_period_exists() -
     assert result.row.sell_to_buy_period == 8.0
     assert result.row.buy_from_sell_yesterday == 4.0
     assert result.row.sell_to_buy_yesterday == 2.0
+    assert result.row.esi_live_valid_days is None
 
 
 def test_upsert_market_demand_falls_back_for_structure_when_period_is_missing() -> None:
@@ -201,6 +241,122 @@ def test_upsert_market_demand_falls_back_for_structure_when_period_is_missing() 
     assert result.row.sell_to_buy_period == 0.0
     assert result.row.buy_from_sell_yesterday == 0.0
     assert result.row.sell_to_buy_yesterday == 0.0
+    assert result.row.esi_live_valid_days == 0
+    assert result.row.esi_live_fallback_reason == "missing_structure_period_and_esi_history"
+
+
+def test_upsert_market_demand_uses_esi_live_fallback_when_adam_resolves_to_zero() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[
+            ("2026-03-20", 108.0, 110.0, 100.0, 10),
+            ("2026-03-19", 101.0, 110.0, 100.0, 20),
+        ],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=2,
+    )
+
+    assert result.row is not None
+    assert result.points_used == 2
+    assert result.row.demand_source == "esi_live"
+    assert result.row.buy_from_sell_yesterday == pytest.approx(8.0)
+    assert result.row.sell_to_buy_yesterday == pytest.approx(2.0)
+    assert result.row.buy_from_sell_period == pytest.approx(10.0)
+    assert result.row.sell_to_buy_period == pytest.approx(20.0)
+    assert result.row.esi_live_valid_days == 2
+    assert result.row.esi_live_buy_from_sell_ratio_yesterday == pytest.approx(0.8)
+    assert result.row.esi_live_buy_from_sell_ratio_period == pytest.approx(10.0 / 30.0)
+    assert result.row.esi_live_fallback_reason == "adam_zero_buy_from_sell"
+
+
+def test_upsert_market_demand_uses_esi_live_for_structures_without_local_period() -> None:
+    session = build_session()
+    _npc_location_id, structure_location_id, item_id = seed_locations_and_item(session)
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[
+            ("2026-03-20", 105.0, 110.0, 100.0, 10),
+            ("2026-03-19", 102.0, 110.0, 100.0, 5),
+        ],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=structure_location_id,
+        type_id=item_id,
+        period_days=2,
+    )
+
+    assert result.row is not None
+    assert result.row.demand_source == "esi_live"
+    assert result.row.buy_from_sell_yesterday == pytest.approx(5.0)
+    assert result.row.sell_to_buy_yesterday == pytest.approx(5.0)
+    assert result.row.esi_live_fallback_reason == "missing_structure_period"
+
+
+def test_upsert_market_demand_esi_live_uses_half_split_when_daily_range_is_flat() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[("2026-03-20", 100.0, 100.0, 100.0, 12)],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=1,
+    )
+
+    assert result.row is not None
+    assert result.row.demand_source == "esi_live"
+    assert result.row.buy_from_sell_yesterday == pytest.approx(6.0)
+    assert result.row.sell_to_buy_yesterday == pytest.approx(6.0)
+    assert result.row.esi_live_buy_from_sell_ratio_yesterday == pytest.approx(0.5)
+
+
+def test_upsert_market_demand_esi_live_keeps_yesterday_zero_when_latest_day_has_no_volume() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[
+            ("2026-03-20", 105.0, 110.0, 100.0, 0),
+            ("2026-03-19", 109.0, 110.0, 100.0, 10),
+        ],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=2,
+    )
+
+    assert result.row is not None
+    assert result.row.demand_source == "esi_live"
+    assert result.row.buy_from_sell_yesterday == 0.0
+    assert result.row.sell_to_buy_yesterday == 0.0
+    assert result.row.buy_from_sell_period == pytest.approx(9.0)
+    assert result.row.sell_to_buy_period == pytest.approx(1.0)
+    assert result.row.esi_live_buy_from_sell_ratio_yesterday is None
+    assert result.row.esi_live_valid_days == 1
 
 
 def test_refresh_npc_keys_from_adam_aggregates_all_requested_keys_in_bulk() -> None:

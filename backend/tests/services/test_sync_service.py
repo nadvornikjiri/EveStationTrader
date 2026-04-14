@@ -2839,7 +2839,7 @@ def test_esi_market_orders_sync_skips_orders_for_missing_foundation_items() -> N
     assert session.scalar(select(EsiMarketOrder).where(EsiMarketOrder.order_id == 9001)) is None
 
 
-def test_esi_market_orders_sync_skips_unresolved_locations() -> None:
+def test_esi_market_orders_sync_creates_structure_locations_when_system_is_known() -> None:
     session = build_session()
     curated_station = PRIMARY_TEST_STATION
 
@@ -2877,8 +2877,12 @@ def test_esi_market_orders_sync_skips_unresolved_locations() -> None:
 
     assert result.status == "success"
     assert result.records_processed == 1
-    assert "1 skipped because the location could not be resolved" in (result.message or "")
-    assert session.scalar(select(EsiMarketOrder).where(EsiMarketOrder.order_id == 9001)) is None
+    created_location = session.scalar(select(Location).where(Location.location_id == 1033368129183))
+    order = session.scalar(select(EsiMarketOrder).where(EsiMarketOrder.order_id == 9001))
+    assert created_location is not None
+    assert created_location.location_type == "structure"
+    assert order is not None
+    assert order.location_id == created_location.id
 
 
 def test_esi_market_orders_sync_keeps_known_structure_locations() -> None:
@@ -2932,7 +2936,7 @@ def test_esi_market_orders_sync_keeps_known_structure_locations() -> None:
     assert order.location_id == structure_location.id
 
 
-def test_esi_market_orders_sync_scopes_to_all_imported_regions() -> None:
+def test_esi_market_orders_sync_scopes_to_configured_source_regions_and_target_regions() -> None:
     session = build_session()
     curated_station = PRIMARY_TEST_STATION
 
@@ -2970,6 +2974,28 @@ def test_esi_market_orders_sync_scopes_to_all_imported_regions() -> None:
         [
             Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material"),
             Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material"),
+            UserSetting(
+                user_id=None,
+                key="defaults",
+                value={
+                    "default_analysis_period_days": 14,
+                    "trade_groups_page_size": 20,
+                    "debug_enabled": False,
+                    "sales_tax_rate": 0.036,
+                    "broker_fee_rate": 0.03,
+                    "default_user_structure_poll_interval_minutes": 30,
+                    "snapshot_retention_days": 30,
+                    "fallback_policy": "regional_fallback",
+                    "shipping_cost_per_m3": 350.0,
+                    "target_market_location_ids": [curated_station.station_id],
+                    "source_region_ids": [10000099],
+                    "default_filters": {
+                        "min_item_profit": 15_000_000,
+                        "roi_now": 0.2,
+                        "target_demand_day": 1,
+                    },
+                },
+            ),
         ]
     )
     session.commit()

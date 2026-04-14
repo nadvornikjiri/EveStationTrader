@@ -97,6 +97,8 @@ export type ShoppingListEntry = {
   item_name: string;
   quantity: number;
   source_station_sell_price: number;
+  target_now_profit: number;
+  target_period_profit: number;
   item_volume_m3: number;
   target_demand_day: number;
   source_station_name: string;

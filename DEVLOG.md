@@ -2653,3 +2653,14 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && ./.venv/bin/pytest tests --tb=short -q`
   - `cd backend && ./.venv/bin/ruff check . --fix`
   - note: `cd backend && ./.venv/bin/mypy .` is still blocked by pre-existing failures in `app/services/npc_stations/deltas.py` and older Alembic migrations unrelated to this change
+
+## 2026-04-13 - OPPORTUNITY-REBUILD-SOURCE-REGION-SCOPING
+- Reworked opportunity generation to bulk preload items, resolved demand, target price periods, regional ESI history averages, sell-side station liquidity, target live minima, and source effective prices in chunked set-based queries instead of per-type lookups.
+- Added configurable `source_region_ids` to backend settings and the Settings page, and changed ESI market-order sync to download only configured source regions plus the regions containing configured target markets.
+- Updated regression coverage so settings persistence asserts `source_region_ids`, ESI sync tests assert target-region auto-inclusion alongside configured source regions, and known-system structure orders verify the new location auto-creation path.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_sync_service.py::test_esi_market_orders_sync_creates_structure_locations_when_system_is_known tests/services/test_sync_service.py::test_esi_market_orders_sync_scopes_to_configured_source_regions_and_target_regions tests/services/test_opportunity_generation.py`
+  - `cd frontend && npm test -- src/pages/SettingsPage.test.tsx`
+  - note: `cd backend && ./.venv/bin/mypy .` is still blocked by pre-existing typing failures in older Alembic migrations and `app/services/npc_stations/deltas.py`
+  - note: API endpoint integration tests are currently blocked by a pre-existing duplicate-table migration issue when `TestClient` boot runs migrations in the shared test database

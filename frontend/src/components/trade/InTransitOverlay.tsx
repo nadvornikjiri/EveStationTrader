@@ -11,7 +11,7 @@ type Props = {
   isSaving: boolean;
   isDeleting: boolean;
   errorMessage?: string | null;
-  onToggleOpen: () => void;
+  onMinimize: () => void;
   onSave: (payload: { source_location_id: number; target_location_id: number; type_id: number; quantity: number; note?: string }) => void;
   onDelete: (entryId: number) => void;
 };
@@ -25,7 +25,7 @@ export function InTransitOverlay({
   isSaving,
   isDeleting,
   errorMessage,
-  onToggleOpen,
+  onMinimize,
   onSave,
   onDelete,
 }: Props) {
@@ -66,23 +66,7 @@ export function InTransitOverlay({
   };
 
   if (!isOpen) {
-    return (
-      <div
-        className="in-transit-tab"
-        onClick={onToggleOpen}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            onToggleOpen();
-          }
-        }}
-      >
-        <span className="in-transit-tab__count">{entries.length}</span>
-        <span className="in-transit-tab__label">In Transit</span>
-        <span className="in-transit-tab__chevron">▲</span>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -92,7 +76,7 @@ export function InTransitOverlay({
           <span className="shopping-list-overlay__title">In Transit</span>
           <p className="in-transit-overlay__subtitle">Target: {target.name}</p>
         </div>
-        <button type="button" className="shopping-list-overlay__minimize-btn" onClick={onToggleOpen} aria-label="Minimize in-transit overlay">
+        <button type="button" className="shopping-list-overlay__minimize-btn" onClick={onMinimize} aria-label="Minimize in-transit overlay">
           ▼
         </button>
       </div>
@@ -138,8 +122,8 @@ export function InTransitOverlay({
           </button>
         </div>
         {errorMessage ? <p role="alert">{errorMessage}</p> : null}
-        <div className="table-scroll">
-          <table className="data-table">
+        <div className="table-scroll in-transit-table-scroll">
+          <table className="data-table in-transit-table">
             <thead>
               <tr>
                 <th>Source</th>
