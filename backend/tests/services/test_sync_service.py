@@ -2214,7 +2214,7 @@ def test_adam4eve_sync_skips_demand_download_when_latest_export_is_already_synce
         AdamNpcDemandSyncState(
             region_id=1,
             export_key="2026-12",
-            synced_through_date=datetime(2026, 3, 22, tzinfo=UTC).date(),
+            synced_through_date=datetime.now(UTC).date(),
             last_checked_at=datetime.now(UTC),
         )
     )
@@ -2285,7 +2285,7 @@ def test_adam4eve_sync_skips_demand_download_when_generic_cursor_is_complete() -
         BulkImportCursor(
             import_kind="adam4eve_npc_demand",
             scope_key="region:1",
-            synced_through_date=date(2026, 3, 22),
+            synced_through_date=datetime.now(UTC).date(),
             last_completed_key="2026-12",
             last_checked_at=datetime.now(UTC),
         )
