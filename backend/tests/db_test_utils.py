@@ -6,6 +6,8 @@ import time
 import weakref
 from weakref import WeakSet
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import OperationalError
@@ -188,6 +190,9 @@ def _ensure_schema(engine: Engine) -> None:
         connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
         connection.exec_driver_sql("CREATE SCHEMA public")
         Base.metadata.create_all(connection)
+    alembic_cfg = AlembicConfig(REPO_ROOT / "backend" / "alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+    alembic_command.stamp(alembic_cfg, "head")
     _schema_initialized = True
 
 
