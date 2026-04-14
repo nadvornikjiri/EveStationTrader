@@ -2211,7 +2211,7 @@ class SyncService:
         if synced_through_date is None or not has_required_history_window:
             return False
         if last_completed_key == latest_export.export_key:
-            return synced_through_date >= latest_export.covered_through_date
+            return synced_through_date >= latest_export.covered_through_date and synced_through_date >= required_since_date
         return synced_through_date >= latest_export.covered_through_date
 
     def _record_adam_demand_region_check(
