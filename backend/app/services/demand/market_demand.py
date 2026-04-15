@@ -71,6 +71,7 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
         adam_covered: bool = True,
+        autocommit: bool = True,
     ) -> MarketDemandResolutionResult:
         location = session.get(Location, location_id)
         if location is None:
@@ -83,6 +84,7 @@ class MarketDemandResolutionService:
                 type_id=type_id,
                 period_days=period_days,
                 adam_covered=adam_covered,
+                autocommit=autocommit,
             )
 
         structure_period = session.scalar(
@@ -108,6 +110,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_period=None,
                 esi_live_buy_from_sell_ratio_yesterday=None,
                 esi_live_fallback_reason=None,
+                autocommit=autocommit,
             )
 
         return self._upsert_structure_fallback(
@@ -115,6 +118,7 @@ class MarketDemandResolutionService:
             location_id=location_id,
             type_id=type_id,
             period_days=period_days,
+            autocommit=autocommit,
         )
 
     def _upsert_npc_from_adam(
@@ -125,6 +129,7 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
         adam_covered: bool = True,
+        autocommit: bool = True,
     ) -> MarketDemandResolutionResult:
         timing = DemandResolutionTiming()
         location = session.get(Location, location_id)
@@ -191,6 +196,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_period=None,
                 esi_live_buy_from_sell_ratio_yesterday=None,
                 esi_live_fallback_reason=None,
+                autocommit=autocommit,
             )
             timing.upsert_s = perf_counter() - t0
             result.timing = timing
@@ -223,13 +229,20 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
                 esi_live_fallback_reason=esi_live_estimate.fallback_reason,
+                autocommit=autocommit,
             )
             timing.upsert_s = perf_counter() - t0
             result.timing = timing
             return result
 
         t0 = perf_counter()
-        result = self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
+        result = self._delete_existing(
+            session,
+            location_id=location_id,
+            type_id=type_id,
+            period_days=period_days,
+            autocommit=autocommit,
+        )
         timing.upsert_s = perf_counter() - t0
         result.timing = timing
         return result
@@ -241,6 +254,7 @@ class MarketDemandResolutionService:
         location_id: int,
         type_id: int,
         period_days: int,
+        autocommit: bool = True,
     ) -> MarketDemandResolutionResult:
         esi_live_estimate = self._estimate_esi_live_demand(
             session,
@@ -265,6 +279,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
                 esi_live_fallback_reason=esi_live_estimate.fallback_reason,
+                autocommit=autocommit,
             )
 
         return self._upsert_row(
@@ -282,6 +297,7 @@ class MarketDemandResolutionService:
             esi_live_buy_from_sell_ratio_period=None,
             esi_live_buy_from_sell_ratio_yesterday=None,
             esi_live_fallback_reason="missing_structure_period_and_esi_history",
+            autocommit=autocommit,
         )
 
     def _delete_existing(
@@ -291,6 +307,7 @@ class MarketDemandResolutionService:
         location_id: int,
         type_id: int,
         period_days: int,
+        autocommit: bool = True,
     ) -> MarketDemandResolutionResult:
         existing = session.scalar(
             select(MarketDemandResolved).where(
@@ -301,7 +318,8 @@ class MarketDemandResolutionService:
         )
         if existing is not None:
             session.delete(existing)
-            session.commit()
+            if autocommit:
+                session.commit()
         return MarketDemandResolutionResult(created=False, row=None, points_used=0)
 
     def _upsert_row(
@@ -321,6 +339,7 @@ class MarketDemandResolutionService:
         esi_live_buy_from_sell_ratio_period: float | None,
         esi_live_buy_from_sell_ratio_yesterday: float | None,
         esi_live_fallback_reason: str | None,
+        autocommit: bool = True,
     ) -> MarketDemandResolutionResult:
         record = session.scalar(
             select(MarketDemandResolved).where(
@@ -359,7 +378,8 @@ class MarketDemandResolutionService:
             record.esi_live_fallback_reason = esi_live_fallback_reason
             record.computed_at = datetime.now(UTC)
 
-        session.commit()
+        if autocommit:
+            session.commit()
         return MarketDemandResolutionResult(created=created, row=record, points_used=points_used)
 
     @staticmethod

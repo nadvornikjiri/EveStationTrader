@@ -2710,3 +2710,15 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && .venv/bin/ruff check . --fix`
   - `cd backend && .venv/bin/mypy .`
   - `cd backend && .venv/bin/pytest`
+
+## 2026-04-15 - ESI-DEMAND-BATCH-COMMITS
+- Added an `autocommit` flag through `MarketDemandResolutionService` so resolved-demand upserts and deletes can be staged without changing the existing Adam refresh behavior, which still defaults to per-call commits.
+- Updated `_sync_everef_history()` to disable per-key autocommit for ESI demand refreshes, commit every 50 keys, and issue one final flush after the loop so the ESI path stops doing one transaction per key.
+- Added regression coverage proving `upsert_for_location(..., autocommit=False)` leaves the row uncommitted and invisible to a separate session until an explicit `session.commit()`.
+- validation:
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy .`
+  - `cd backend && .venv/bin/pytest`
+  - `cd backend && .venv/bin/pytest -m integration tests/services/test_market_demand.py -q`
+  - `cd backend && .venv/bin/pytest -m integration tests/services/test_sync_service.py::test_everef_history_sync_first_run_succeeds_with_mocked_downloads tests/services/test_sync_service.py::test_everef_history_sync_limits_downloads_to_analysis_window_even_with_existing_state tests/services/test_sync_service.py::test_everef_history_sync_triggers_esi_demand_refresh_after_ingest tests/services/test_sync_service.py::test_everef_history_sync_preload_keeps_esi_demand_values_correct -q`
+  - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0012_restore_esi_history_daily.py`, and `alembic/versions/20260409_0013_widen_esi_history_volume.py`

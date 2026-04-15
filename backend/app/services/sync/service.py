@@ -1619,6 +1619,7 @@ class SyncService:
         total_adam_s = 0.0
         total_esi_history_s = 0.0
         total_upsert_s = 0.0
+        _COMMIT_INTERVAL = 50
         _PROGRESS_INTERVAL = 100
         for idx, (location_id, type_id) in enumerate(esi_demand_keys, start=1):
             if cancellation_check is not None:
@@ -1629,7 +1630,10 @@ class SyncService:
                 type_id=type_id,
                 period_days=analysis_period_days,
                 adam_covered=(location_id, type_id) in adam_covered_keys,
+                autocommit=False,
             )
+            if idx % _COMMIT_INTERVAL == 0:
+                session.commit()
             total_adam_s += result.timing.adam_lookup_s
             total_esi_history_s += result.timing.esi_history_s
             total_upsert_s += result.timing.upsert_s
@@ -1645,6 +1649,7 @@ class SyncService:
                     progress_unit="keys",
                     message=f"Refreshing ESI demand: {idx} / {total_esi_keys} keys ({derived_count} rows written).",
                 )
+        session.commit()
         self._log_profile_checkpoint(
             "refresh_esi_demand",
             started_at=phase_started_at,

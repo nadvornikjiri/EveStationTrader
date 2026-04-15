@@ -4,7 +4,7 @@ from typing import TypedDict
 
 import pytest
 from sqlalchemy import insert, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.all_models import (
     AdamMarketOrdersTradeRaw,
@@ -252,6 +252,61 @@ def test_upsert_market_demand_uses_local_structure_period_when_period_exists() -
     assert result.row.buy_from_sell_yesterday == 4.0
     assert result.row.sell_to_buy_yesterday == 2.0
     assert result.row.esi_live_valid_days is None
+
+
+def test_upsert_for_location_stages_changes_without_autocommit() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_adam_raw_history(
+        session,
+        location_id=npc_location_id,
+        values=[
+            ("2026-03-20", 0, 12.0),
+            ("2026-03-20", 1, 3.0),
+        ],
+    )
+    service = MarketDemandResolutionService()
+
+    result = service.upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=1,
+        autocommit=False,
+    )
+
+    assert result.row is not None
+    assert session.new or session.dirty
+
+    fresh_session = sessionmaker(bind=session.get_bind(), expire_on_commit=False)()
+    try:
+        persisted_before_commit = fresh_session.scalar(
+            select(MarketDemandResolved).where(
+                MarketDemandResolved.location_id == npc_location_id,
+                MarketDemandResolved.type_id == item_id,
+                MarketDemandResolved.period_days == 1,
+            )
+        )
+        assert persisted_before_commit is None
+    finally:
+        fresh_session.close()
+
+    session.commit()
+
+    persisted_after_commit = sessionmaker(bind=session.get_bind(), expire_on_commit=False)()
+    try:
+        stored_row = persisted_after_commit.scalar(
+            select(MarketDemandResolved).where(
+                MarketDemandResolved.location_id == npc_location_id,
+                MarketDemandResolved.type_id == item_id,
+                MarketDemandResolved.period_days == 1,
+            )
+        )
+        assert stored_row is not None
+        assert stored_row.demand_source == "adam4eve"
+        assert stored_row.buy_from_sell_period == 12.0
+    finally:
+        persisted_after_commit.close()
 
 
 def test_upsert_market_demand_falls_back_for_structure_when_period_is_missing() -> None:
