@@ -1,3 +1,18 @@
+## 2026-04-15
+
+- task id: `EVEREF-ESI-DEMAND-PROFILING-2026-04-15`
+- title: Reduce EVE Ref ESI Demand Refresh Query Churn
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: added a reproducible benchmark script for the `everef_history_sync` ESI demand refresh loop and then landed two verified optimizations. Commit `bd2b6c8` stopped rebuilding Adam-coverage ID maps via thousands of `session.get()` calls after the bulk preload, which cut the 1000-key benchmark from `16.773s` to `5.478s` by reducing preload time from `13.082s` to `1.765s`. Commit `438fb49` added a batch preload context in `MarketDemandResolutionService` that holds strong references to `Location`/`Item` rows, preloads ESI history by `(region_id, type_id)`, and reuses existing `MarketDemandResolved` rows, which cut the same benchmark again from `5.478s` to `2.417s`; the per-key loop itself dropped from `3.714s` to `0.128s`.
+- validation:
+  - `cd backend && ./.venv/bin/python scripts/profile_refresh_esi_demand.py --limit 1000 --profile --profile-lines 30`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_sync_service.py::test_everef_history_sync_preload_keeps_esi_demand_values_correct -q`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_market_demand.py::test_upsert_for_location_preload_matches_non_preloaded_result tests/services/test_sync_service.py::test_everef_history_sync_preload_keeps_esi_demand_values_correct -q`
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/mypy .`
+  - `cd backend && ./.venv/bin/pytest`
+  - note: `mypy .` is still blocked by pre-existing unrelated errors in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0013_widen_esi_history_volume.py`, and `alembic/versions/20260409_0012_restore_esi_history_daily.py`
+
 ## 2026-04-11
 
 - task id: `ESI-DEMAND-IDENTITY-PRELOAD-2026-04-11`
