@@ -87,8 +87,6 @@ def test_upsert_period_aggregates_buy_from_sell_deltas_into_structure_demand_per
     assert result.delta_count == 3
     assert row.buy_from_sell_period == pytest.approx(30)
     assert row.sell_to_buy_period == pytest.approx(25)
-    assert row.buy_from_sell_yesterday == pytest.approx(30)
-    assert row.sell_to_buy_yesterday == pytest.approx(25)
     assert row.coverage_pct == pytest.approx(3 / 5)
 
 

@@ -28,7 +28,6 @@ class NpcStationDemandPeriodService:
 
         computed_at = datetime.now(UTC)
         window_start = computed_at - timedelta(days=period_days)
-        yesterday_start = computed_at - timedelta(days=1)
 
         location_list = list(target_location_ids)
 
@@ -37,7 +36,6 @@ class NpcStationDemandPeriodService:
         params: dict[str, object] = {
             "period_days": period_days,
             "window_start": window_start,
-            "yesterday_start": yesterday_start,
             "computed_at": computed_at,
         }
         for i, loc_id in enumerate(location_list):
@@ -52,8 +50,6 @@ class NpcStationDemandPeriodService:
                     period_days,
                     buy_from_sell_period,
                     sell_to_buy_period,
-                    buy_from_sell_yesterday,
-                    sell_to_buy_yesterday,
                     coverage_pct,
                     computed_at
                 )
@@ -63,8 +59,6 @@ class NpcStationDemandPeriodService:
                     :period_days,
                     COALESCE(SUM(CASE WHEN d.inferred_trade_side = 'buy_from_sell' THEN d.inferred_trade_units ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN d.inferred_trade_side = 'sell_to_buy' THEN d.inferred_trade_units ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN d.inferred_trade_side = 'buy_from_sell' AND d.to_snapshot_time >= :yesterday_start THEN d.inferred_trade_units ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN d.inferred_trade_side = 'sell_to_buy' AND d.to_snapshot_time >= :yesterday_start THEN d.inferred_trade_units ELSE 0 END), 0),
                     LEAST(COUNT(DISTINCT DATE(d.to_snapshot_time))::float / GREATEST(:period_days, 1), 1.0),
                     :computed_at
                 FROM npc_station_order_deltas d
@@ -75,8 +69,6 @@ class NpcStationDemandPeriodService:
                 ON CONFLICT (location_id, type_id, period_days) DO UPDATE SET
                     buy_from_sell_period = EXCLUDED.buy_from_sell_period,
                     sell_to_buy_period = EXCLUDED.sell_to_buy_period,
-                    buy_from_sell_yesterday = EXCLUDED.buy_from_sell_yesterday,
-                    sell_to_buy_yesterday = EXCLUDED.sell_to_buy_yesterday,
                     coverage_pct = EXCLUDED.coverage_pct,
                     computed_at = EXCLUDED.computed_at
                 """

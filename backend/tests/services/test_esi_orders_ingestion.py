@@ -294,6 +294,72 @@ def test_ingest_region_orders_keeps_existing_location_when_market_region_differs
     assert order.region_id == special_region.id
 
 
+def test_ingest_order_batches_reports_progress_per_batch() -> None:
+    session = build_session()
+    region, system, item = seed_region_system_item(session)
+    location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+    )
+    session.add(location)
+    session.commit()
+
+    progress_updates: list[tuple[int, int]] = []
+    result = EsiRegionalOrderIngestionService().ingest_order_batches(
+        session,
+        region_batches=[
+            EsiRegionOrderBatch(
+                region_id=region.id,
+                eve_region_id=region.region_id,
+                records=[
+                    {
+                        "order_id": 9101,
+                        "type_id": item.type_id,
+                        "location_id": location.location_id,
+                        "system_id": system.system_id,
+                        "is_buy_order": False,
+                        "price": 4.12,
+                        "volume_total": 1000,
+                        "volume_remain": 400,
+                        "min_volume": 1,
+                        "range": "region",
+                        "issued": "2026-03-23T09:00:00+00:00",
+                        "duration": 90,
+                    }
+                ],
+            ),
+            EsiRegionOrderBatch(
+                region_id=region.id,
+                eve_region_id=region.region_id,
+                records=[
+                    {
+                        "order_id": 9102,
+                        "type_id": item.type_id,
+                        "location_id": location.location_id,
+                        "system_id": system.system_id,
+                        "is_buy_order": False,
+                        "price": 4.22,
+                        "volume_total": 1000,
+                        "volume_remain": 300,
+                        "min_volume": 1,
+                        "range": "region",
+                        "issued": "2026-03-23T10:00:00+00:00",
+                        "duration": 90,
+                    }
+                ],
+            ),
+        ],
+        universe_client=StubUniverseClient(),
+        progress_callback=lambda current, total: progress_updates.append((current, total)),
+    )
+
+    assert result.records_processed == 2
+    assert progress_updates == [(1, 2), (2, 2)]
+
+
 def test_ingest_region_orders_creates_placeholder_structure_location_for_public_structure() -> None:
     session = build_session()
     region, system, item = seed_region_system_item(session)

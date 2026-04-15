@@ -53,8 +53,6 @@ class StructureDemandPeriodService:
             )
         )
         del yesterday_start
-        buy_from_sell_yesterday = buy_from_sell_period
-        sell_to_buy_yesterday = sell_to_buy_period
 
         coverage_pct = min(len(deltas) / max(period_days, 1), 1.0)
 
@@ -74,8 +72,6 @@ class StructureDemandPeriodService:
                 computed_at=computed_at,
                 buy_from_sell_period=buy_from_sell_period,
                 sell_to_buy_period=sell_to_buy_period,
-                buy_from_sell_yesterday=buy_from_sell_yesterday,
-                sell_to_buy_yesterday=sell_to_buy_yesterday,
                 coverage_pct=coverage_pct,
             )
             session.add(record)
@@ -83,8 +79,6 @@ class StructureDemandPeriodService:
             record.computed_at = computed_at
             record.buy_from_sell_period = buy_from_sell_period
             record.sell_to_buy_period = sell_to_buy_period
-            record.buy_from_sell_yesterday = buy_from_sell_yesterday
-            record.sell_to_buy_yesterday = sell_to_buy_yesterday
             record.coverage_pct = coverage_pct
 
         session.commit()

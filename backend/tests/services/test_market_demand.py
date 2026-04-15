@@ -151,8 +151,6 @@ def test_upsert_market_demand_uses_adam4eve_for_npc_targets() -> None:
     assert result.row.demand_source == "adam4eve"
     assert result.row.buy_from_sell_period == 30.0
     assert result.row.sell_to_buy_period == 7.0
-    assert result.row.buy_from_sell_yesterday == 12.0
-    assert result.row.sell_to_buy_yesterday == 3.0
     assert result.row.esi_live_valid_days is None
     assert result.row.esi_live_buy_from_sell_ratio_period is None
     assert result.row.esi_live_buy_from_sell_ratio_yesterday is None
@@ -201,8 +199,6 @@ def test_upsert_market_demand_deletes_stale_npc_row_when_no_history_exists() -> 
             demand_source="adam4eve",
             buy_from_sell_period=12.0,
             sell_to_buy_period=3.0,
-            buy_from_sell_yesterday=12.0,
-            sell_to_buy_yesterday=3.0,
         )
     )
     session.commit()
@@ -230,8 +226,6 @@ def test_upsert_market_demand_uses_local_structure_period_when_period_exists() -
             period_days=14,
             buy_from_sell_period=20.0,
             sell_to_buy_period=8.0,
-            buy_from_sell_yesterday=4.0,
-            sell_to_buy_yesterday=2.0,
             coverage_pct=0.8,
         )
     )
@@ -249,8 +243,6 @@ def test_upsert_market_demand_uses_local_structure_period_when_period_exists() -
     assert result.row.demand_source == "local_structure"
     assert result.row.buy_from_sell_period == 20.0
     assert result.row.sell_to_buy_period == 8.0
-    assert result.row.buy_from_sell_yesterday == 4.0
-    assert result.row.sell_to_buy_yesterday == 2.0
     assert result.row.esi_live_valid_days is None
 
 
@@ -325,8 +317,6 @@ def test_upsert_market_demand_falls_back_for_structure_when_period_is_missing() 
     assert result.row.demand_source == "regional_fallback"
     assert result.row.buy_from_sell_period == 0.0
     assert result.row.sell_to_buy_period == 0.0
-    assert result.row.buy_from_sell_yesterday == 0.0
-    assert result.row.sell_to_buy_yesterday == 0.0
     assert result.row.esi_live_valid_days == 0
     assert result.row.esi_live_fallback_reason == "missing_structure_period_and_esi_history"
 
@@ -354,8 +344,6 @@ def test_upsert_market_demand_uses_esi_live_fallback_when_adam_resolves_to_zero(
     assert result.row is not None
     assert result.points_used == 2
     assert result.row.demand_source == "esi_live"
-    assert result.row.buy_from_sell_yesterday == pytest.approx(8.0)
-    assert result.row.sell_to_buy_yesterday == pytest.approx(2.0)
     assert result.row.buy_from_sell_period == pytest.approx(10.0)
     assert result.row.sell_to_buy_period == pytest.approx(20.0)
     assert result.row.esi_live_valid_days == 2
@@ -411,8 +399,6 @@ def test_upsert_for_location_preload_matches_non_preloaded_result() -> None:
             demand_source="regional_fallback",
             buy_from_sell_period=1.0,
             sell_to_buy_period=1.0,
-            buy_from_sell_yesterday=1.0,
-            sell_to_buy_yesterday=1.0,
         )
     )
     session.commit()
@@ -445,8 +431,6 @@ def test_upsert_for_location_preload_matches_non_preloaded_result() -> None:
     assert result.created is False
     assert result.row is not None
     assert result.row.demand_source == "esi_live"
-    assert result.row.buy_from_sell_yesterday == pytest.approx(8.0)
-    assert result.row.sell_to_buy_yesterday == pytest.approx(2.0)
     assert result.row.buy_from_sell_period == pytest.approx(10.0)
     assert result.row.sell_to_buy_period == pytest.approx(20.0)
     assert preload.existing_rows_by_key[(npc_location_id, item_id, 2)] is result.row
@@ -474,8 +458,6 @@ def test_upsert_market_demand_uses_esi_live_for_structures_without_local_period(
 
     assert result.row is not None
     assert result.row.demand_source == "esi_live"
-    assert result.row.buy_from_sell_yesterday == pytest.approx(5.0)
-    assert result.row.sell_to_buy_yesterday == pytest.approx(5.0)
     assert result.row.esi_live_fallback_reason == "missing_structure_period"
 
 
@@ -498,8 +480,6 @@ def test_upsert_market_demand_esi_live_uses_half_split_when_daily_range_is_flat(
 
     assert result.row is not None
     assert result.row.demand_source == "esi_live"
-    assert result.row.buy_from_sell_yesterday == pytest.approx(6.0)
-    assert result.row.sell_to_buy_yesterday == pytest.approx(6.0)
     assert result.row.esi_live_buy_from_sell_ratio_yesterday == pytest.approx(0.5)
 
 
@@ -525,8 +505,6 @@ def test_upsert_market_demand_esi_live_keeps_yesterday_zero_when_latest_day_has_
 
     assert result.row is not None
     assert result.row.demand_source == "esi_live"
-    assert result.row.buy_from_sell_yesterday == 0.0
-    assert result.row.sell_to_buy_yesterday == 0.0
     assert result.row.buy_from_sell_period == pytest.approx(9.0)
     assert result.row.sell_to_buy_period == pytest.approx(1.0)
     assert result.row.esi_live_buy_from_sell_ratio_yesterday is None
@@ -587,8 +565,6 @@ def test_refresh_npc_keys_from_adam_aggregates_all_requested_keys_in_bulk() -> N
     assert rows[0].type_id == item_id
     assert rows[0].buy_from_sell_period == 30.0
     assert rows[0].sell_to_buy_period == 7.0
-    assert rows[0].buy_from_sell_yesterday == 12.0
-    assert rows[0].sell_to_buy_yesterday == 3.0
     assert rows[1].type_id == extra_item_id
     assert rows[1].buy_from_sell_period == 7.0
     assert rows[1].sell_to_buy_period == 0.0
@@ -605,8 +581,6 @@ def test_refresh_npc_keys_from_adam_deletes_stale_rows_for_keys_without_history(
             demand_source="adam4eve",
             buy_from_sell_period=99.0,
             sell_to_buy_period=11.0,
-            buy_from_sell_yesterday=33.0,
-            sell_to_buy_yesterday=5.0,
         )
     )
     session.commit()
@@ -659,17 +633,6 @@ def test_refresh_npc_keys_from_adam_matches_manual_csv_rollup(tmp_path) -> None:
 
     expected_buy_period = sum(row["amount"] for row in window_rows if row["is_buy_order"] == 0)
     expected_sell_period = sum(row["amount"] for row in window_rows if row["is_buy_order"] == 1)
-    expected_buy_latest = sum(
-        row["amount"]
-        for row in window_rows
-        if row["is_buy_order"] == 0 and row["scan_date"] == latest_scan_date
-    )
-    expected_sell_latest = sum(
-        row["amount"]
-        for row in window_rows
-        if row["is_buy_order"] == 1 and row["scan_date"] == latest_scan_date
-    )
-
     AdamMarketOrdersIngestionService().ingest_market_orders_export(session, csv_file_path=csv_path)
 
     refreshed = MarketDemandResolutionService().refresh_npc_keys_from_adam(
@@ -689,5 +652,3 @@ def test_refresh_npc_keys_from_adam_matches_manual_csv_rollup(tmp_path) -> None:
     assert row is not None
     assert row.buy_from_sell_period == expected_buy_period
     assert row.sell_to_buy_period == expected_sell_period
-    assert row.buy_from_sell_yesterday == expected_buy_latest
-    assert row.sell_to_buy_yesterday == expected_sell_latest

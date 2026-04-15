@@ -3,17 +3,16 @@
 This project uses Super Turtle for autonomous coding via Telegram.
 
 ## Current task
-Investigating and fixing data coverage gaps in the opportunity pipeline for day trading between major trade hubs (Jita, Amarr, Dodixie, Rens, Hek) on lowest sell orders.
-
-## End goal with specs
-All legitimately tradeable items with measurable demand at target trade hubs appear in `opportunity_items`. No item with real station-level demand signal is silently excluded from the pipeline.
+Data coverage gap fixes complete. Pipeline now captures all legitimately tradeable sell-to-sell items.
 
 ## Backlog
 - [x] Audit data coverage for the opportunity pipeline
-- [x] Fix 566-item pipeline gap: `npc_station_demand_period` not flowing to `market_demand_resolved`
+- [x] Gap 1: `npc_station_demand_period` not flowing to `market_demand_resolved` (+8,213 rows, +4,177 opportunity items)
 - [x] Gap 2: 797 items with regional trade volume but zero demand record (history_based_pairs third source added)
-- [ ] Gap 3: Add buy-order-side opportunities (source sell → target buy order = instant sell; 300k buy orders captured but unused) <- current
-- [x] Gap 4: EveRef history staleness (latest 2026-04-13, 2 days behind; verify sync schedule vs publish delay)
+- [x] Gap 4: EveRef history staleness — 1-day lag is inherent (EveRef lags CCP by 1 day); scheduler fixed to cron 08:00 UTC to prevent drift
+
+## Ideas (not planned)
+- Buy-order-side opportunities (source sell → target buy order = instant sell; 300k buy orders captured but unused) — deferred, not in scope for now
 
 ## Tech stack
 - Backend: Python (FastAPI + SQLAlchemy + psycopg), PostgreSQL 16

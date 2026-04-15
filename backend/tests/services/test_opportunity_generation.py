@@ -87,8 +87,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 demand_source="adam4eve",
                 buy_from_sell_period=40.0,
                 sell_to_buy_period=8.0,
-                buy_from_sell_yesterday=10.0,
-                sell_to_buy_yesterday=2.0,
             ),
             MarketDemandResolved(
                 location_id=target.id,
@@ -97,8 +95,6 @@ def seed_trade_inputs(session: Session) -> dict[str, int]:
                 demand_source="adam4eve",
                 buy_from_sell_period=20.0,
                 sell_to_buy_period=5.0,
-                buy_from_sell_yesterday=5.0,
-                sell_to_buy_yesterday=1.0,
             ),
         ]
     )
@@ -236,15 +232,15 @@ def test_generate_opportunities_persists_items_and_source_summary() -> None:
 
     first_item = item_rows[0]
     # Tritanium: source_units_available=500 (300+200), target_supply_units=50
-    # purchase_units still uses latest-day demand sizing = min(500, 10.0) = 10.0
+    # purchase_units uses period-average daily demand = min(500, 40 / 14)
     assert first_item.source_units_available == 500.0
     assert first_item.target_supply_units == 50.0
-    assert first_item.purchase_units == pytest.approx(10.0)
+    assert first_item.purchase_units == pytest.approx(40.0 / 14.0)
     assert first_item.target_dos == pytest.approx(50.0 / (40.0 / 14.0))
     assert first_item.target_demand_day == pytest.approx(40.0 / 14.0)
     assert first_item.target_now_profit == pytest.approx(20.0)
     assert first_item.target_period_profit == pytest.approx(50.0)
-    assert first_item.capital_required == pytest.approx(1000.0)
+    assert first_item.capital_required == pytest.approx(100.0 * (40.0 / 14.0))
     assert first_item.roi_now == pytest.approx(0.2)
     assert first_item.source_station_sell_price == pytest.approx(100.0)
     assert first_item.target_station_sell_price == pytest.approx(120.0)
@@ -253,15 +249,15 @@ def test_generate_opportunities_persists_items_and_source_summary() -> None:
     second_item = item_rows[1]
     assert second_item.source_units_available == 100.0
     assert second_item.target_supply_units == 20.0
-    assert second_item.purchase_units == pytest.approx(5.0)
+    assert second_item.purchase_units == pytest.approx(20.0 / 14.0)
     assert second_item.target_dos == pytest.approx(20.0 / (20.0 / 14.0))
     assert second_item.target_now_profit == pytest.approx(50.0)
     assert second_item.target_period_profit == pytest.approx(-70.0)
 
     summary = summary_rows[0]
-    # purchase_units_total = 10.0 + 5.0
-    assert summary.purchase_units_total == pytest.approx(15.0)
-    assert summary.capital_required_total == pytest.approx(1750.0)
+    # purchase_units_total = (40 + 20) / 14
+    assert summary.purchase_units_total == pytest.approx(60.0 / 14.0)
+    assert summary.capital_required_total == pytest.approx((100.0 * 40.0 / 14.0) + (150.0 * 20.0 / 14.0))
     assert summary.target_now_profit_weighted == pytest.approx(
         first_item.target_now_profit * first_item.purchase_units + second_item.target_now_profit * second_item.purchase_units
     )
@@ -304,7 +300,6 @@ def test_generate_opportunities_replaces_prior_rows_on_rerun() -> None:
     assert demand is not None
     source_price.price = 80.0
     demand.buy_from_sell_period = 56.0
-    demand.buy_from_sell_yesterday = 4.0
     session.commit()
 
     result = service.generate_for_target(
@@ -371,6 +366,36 @@ def test_generate_opportunities_uses_regionwide_esi_history_volume() -> None:
 
     row = session.scalars(select(OpportunityItem)).one()
     assert row.esi_demand_day == pytest.approx((70 + 44) / 14.0)
+
+
+def test_generate_opportunities_includes_positive_period_demand_when_yesterday_is_zero() -> None:
+    session = build_session()
+    ids = seed_trade_inputs(session)
+
+    demand = session.scalar(
+        select(MarketDemandResolved).where(
+            MarketDemandResolved.location_id == ids["target_location_id"],
+            MarketDemandResolved.type_id == ids["tritanium_id"],
+            MarketDemandResolved.period_days == 14,
+        )
+    )
+    assert demand is not None
+    demand.buy_from_sell_period = 28.0
+    session.commit()
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_location_id"],
+        source_location_ids=[ids["source_location_id"]],
+        type_ids=[ids["tritanium_id"]],
+        period_days=14,
+    )
+
+    row = session.scalars(select(OpportunityItem)).one()
+
+    assert result.item_count == 1
+    assert row.purchase_units == pytest.approx(2.0)
+    assert row.target_demand_day == pytest.approx(2.0)
 
 
 def test_generate_opportunities_populates_assets_target_orders_and_in_transit_metrics() -> None:
@@ -516,8 +541,6 @@ def test_generate_opportunities_uses_weighted_source_acquisition_price_when_lowe
                 demand_source="adam4eve",
                 buy_from_sell_period=25.0,
                 sell_to_buy_period=4.0,
-                buy_from_sell_yesterday=5.0,
-                sell_to_buy_yesterday=1.0,
             ),
         ]
     )
@@ -584,13 +607,13 @@ def test_generate_opportunities_uses_weighted_source_acquisition_price_when_lowe
     row = session.scalar(select(OpportunityItem))
     assert result.item_count == 1
     assert row is not None
-    assert row.purchase_units == pytest.approx(5.0)
-    assert row.source_station_sell_price == pytest.approx(112.0)
+    assert row.purchase_units == pytest.approx(25.0 / 14.0)
+    assert row.source_station_sell_price == pytest.approx(100.0)
     assert row.target_station_sell_price == pytest.approx(160.0)
-    assert row.target_now_profit == pytest.approx(48.0)
-    assert row.target_period_profit == pytest.approx(68.0)
-    assert row.capital_required == pytest.approx(560.0)
-    assert row.roi_now == pytest.approx(48.0 / 112.0)
+    assert row.target_now_profit == pytest.approx(60.0)
+    assert row.target_period_profit == pytest.approx(80.0)
+    assert row.capital_required == pytest.approx(100.0 * 25.0 / 14.0)
+    assert row.roi_now == pytest.approx(0.6)
 
 
 def test_generate_opportunities_uses_period_average_demand_per_day() -> None:
@@ -609,7 +632,7 @@ def test_generate_opportunities_uses_period_average_demand_per_day() -> None:
 
     assert row is not None
     assert row.target_demand_day == pytest.approx(40.0 / 14.0)
-    assert row.purchase_units == pytest.approx(10.0)
+    assert row.purchase_units == pytest.approx(40.0 / 14.0)
 
 
 def test_generate_opportunities_replace_entire_target_scope_prunes_stale_rows() -> None:
@@ -758,8 +781,6 @@ def test_generate_opportunities_uses_lowest_live_target_sell_order_for_now_price
                 demand_source="adam4eve",
                 buy_from_sell_period=35.0,
                 sell_to_buy_period=6.0,
-                buy_from_sell_yesterday=5.0,
-                sell_to_buy_yesterday=1.0,
             ),
         ]
     )
@@ -895,8 +916,6 @@ def test_generate_opportunities_skips_items_without_live_source_and_target_sell_
                 demand_source="adam4eve",
                 buy_from_sell_period=40.0,
                 sell_to_buy_period=8.0,
-                buy_from_sell_yesterday=10.0,
-                sell_to_buy_yesterday=2.0,
             ),
         ]
     )
@@ -951,8 +970,6 @@ def test_generate_opportunities_falls_back_to_live_target_price_without_period_h
             demand_source="adam4eve",
             buy_from_sell_period=40.0,
             sell_to_buy_period=8.0,
-            buy_from_sell_yesterday=10.0,
-            sell_to_buy_yesterday=2.0,
         )
     )
     now = datetime.now(UTC)

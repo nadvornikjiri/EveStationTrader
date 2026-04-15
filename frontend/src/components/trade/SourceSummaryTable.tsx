@@ -94,6 +94,10 @@ function combineClasses(...classNames: Array<string | null>) {
   return classNames.filter(Boolean).join(" ");
 }
 
+function isNumericColumn(key: GroupedSortKey) {
+  return key !== "name" && key !== "demand_source";
+}
+
 function metricToneClass(value: number) {
   if (value > 0) {
     return "metric-cell-positive";
@@ -102,6 +106,14 @@ function metricToneClass(value: number) {
     return "metric-cell-negative";
   }
   return null;
+}
+
+function formatWholeNumber(value: number) {
+  return Math.round(value).toLocaleString();
+}
+
+function formatWholePercent(value: number) {
+  return `${Math.round(value * 100)}%`;
 }
 
 function summaryCellClass(row: SourceSummary, key: GroupedSortKey) {
@@ -273,25 +285,25 @@ function renderSummaryCell(row: SourceSummary, key: GroupedSortKey) {
     case "active_sell_orders_units":
       return row.active_sell_orders_units;
     case "source_avg_price":
-      return row.source_avg_price_weighted.toLocaleString();
+      return formatWholeNumber(row.source_avg_price_weighted);
     case "target_now_price":
-      return row.target_now_price_weighted.toLocaleString();
+      return formatWholeNumber(row.target_now_price_weighted);
     case "target_period_avg_price":
-      return row.target_period_avg_price_weighted.toLocaleString();
+      return formatWholeNumber(row.target_period_avg_price_weighted);
     case "target_now_profit":
-      return row.target_now_profit_weighted.toLocaleString();
+      return formatWholeNumber(row.target_now_profit_weighted);
     case "target_period_profit":
-      return row.target_period_profit_weighted.toLocaleString();
+      return formatWholeNumber(row.target_period_profit_weighted);
     case "capital_required":
-      return row.capital_required_total.toLocaleString();
+      return formatWholeNumber(row.capital_required_total);
     case "roi_now":
-      return `${(row.roi_now_weighted * 100).toFixed(1)}%`;
+      return formatWholePercent(row.roi_now_weighted);
     case "roi_period":
-      return `${(row.roi_period_weighted * 100).toFixed(1)}%`;
+      return formatWholePercent(row.roi_period_weighted);
     case "item_volume_m3":
       return `${Math.round(row.total_item_volume_m3).toLocaleString()} m3`;
     case "shipping_cost":
-      return row.shipping_cost_total.toLocaleString();
+      return formatWholeNumber(row.shipping_cost_total);
     case "demand_source":
       return row.demand_source_summary;
     case "esi_demand_day":
@@ -322,25 +334,25 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
     case "active_sell_orders_units":
       return row.active_sell_orders_units_item;
     case "source_avg_price":
-      return row.source_station_sell_price.toLocaleString();
+      return formatWholeNumber(row.source_station_sell_price);
     case "target_now_price":
-      return row.target_station_sell_price.toLocaleString();
+      return formatWholeNumber(row.target_station_sell_price);
     case "target_period_avg_price":
-      return row.target_period_avg_price.toLocaleString();
+      return formatWholeNumber(row.target_period_avg_price);
     case "target_now_profit":
-      return row.target_now_profit.toLocaleString();
+      return formatWholeNumber(row.target_now_profit);
     case "target_period_profit":
-      return row.target_period_profit.toLocaleString();
+      return formatWholeNumber(row.target_period_profit);
     case "capital_required":
-      return row.capital_required.toLocaleString();
+      return formatWholeNumber(row.capital_required);
     case "roi_now":
-      return `${(row.roi_now * 100).toFixed(1)}%`;
+      return formatWholePercent(row.roi_now);
     case "roi_period":
-      return `${(row.roi_period * 100).toFixed(1)}%`;
+      return formatWholePercent(row.roi_period);
     case "item_volume_m3":
       return `${Math.round(row.item_volume_m3).toLocaleString()} m3`;
     case "shipping_cost":
-      return row.shipping_cost.toLocaleString();
+      return formatWholeNumber(row.shipping_cost);
     case "demand_source":
       return row.demand_source;
     case "esi_demand_day":
@@ -428,12 +440,18 @@ export function SourceSummaryTable({
         </span>
       </div>
       <div className="table-scroll">
-        <table className="data-table">
+        <table className="data-table trade-table">
           <thead>
             <tr>
               <th className="checkbox-col" />
               {SORTABLE_COLUMNS.map((column) => (
-                <th key={column.key} className={column.key === "name" ? "source-market-item-col" : undefined}>
+                <th
+                  key={column.key}
+                  className={combineClasses(
+                    column.key === "name" ? "source-market-item-col" : null,
+                    isNumericColumn(column.key) ? "numeric-cell" : null,
+                  )}
+                >
                   <button
                     type="button"
                     className="sort-button"
@@ -483,7 +501,11 @@ export function SourceSummaryTable({
                     {SORTABLE_COLUMNS.slice(1).map((column) => (
                       <td
                         key={`${row.source_location_id}-${column.key}`}
-                        className={combineClasses("metric-cell", summaryCellClass(row, column.key))}
+                        className={combineClasses(
+                          "metric-cell",
+                          isNumericColumn(column.key) ? "numeric-cell" : null,
+                          summaryCellClass(row, column.key),
+                        )}
                       >
                         {renderSummaryCell(row, column.key)}
                       </td>
@@ -558,8 +580,12 @@ export function SourceSummaryTable({
                       </td>
                       {SORTABLE_COLUMNS.slice(1).map((column) => (
                         <td
-                          key={`${row.source_location_id}-${item.type_id}-${column.key}`}
-                          className={combineClasses("metric-cell", itemCellClass(item, column.key))}
+                        key={`${row.source_location_id}-${item.type_id}-${column.key}`}
+                          className={combineClasses(
+                            "metric-cell",
+                            isNumericColumn(column.key) ? "numeric-cell" : null,
+                            itemCellClass(item, column.key),
+                          )}
                         >
                           {renderItemCell(item, column.key)}
                         </td>

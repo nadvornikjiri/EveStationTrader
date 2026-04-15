@@ -302,7 +302,9 @@ class OpportunityGenerationService:
             demand_cte = (
                 select(
                     MarketDemandResolved.type_id.label("type_id"),
-                    cast(MarketDemandResolved.buy_from_sell_yesterday, Float).label("buy_from_sell_yesterday"),
+                    (
+                        cast(MarketDemandResolved.buy_from_sell_period, Float) / normalized_period_days
+                    ).label("buy_from_sell_period_daily"),
                 )
                 .where(
                     MarketDemandResolved.location_id == target_location_id,
@@ -343,7 +345,7 @@ class OpportunityGenerationService:
             )
             purchase_units_expr = func.least(
                 source_orders_cte.c.total_vol,
-                demand_cte.c.buy_from_sell_yesterday,
+                demand_cte.c.buy_from_sell_period_daily,
             )
             volume_before_expr = source_orders_cte.c.running_vol - source_orders_cte.c.volume_remain
             consumed_volume_expr = func.least(
@@ -416,7 +418,7 @@ class OpportunityGenerationService:
             demand = demands_by_type.get(type_id)
             if demand is None:
                 continue
-            if demand.buy_from_sell_yesterday <= 0:
+            if demand.buy_from_sell_period <= 0:
                 continue
             esi_demand_day = esi_history_avg_by_type.get(type_id, 0.0)
             target_price = target_prices_by_type.get(type_id)
@@ -436,7 +438,10 @@ class OpportunityGenerationService:
                 source_security_status = source_system.security_status if source_system is not None else 0.0
                 source_units_available = sell_volumes_by_loc_type.get((source_location_id, type_id), 0.0)
                 target_supply_units = sell_volumes_by_loc_type.get((target_location_id, type_id), 0.0)
-                purchase_units = calculate_purchase_units(source_units_available, demand.buy_from_sell_yesterday)
+                purchase_units = calculate_purchase_units(
+                    source_units_available,
+                    demand.buy_from_sell_period / normalized_period_days,
+                )
                 shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
                 target_period_avg_price = (
                     target_price.period_avg_price if target_price is not None else float(target_now_price)

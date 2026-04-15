@@ -50,6 +50,7 @@ class EsiRegionalOrderIngestionService:
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
         target_location_ids: set[int] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         if not region_batches:
             return EsiMarketOrderIngestionResult(
@@ -82,6 +83,7 @@ class EsiRegionalOrderIngestionService:
                     records=batch.records,
                     universe_client=universe_client,
                     cancellation_check=cancellation_check,
+                    progress_callback=progress_callback,
                 )
                 aggregate = EsiMarketOrderIngestionResult(
                     region_id=0,
@@ -101,6 +103,7 @@ class EsiRegionalOrderIngestionService:
             universe_client=universe_client,
             cancellation_check=cancellation_check,
             target_location_ids=target_location_ids,
+            progress_callback=progress_callback,
         )
 
     def ingest_region_orders(
@@ -133,6 +136,7 @@ class EsiRegionalOrderIngestionService:
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
         target_location_ids: set[int] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         region_ids = sorted({batch.region_id for batch in region_batches})
         if not region_ids:
@@ -157,46 +161,50 @@ class EsiRegionalOrderIngestionService:
             universe_client=universe_client,
             cancellation_check=cancellation_check,
         )
-        copy_rows(
-            session,
-            table_name="esi_market_orders_stage",
-            columns=(
-                "region_id",
-                "eve_region_id",
-                "order_id",
-                "external_type_id",
-                "external_location_id",
-                "external_system_id",
-                "is_buy_order",
-                "price",
-                "volume_total",
-                "volume_remain",
-                "min_volume",
-                "order_range",
-                "issued",
-                "duration",
-            ),
-            rows=(
-                (
-                    batch.region_id,
-                    batch.eve_region_id,
-                    record["order_id"],
-                    record["type_id"],
-                    record["location_id"],
-                    record["system_id"],
-                    record["is_buy_order"],
-                    record["price"],
-                    record["volume_total"],
-                    record["volume_remain"],
-                    record["min_volume"],
-                    record["range"],
-                    datetime.fromisoformat(record["issued"]).astimezone(UTC),
-                    record["duration"],
-                )
-                for batch in region_batches
-                for record in batch.records
-            ),
-        )
+        staged_records = 0
+        for batch in region_batches:
+            copy_rows(
+                session,
+                table_name="esi_market_orders_stage",
+                columns=(
+                    "region_id",
+                    "eve_region_id",
+                    "order_id",
+                    "external_type_id",
+                    "external_location_id",
+                    "external_system_id",
+                    "is_buy_order",
+                    "price",
+                    "volume_total",
+                    "volume_remain",
+                    "min_volume",
+                    "order_range",
+                    "issued",
+                    "duration",
+                ),
+                rows=(
+                    (
+                        batch.region_id,
+                        batch.eve_region_id,
+                        record["order_id"],
+                        record["type_id"],
+                        record["location_id"],
+                        record["system_id"],
+                        record["is_buy_order"],
+                        record["price"],
+                        record["volume_total"],
+                        record["volume_remain"],
+                        record["min_volume"],
+                        record["range"],
+                        datetime.fromisoformat(record["issued"]).astimezone(UTC),
+                        record["duration"],
+                    )
+                    for record in batch.records
+                ),
+            )
+            staged_records += len(batch.records)
+            if progress_callback is not None:
+                progress_callback(staged_records, total_records)
         self._materialize_valid_stage(session)
 
         skipped_missing_items = int(
@@ -338,6 +346,7 @@ class EsiRegionalOrderIngestionService:
         records: list[EsiRegionalOrderRecord],
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         region = session.scalar(select(Region).where(Region.region_id == eve_region_id))
         if region is None:
@@ -358,14 +367,18 @@ class EsiRegionalOrderIngestionService:
         seen_order_ids: set[int] = set()
         normalized_rows: list[tuple[object, ...]] = []
         location_cache: dict[int, Location | None] = {}
+        processed_records = 0
 
         for record in records:
             if cancellation_check is not None:
                 cancellation_check()
+            processed_records += 1
 
             item_id = item_lookup.get(record["type_id"])
             if item_id is None:
                 skipped_missing_items += 1
+                if progress_callback is not None:
+                    progress_callback(processed_records, len(records))
                 continue
 
             if record["location_id"] in location_cache:
@@ -383,6 +396,8 @@ class EsiRegionalOrderIngestionService:
 
             if location is None:
                 skipped_non_npc_locations += 1
+                if progress_callback is not None:
+                    progress_callback(processed_records, len(records))
                 continue
 
             stations_created += int(station_was_created)
@@ -405,6 +420,8 @@ class EsiRegionalOrderIngestionService:
                     datetime.now(UTC),
                 )
             )
+            if progress_callback is not None:
+                progress_callback(processed_records, len(records))
 
         updated = len(existing_order_ids & seen_order_ids)
         created = len(seen_order_ids) - updated
@@ -458,6 +475,7 @@ class EsiRegionalOrderIngestionService:
         records: list[EsiRegionalOrderRecord],
         universe_client: OrderMetadataCapableUniverseClient,
         cancellation_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> EsiMarketOrderIngestionResult:
         region = session.scalar(select(Region).where(Region.region_id == eve_region_id))
         if region is None:
@@ -471,12 +489,16 @@ class EsiRegionalOrderIngestionService:
         skipped_non_npc_locations = 0
         seen_order_ids: set[int] = set()
 
+        processed_records = 0
         for record in records:
             if cancellation_check is not None:
                 cancellation_check()
+            processed_records += 1
             item = session.scalar(select(Item).where(Item.type_id == record["type_id"]))
             if item is None:
                 skipped_missing_items += 1
+                if progress_callback is not None:
+                    progress_callback(processed_records, len(records))
                 continue
 
             location, station_was_created = self._ensure_station_location(
@@ -488,6 +510,8 @@ class EsiRegionalOrderIngestionService:
             )
             if location is None:
                 skipped_non_npc_locations += 1
+                if progress_callback is not None:
+                    progress_callback(processed_records, len(records))
                 continue
             stations_created += int(station_was_created)
             seen_order_ids.add(record["order_id"])
@@ -513,6 +537,8 @@ class EsiRegionalOrderIngestionService:
                     )
                 )
                 created += 1
+                if progress_callback is not None:
+                    progress_callback(processed_records, len(records))
                 continue
 
             existing.region_id = region.id
@@ -528,6 +554,8 @@ class EsiRegionalOrderIngestionService:
             existing.issued = issued_at
             existing.duration = record["duration"]
             updated += 1
+            if progress_callback is not None:
+                progress_callback(processed_records, len(records))
 
         deleted = self._delete_stale_orders(session, region_id=region.id, seen_order_ids=seen_order_ids)
         session.commit()

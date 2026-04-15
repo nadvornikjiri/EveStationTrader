@@ -1055,3 +1055,160 @@ def test_refresh_opportunities_uses_fast_rebuild_when_target_inputs_exist(monkey
     assert captured["type_id"] == 34
     assert captured["period_days"] == 14
     assert prepare_called is False
+
+
+def test_refresh_opportunities_fast_rebuild_discovers_new_items_from_current_inputs() -> None:
+    session = build_session()
+    target_location_id, source_location_id, item_id = seed_trade_entities(session)
+    extra_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(extra_item)
+    session.flush()
+
+    session.add(
+        OpportunityItem(
+            target_location_id=target_location_id,
+            source_location_id=source_location_id,
+            type_id=item_id,
+            period_days=14,
+            purchase_units=5.0,
+            source_units_available=10.0,
+            target_demand_day=1.0,
+            target_supply_units=2.0,
+            target_dos=2.0,
+            in_transit_units=0.0,
+            assets_units=0.0,
+            active_sell_orders_units=0.0,
+            source_station_sell_price=100.0,
+            target_station_sell_price=125.0,
+            target_period_avg_price=130.0,
+            target_now_profit=25.0,
+            target_period_profit=30.0,
+            capital_required=500.0,
+            roi_now=0.25,
+            roi_period=0.3,
+            source_security_status=1.0,
+            item_volume_m3=0.01,
+            shipping_cost=0.0,
+            demand_source="adam4eve",
+            computed_at=datetime(2026, 3, 20, tzinfo=UTC),
+        )
+    )
+    session.add_all(
+        [
+            MarketPricePeriod(
+                location_id=target_location_id,
+                type_id=item_id,
+                period_days=14,
+                current_price=120.0,
+                period_avg_price=125.0,
+                price_min=110.0,
+                price_max=130.0,
+            ),
+            MarketPricePeriod(
+                location_id=target_location_id,
+                type_id=extra_item.id,
+                period_days=14,
+                current_price=220.0,
+                period_avg_price=225.0,
+                price_min=210.0,
+                price_max=230.0,
+            ),
+            MarketDemandResolved(
+                location_id=target_location_id,
+                type_id=item_id,
+                period_days=14,
+                demand_source="adam4eve",
+                buy_from_sell_period=14.0,
+                sell_to_buy_period=7.0,
+                buy_from_sell_yesterday=1.0,
+                sell_to_buy_yesterday=0.5,
+            ),
+            MarketDemandResolved(
+                location_id=target_location_id,
+                type_id=extra_item.id,
+                period_days=14,
+                demand_source="adam4eve",
+                buy_from_sell_period=56.0,
+                sell_to_buy_period=14.0,
+                buy_from_sell_yesterday=4.0,
+                sell_to_buy_yesterday=1.0,
+            ),
+            EsiMarketOrder(
+                order_id=1,
+                region_id=1,
+                location_id=target_location_id,
+                type_id=item_id,
+                system_id=1,
+                is_buy_order=False,
+                price=125.0,
+                volume_total=10,
+                volume_remain=10,
+                min_volume=1,
+                order_range="region",
+                issued=datetime.now(UTC),
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=2,
+                region_id=1,
+                location_id=target_location_id,
+                type_id=extra_item.id,
+                system_id=1,
+                is_buy_order=False,
+                price=225.0,
+                volume_total=10,
+                volume_remain=10,
+                min_volume=1,
+                order_range="region",
+                issued=datetime.now(UTC),
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=3,
+                region_id=1,
+                location_id=source_location_id,
+                type_id=item_id,
+                system_id=2,
+                is_buy_order=False,
+                price=100.0,
+                volume_total=10,
+                volume_remain=10,
+                min_volume=1,
+                order_range="region",
+                issued=datetime.now(UTC),
+                duration=90,
+            ),
+            EsiMarketOrder(
+                order_id=4,
+                region_id=1,
+                location_id=source_location_id,
+                type_id=extra_item.id,
+                system_id=2,
+                is_buy_order=False,
+                price=200.0,
+                volume_total=10,
+                volume_remain=10,
+                min_volume=1,
+                order_range="region",
+                issued=datetime.now(UTC),
+                duration=90,
+            ),
+        ]
+    )
+    session.commit()
+
+    repo = TradeRepository(session_factory=lambda: session)
+    repo.refresh_opportunities(60003760, 14)
+
+    rows = session.execute(
+        select(OpportunityItem)
+        .where(
+            OpportunityItem.target_location_id == target_location_id,
+            OpportunityItem.period_days == 14,
+        )
+        .order_by(OpportunityItem.type_id.asc())
+    ).scalars().all()
+
+    assert [row.type_id for row in rows] == [item_id, extra_item.id]
+    assert rows[1].purchase_units == 4.0
+    assert rows[1].target_now_profit == 25.0

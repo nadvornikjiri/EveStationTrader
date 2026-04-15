@@ -167,6 +167,7 @@ def seed_opportunity_inputs(session: Session) -> tuple[int, int, int]:
         ]
     )
     session.commit()
+    session.close()
     return target.id, source.id, item.id
 
 
@@ -219,7 +220,7 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
     )
     session.commit()
 
-    service = SyncService(session_factory=lambda: session)
+    service = SyncService(session_factory=lambda: session, esi_client=StubUniverseClient())
 
     service.prepare_trade_period(
         session,
@@ -2005,6 +2006,213 @@ def test_get_status_exposes_active_job_progress() -> None:
     assert cards["esi_market_orders_sync"].progress_total == 100
     assert cards["esi_market_orders_sync"].progress_unit == "downloaded records"
     assert cards["esi_market_orders_sync"].active_message == "Processed 60 / 100 downloaded ESI market orders."
+
+
+def test_sync_esi_market_orders_reports_mid_ingest_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    target_location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4",
+    )
+    session.add(target_location)
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "source_region_ids": [],
+                "default_filters": {"min_item_profit": 1, "roi_now": 0.1, "target_demand_day": 1},
+            },
+        )
+    )
+    job_run = SyncJobRun(
+        job_type="esi_market_orders_sync",
+        status="running",
+        triggered_by="manual",
+        started_at=datetime.now(UTC),
+        records_processed=0,
+        target_type="manual",
+        target_id=None,
+        message="Running esi_market_orders_sync.",
+    )
+    session.add(job_run)
+    session.commit()
+
+    class StubUniverseClient:
+        def fetch_regional_orders(self, region_id: int) -> list[dict[str, object]]:
+            assert region_id == 10000002
+            return [{"order_id": 1}, {"order_id": 2}]
+
+    service = SyncService(session_factory=lambda: session, esi_client=StubUniverseClient())
+
+    progress_updates: list[tuple[int | None, int | None, str | None]] = []
+    original_update_job_progress = SyncService._update_job_progress
+
+    def recording_update_job_progress(self, db_session, job_id, **kwargs):
+        progress_updates.append(
+            (
+                kwargs.get("progress_current"),
+                kwargs.get("progress_total"),
+                kwargs.get("message"),
+            )
+        )
+        return original_update_job_progress(self, db_session, job_id, **kwargs)
+
+    def fake_ingest_order_batches(self, db_session, **kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(10_000, 20_000)
+        progress_callback(20_000, 20_000)
+        del self, db_session
+        from app.services.esi.orders_ingestion import EsiMarketOrderIngestionResult
+
+        return EsiMarketOrderIngestionResult(
+            region_id=0,
+            records_processed=20_000,
+            created=0,
+            updated=0,
+            deleted=0,
+            stations_created=0,
+            items_created=0,
+            skipped_missing_items=0,
+            skipped_non_npc_locations=0,
+            delta_count=0,
+        )
+
+    def fake_rebuild_opportunities(self, db_session, job_id, period_days=None, cancellation_check=None, progress_phase_label=None):
+        assert progress_phase_label == "Rebuilding item opportunities"
+        del self, db_session, job_id, period_days, cancellation_check
+        return (12, 3)
+
+    monkeypatch.setattr(SyncService, "_update_job_progress", recording_update_job_progress)
+    monkeypatch.setattr(SyncService, "_rebuild_opportunities", fake_rebuild_opportunities)
+    monkeypatch.setattr(
+        "app.services.esi.orders_ingestion.EsiRegionalOrderIngestionService.ingest_order_batches",
+        fake_ingest_order_batches,
+    )
+
+    records_processed, target_type, target_id, message = service._sync_esi_market_orders(
+        session,
+        job_id=job_run.id,
+        debug_enabled=False,
+    )
+
+    assert records_processed == 20_000
+    assert target_type == "regions"
+    assert target_id == "1"
+    assert "Synced ESI market orders" in message
+    assert (10_000, 20_000, "Processed 10000 / 20000 downloaded ESI market orders.") in progress_updates
+    assert (
+        3,
+        3,
+        "Rebuilt item opportunities for 3 / 3 targets (12 opportunity rows written).",
+    ) in progress_updates
+
+
+def test_trigger_job_esi_market_orders_sync_triggers_opportunity_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = build_session()
+    curated_station = PRIMARY_TEST_STATION
+
+    session.add(Region(region_id=curated_station.region_id, name="The Forge"))
+    session.flush()
+    session.add(System(system_id=curated_station.system_id, region_id=1, name="Jita", security_status=0.9))
+    session.flush()
+    session.add(
+        Location(
+            location_id=curated_station.station_id,
+            location_type="npc_station",
+            system_id=1,
+            region_id=1,
+            name=curated_station.name,
+        )
+    )
+    session.add(Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material"))
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [curated_station.station_id],
+                "source_region_ids": [],
+                "default_filters": {"min_item_profit": 1, "roi_now": 0.1, "target_demand_day": 1},
+            },
+        )
+    )
+    session.commit()
+    session_factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+
+    rebuild_calls: list[tuple[int | None, str | None]] = []
+
+    def fake_rebuild_opportunities(self, db_session, job_id, period_days=None, cancellation_check=None, progress_phase_label=None):
+        del self, db_session, job_id, cancellation_check
+        rebuild_calls.append((period_days, progress_phase_label))
+        return (7, 2)
+
+    monkeypatch.setattr(SyncService, "_rebuild_opportunities", fake_rebuild_opportunities)
+    service = SyncService(
+        session_factory=session_factory,
+        esi_client=StubUniverseClient(
+            regional_orders={
+                curated_station.region_id: [
+                    {
+                        "order_id": 9001,
+                        "type_id": 34,
+                        "location_id": curated_station.station_id,
+                        "system_id": curated_station.system_id,
+                        "is_buy_order": False,
+                        "price": 4.12,
+                        "volume_total": 1000,
+                        "volume_remain": 400,
+                        "min_volume": 1,
+                        "range": "region",
+                        "issued": "2026-03-23T09:00:00+00:00",
+                        "duration": 90,
+                    }
+                ]
+            },
+            stations={
+                curated_station.station_id: StationSeed(
+                    station_id=curated_station.station_id,
+                    system_id=curated_station.system_id,
+                    region_id=curated_station.region_id,
+                    name=curated_station.name,
+                )
+            },
+        ),
+    )
+
+    result = service.trigger_job("esi_market_orders_sync")
+
+    assert result.status == "success"
+    assert rebuild_calls == [(14, "Rebuilding item opportunities")]
+    assert "7 opportunity items across 2 target scopes" in (result.message or "")
 
 
 def test_list_jobs_finalizes_stale_cancelling_jobs() -> None:
