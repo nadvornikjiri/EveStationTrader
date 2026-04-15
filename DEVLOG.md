@@ -1,5 +1,18 @@
 ## 2026-04-11
 
+- task id: `ESI-DEMAND-IDENTITY-PRELOAD-2026-04-11`
+- title: Pre-load ESI Demand Location And Item Identity Map
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: pre-loaded all `Location` and `Item` rows referenced by `_esi_demand_refresh_keys()` before the ESI demand refresh loop in `everef_history_sync`, so the downstream `session.get()` calls in `MarketDemandResolutionService` are served from SQLAlchemy's identity map instead of issuing per-key lookups. Added a regression test that exercises the EVE Ref history sync path and verifies the preload change still writes the expected `esi_live` demand row and `buy_from_sell_period` value.
+- validation:
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/mypy .`
+  - `cd backend && ./.venv/bin/pytest`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_sync_service.py::test_everef_history_sync_preload_keeps_esi_demand_values_correct`
+  - note: `mypy .` is still blocked by pre-existing errors in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0013_widen_esi_history_volume.py`, and `alembic/versions/20260409_0012_restore_esi_history_daily.py`
+
+## 2026-04-11
+
 - task id: `REMOVE-LEGACY-ESI-HISTORY-SYNC-2026-04-11`
 - title: Remove Legacy ESI History Sync
 - status: `PASS_WITH_EXISTING_FAILURES`

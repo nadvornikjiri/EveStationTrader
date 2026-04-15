@@ -1549,9 +1549,78 @@ class SyncService:
             date_count=total_dates,
             rows_inserted=rows_inserted,
         )
+
+        phase_started_at = perf_counter()
+        esi_demand_keys = self._esi_demand_refresh_keys(session)
+        total_esi_keys = len(esi_demand_keys)
+        preload_started_at = perf_counter()
+        unique_location_ids = {location_id for location_id, _ in esi_demand_keys}
+        unique_type_ids = {type_id for _, type_id in esi_demand_keys}
+        if unique_location_ids:
+            session.scalars(select(Location).where(Location.id.in_(unique_location_ids))).all()
+        if unique_type_ids:
+            session.scalars(select(Item).where(Item.id.in_(unique_type_ids))).all()
+        self._log_profile_checkpoint(
+            "preload_esi_demand_identity_map",
+            started_at=preload_started_at,
+            location_count=len(unique_location_ids),
+            item_count=len(unique_type_ids),
+        )
+        self._update_job_progress(
+            session,
+            job_id,
+            progress_phase="Refreshing ESI demand records",
+            progress_current=0,
+            progress_total=total_esi_keys,
+            progress_unit="keys",
+            message=f"Refreshing ESI demand for {total_esi_keys} location/item pairs.",
+        )
+        derived_count = 0
+        demand_service = MarketDemandResolutionService()
+        total_adam_s = 0.0
+        total_esi_history_s = 0.0
+        total_upsert_s = 0.0
+        _PROGRESS_INTERVAL = 100
+        for idx, (location_id, type_id) in enumerate(esi_demand_keys, start=1):
+            if cancellation_check is not None:
+                cancellation_check()
+            result = demand_service.upsert_for_location(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=analysis_period_days,
+            )
+            total_adam_s += result.timing.adam_lookup_s
+            total_esi_history_s += result.timing.esi_history_s
+            total_upsert_s += result.timing.upsert_s
+            if result.row is not None:
+                derived_count += 1
+            if idx % _PROGRESS_INTERVAL == 0 or idx == total_esi_keys:
+                self._update_job_progress(
+                    session,
+                    job_id,
+                    progress_phase="Refreshing ESI demand records",
+                    progress_current=idx,
+                    progress_total=total_esi_keys,
+                    progress_unit="keys",
+                    message=f"Refreshing ESI demand: {idx} / {total_esi_keys} keys ({derived_count} rows written).",
+                )
+        self._log_profile_checkpoint(
+            "refresh_esi_demand",
+            started_at=phase_started_at,
+            demand_key_count=total_esi_keys,
+            derived_count=derived_count,
+            total_s=round(perf_counter() - phase_started_at, 3),
+            adam_lookup_s=round(total_adam_s, 3),
+            esi_history_s=round(total_esi_history_s, 3),
+            upsert_s=round(total_upsert_s, 3),
+            avg_ms_per_key=round((perf_counter() - phase_started_at) / total_esi_keys * 1000, 1) if total_esi_keys else 0,
+        )
+
         message = (
             "Synced EVE Ref history "
-            f"({rows_inserted} rows inserted across {total_dates} dates)."
+            f"({rows_inserted} rows inserted across {total_dates} dates, "
+            f"{derived_count} ESI demand rows refreshed)."
         )
         return (rows_inserted, "targets", str(total_dates), message)
 
@@ -1807,6 +1876,7 @@ class SyncService:
         if not locations or not items:
             return []
 
+        # Keys with adam4eve data — primary source
         raw_pairs = session.execute(
             select(
                 distinct(AdamMarketOrdersTradeRaw.c.location_id),
@@ -1824,7 +1894,80 @@ class SyncService:
             if internal_location_id is None or internal_item_id is None:
                 continue
             keys.append((internal_location_id, internal_item_id))
+
         return list(dict.fromkeys(keys))
+
+    def _esi_demand_refresh_keys(
+        self,
+        session: Session,
+    ) -> list[tuple[int, int]]:
+        """Return (internal_location_id, internal_item_id) pairs for NPC stations
+        where ESI market orders exist AND the region has ESI history data for that item.
+        Applies the same target-station / source-region constraints as the ESI order sync
+        so the scope stays manageable."""
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        target_eve_ids: list[int] = settings.target_market_location_ids or []
+        if not target_eve_ids:
+            return []
+
+        target_location_ids: set[int] = set(
+            session.scalars(
+                select(Location.id).where(
+                    Location.location_id.in_(target_eve_ids),
+                    Location.location_type == "npc_station",
+                )
+            ).all()
+        )
+        if not target_location_ids:
+            return []
+
+        # Same desired-region logic as the ESI order sync
+        desired_eve_region_ids: set[int] = set(settings.source_region_ids or [])
+        desired_eve_region_ids.update(
+            rid
+            for rid in session.scalars(
+                select(Region.region_id)
+                .join(Location, Location.region_id == Region.id)
+                .where(Location.location_id.in_(target_eve_ids))
+            ).all()
+            if rid is not None
+        )
+        desired_internal_region_ids: set[int] = set(
+            session.scalars(
+                select(Region.id).where(Region.region_id.in_(desired_eve_region_ids))
+            ).all()
+        )
+        if not desired_internal_region_ids:
+            return []
+
+        # Items with live market orders at target stations
+        order_pairs = session.execute(
+            select(
+                distinct(EsiMarketOrder.location_id),
+                EsiMarketOrder.type_id,
+            ).where(
+                EsiMarketOrder.location_id.in_(target_location_ids),
+            )
+        ).all()
+        if not order_pairs:
+            return []
+
+        # Filter to items that have ESI history in the desired regions
+        items_with_orders: set[int] = {type_id for _, type_id in order_pairs}
+        items_with_history: set[int] = set(
+            session.scalars(
+                select(distinct(EsiHistoryDaily.type_id)).where(
+                    EsiHistoryDaily.type_id.in_(items_with_orders),
+                    EsiHistoryDaily.region_id.in_(desired_internal_region_ids),
+                )
+            ).all()
+        )
+
+        return [
+            (location_id, type_id)
+            for location_id, type_id in dict.fromkeys(order_pairs)
+            if type_id in items_with_history
+        ]
 
     def _rebuild_opportunities(
         self,

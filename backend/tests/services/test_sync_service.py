@@ -1535,6 +1535,211 @@ def test_everef_history_sync_limits_downloads_to_analysis_window_even_with_exist
     assert downloaded_dates == [date(2026, 4, 9), date(2026, 4, 10)]
 
 
+def test_everef_history_sync_triggers_esi_demand_refresh_after_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """After ingesting EVE Ref history the job must write ESI_LIVE demand rows
+    for NPC locations where live market orders exist and regional history is present."""
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([location, item])
+    session.flush()
+    # Live market order at the NPC station — required for _esi_demand_refresh_keys scope
+    session.add(
+        EsiMarketOrder(
+            order_id=77001,
+            region_id=region.id,
+            location_id=location.id,
+            type_id=item.id,
+            system_id=system.id,
+            is_buy_order=False,
+            price=100.0,
+            volume_total=500,
+            volume_remain=500,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    # Settings must declare this station as a target — same constraint as ESI order sync
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    monkeypatch.setattr(
+        "app.services.sync.service.fetch_totals_json",
+        lambda: {"2026-04-10": {"size": 100}},
+    )
+    monkeypatch.setattr(
+        "app.services.sync.service.get_available_dates",
+        lambda days_back=30: [date(2026, 4, 10)],
+    )
+
+    def fake_download(target_date: date, cache_dir: Path) -> Path:
+        p = cache_dir / f"market-history-{target_date.isoformat()}.csv"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            "average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id\n"
+            f"10.5,{target_date.isoformat()},11.0,9.5,7,999,2026-04-11T00:00:00Z,10000002,34\n",
+            encoding="utf-8",
+        )
+        return p
+
+    monkeypatch.setattr("app.services.sync.service.download_history_file", fake_download)
+    monkeypatch.setattr("app.services.sync.service.tempfile.gettempdir", lambda: str(tmp_path))
+
+    result = SyncService(session_factory=lambda: session).trigger_job("everef_history_sync")
+
+    assert result.status == "success"
+    # A MarketDemandResolved row with ESI_LIVE source must have been written
+    demand_row = session.scalar(
+        select(MarketDemandResolved).where(
+            MarketDemandResolved.location_id == location.id,
+            MarketDemandResolved.type_id == item.id,
+        )
+    )
+    assert demand_row is not None
+    assert demand_row.demand_source == "esi_live"
+    assert demand_row.buy_from_sell_period > 0
+
+
+def test_everef_history_sync_preload_keeps_esi_demand_values_correct(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([location, item])
+    session.flush()
+    session.add(
+        EsiMarketOrder(
+            order_id=77002,
+            region_id=region.id,
+            location_id=location.id,
+            type_id=item.id,
+            system_id=system.id,
+            is_buy_order=False,
+            price=100.0,
+            volume_total=500,
+            volume_remain=500,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    monkeypatch.setattr(
+        "app.services.sync.service.fetch_totals_json",
+        lambda: {"2026-04-10": {"size": 100}},
+    )
+    monkeypatch.setattr(
+        "app.services.sync.service.get_available_dates",
+        lambda days_back=30: [date(2026, 4, 10)],
+    )
+
+    def fake_download(target_date: date, cache_dir: Path) -> Path:
+        p = cache_dir / f"market-history-{target_date.isoformat()}.csv"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            "average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id\n"
+            f"10.5,{target_date.isoformat()},11.0,9.5,7,999,2026-04-11T00:00:00Z,10000002,34\n",
+            encoding="utf-8",
+        )
+        return p
+
+    monkeypatch.setattr("app.services.sync.service.download_history_file", fake_download)
+    monkeypatch.setattr("app.services.sync.service.tempfile.gettempdir", lambda: str(tmp_path))
+
+    result = SyncService(session_factory=lambda: session).trigger_job("everef_history_sync")
+
+    assert result.status == "success"
+    demand_row = session.scalar(
+        select(MarketDemandResolved).where(
+            MarketDemandResolved.location_id == location.id,
+            MarketDemandResolved.type_id == item.id,
+        )
+    )
+    assert demand_row is not None
+    assert demand_row.demand_source == "esi_live"
+    assert demand_row.buy_from_sell_period == pytest.approx(666.0)
+
+
 def test_opportunity_rebuild_does_not_refresh_esi_history_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     session = build_session()
     seed_opportunity_inputs(session)
@@ -2483,6 +2688,7 @@ def test_adam4eve_sync_refreshes_only_touched_market_demand_keys(
     assert touched_calls == [((target_internal_id, item_internal_id),), (14,)]
     assert ((source_internal_id, item_internal_id),) not in touched_calls
     assert ((target_internal_id, extra_item_id),) not in touched_calls
+
 
 
 def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None:
