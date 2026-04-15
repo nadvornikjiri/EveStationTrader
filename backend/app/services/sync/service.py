@@ -1621,8 +1621,20 @@ class SyncService:
             progress_unit="keys",
             message=f"Refreshing ESI demand for {total_esi_keys} location/item pairs.",
         )
-        derived_count = 0
         demand_service = MarketDemandResolutionService()
+        demand_preload_started_at = perf_counter()
+        demand_preload = demand_service.build_batch_preload(
+            session,
+            demand_keys=esi_demand_keys,
+            period_days=analysis_period_days,
+        )
+        self._log_profile_checkpoint(
+            "preload_esi_demand_batch_context",
+            started_at=demand_preload_started_at,
+            history_pair_count=len(demand_preload.esi_history_by_region_type),
+            existing_row_count=len(demand_preload.existing_rows_by_key),
+        )
+        derived_count = 0
         total_adam_s = 0.0
         total_esi_history_s = 0.0
         total_upsert_s = 0.0
@@ -1638,6 +1650,7 @@ class SyncService:
                 period_days=analysis_period_days,
                 adam_covered=(location_id, type_id) in adam_covered_keys,
                 autocommit=False,
+                preload=demand_preload,
             )
             if idx % _COMMIT_INTERVAL == 0:
                 session.commit()

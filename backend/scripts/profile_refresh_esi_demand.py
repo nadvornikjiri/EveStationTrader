@@ -88,10 +88,15 @@ def _run_refresh(session: Session, *, limit: int, commit_interval: int) -> Profi
     total_started_at = perf_counter()
     preprocess_started_at = perf_counter()
     demand_keys, adam_covered_keys = _load_scope(session, limit=limit)
+    demand_service = MarketDemandResolutionService()
+    demand_preload = demand_service.build_batch_preload(
+        session,
+        demand_keys=demand_keys,
+        period_days=analysis_period_days,
+    )
     preprocess_s = perf_counter() - preprocess_started_at
 
     derived_count = 0
-    demand_service = MarketDemandResolutionService()
     total_adam_s = 0.0
     total_esi_history_s = 0.0
     total_upsert_s = 0.0
@@ -104,6 +109,7 @@ def _run_refresh(session: Session, *, limit: int, commit_interval: int) -> Profi
             period_days=analysis_period_days,
             adam_covered=(location_id, type_id) in adam_covered_keys,
             autocommit=False,
+            preload=demand_preload,
         )
         if idx % commit_interval == 0:
             session.commit()

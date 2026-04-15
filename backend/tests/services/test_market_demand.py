@@ -400,6 +400,58 @@ def test_upsert_for_location_uses_esi_when_adam_not_covered() -> None:
     assert result.timing.adam_lookup_s == 0.0
 
 
+def test_upsert_for_location_preload_matches_non_preloaded_result() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    session.add(
+        MarketDemandResolved(
+            location_id=npc_location_id,
+            type_id=item_id,
+            period_days=2,
+            demand_source="regional_fallback",
+            buy_from_sell_period=1.0,
+            sell_to_buy_period=1.0,
+            buy_from_sell_yesterday=1.0,
+            sell_to_buy_yesterday=1.0,
+        )
+    )
+    session.commit()
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[
+            ("2026-03-20", 108.0, 110.0, 100.0, 10),
+            ("2026-03-19", 101.0, 110.0, 100.0, 20),
+        ],
+    )
+
+    service = MarketDemandResolutionService()
+    preload = service.build_batch_preload(
+        session,
+        demand_keys=[(npc_location_id, item_id)],
+        period_days=2,
+    )
+
+    result = service.upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=2,
+        adam_covered=False,
+        preload=preload,
+    )
+
+    assert result.created is False
+    assert result.row is not None
+    assert result.row.demand_source == "esi_live"
+    assert result.row.buy_from_sell_yesterday == pytest.approx(8.0)
+    assert result.row.sell_to_buy_yesterday == pytest.approx(2.0)
+    assert result.row.buy_from_sell_period == pytest.approx(10.0)
+    assert result.row.sell_to_buy_period == pytest.approx(20.0)
+    assert preload.existing_rows_by_key[(npc_location_id, item_id, 2)] is result.row
+
+
 def test_upsert_market_demand_uses_esi_live_for_structures_without_local_period() -> None:
     session = build_session()
     _npc_location_id, structure_location_id, item_id = seed_locations_and_item(session)

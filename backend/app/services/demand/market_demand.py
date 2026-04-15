@@ -1,8 +1,9 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.domain.enums import DemandSource, LocationType
@@ -41,7 +42,89 @@ class EsiLiveDemandEstimate:
     fallback_reason: str
 
 
+@dataclass
+class MarketDemandBatchPreload:
+    locations_by_id: dict[int, Location] = field(default_factory=dict)
+    items_by_id: dict[int, Item] = field(default_factory=dict)
+    esi_history_by_region_type: dict[tuple[int, int], list[EsiHistoryDaily]] = field(default_factory=dict)
+    existing_rows_by_key: dict[tuple[int, int, int], MarketDemandResolved] = field(default_factory=dict)
+
+
 class MarketDemandResolutionService:
+    _PAIR_CHUNK_SIZE = 1000
+
+    @classmethod
+    def build_batch_preload(
+        cls,
+        session: Session,
+        *,
+        demand_keys: list[tuple[int, int]],
+        period_days: int,
+    ) -> MarketDemandBatchPreload:
+        unique_keys = list(dict.fromkeys(demand_keys))
+        location_ids = sorted({location_id for location_id, _ in unique_keys})
+        type_ids = sorted({type_id for _, type_id in unique_keys})
+        locations = (
+            session.scalars(select(Location).where(Location.id.in_(location_ids))).all()
+            if location_ids
+            else []
+        )
+        items = (
+            session.scalars(select(Item).where(Item.id.in_(type_ids))).all()
+            if type_ids
+            else []
+        )
+        preload = MarketDemandBatchPreload(
+            locations_by_id={location.id: location for location in locations},
+            items_by_id={item.id: item for item in items},
+        )
+
+        max_history_days = max(period_days, 1)
+        history_pairs = {
+            (location.region_id, type_id)
+            for location_id, type_id in unique_keys
+            if (location := preload.locations_by_id.get(location_id)) is not None
+        }
+        for pair_chunk in cls._chunk_pairs(sorted(history_pairs)):
+            history_rows = session.scalars(
+                select(EsiHistoryDaily)
+                .where(tuple_(EsiHistoryDaily.region_id, EsiHistoryDaily.type_id).in_(pair_chunk))
+                .order_by(
+                    EsiHistoryDaily.region_id.asc(),
+                    EsiHistoryDaily.type_id.asc(),
+                    EsiHistoryDaily.date.desc(),
+                )
+            ).all()
+            rows_by_pair: dict[tuple[int, int], list[EsiHistoryDaily]] = defaultdict(list)
+            for row in history_rows:
+                key = (row.region_id, row.type_id)
+                if len(rows_by_pair[key]) < max_history_days:
+                    rows_by_pair[key].append(row)
+            preload.esi_history_by_region_type.update(rows_by_pair)
+
+        existing_pairs = sorted(unique_keys)
+        for pair_chunk in cls._chunk_pairs(existing_pairs):
+            existing_rows = session.scalars(
+                select(MarketDemandResolved).where(
+                    MarketDemandResolved.period_days == period_days,
+                    tuple_(MarketDemandResolved.location_id, MarketDemandResolved.type_id).in_(pair_chunk),
+                )
+            ).all()
+            preload.existing_rows_by_key.update(
+                {
+                    (row.location_id, row.type_id, row.period_days): row
+                    for row in existing_rows
+                }
+            )
+        return preload
+
+    @classmethod
+    def _chunk_pairs(
+        cls,
+        pairs: list[tuple[int, int]],
+    ) -> list[list[tuple[int, int]]]:
+        return [pairs[index : index + cls._PAIR_CHUNK_SIZE] for index in range(0, len(pairs), cls._PAIR_CHUNK_SIZE)]
+
     def refresh_npc_keys_from_adam(
         self,
         session: Session,
@@ -72,8 +155,9 @@ class MarketDemandResolutionService:
         period_days: int,
         adam_covered: bool = True,
         autocommit: bool = True,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> MarketDemandResolutionResult:
-        location = session.get(Location, location_id)
+        location = preload.locations_by_id.get(location_id) if preload is not None else session.get(Location, location_id)
         if location is None:
             raise ValueError(f"location_id {location_id} was not found")
 
@@ -85,6 +169,7 @@ class MarketDemandResolutionService:
                 period_days=period_days,
                 adam_covered=adam_covered,
                 autocommit=autocommit,
+                preload=preload,
             )
 
         structure_period = session.scalar(
@@ -111,6 +196,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_yesterday=None,
                 esi_live_fallback_reason=None,
                 autocommit=autocommit,
+                preload=preload,
             )
 
         return self._upsert_structure_fallback(
@@ -119,6 +205,7 @@ class MarketDemandResolutionService:
             type_id=type_id,
             period_days=period_days,
             autocommit=autocommit,
+            preload=preload,
         )
 
     def _upsert_npc_from_adam(
@@ -130,10 +217,11 @@ class MarketDemandResolutionService:
         period_days: int,
         adam_covered: bool = True,
         autocommit: bool = True,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> MarketDemandResolutionResult:
         timing = DemandResolutionTiming()
-        location = session.get(Location, location_id)
-        item = session.get(Item, type_id)
+        location = preload.locations_by_id.get(location_id) if preload is not None else session.get(Location, location_id)
+        item = preload.items_by_id.get(type_id) if preload is not None else session.get(Item, type_id)
         if location is None or item is None:
             raise ValueError("location_id or type_id was not found")
 
@@ -209,6 +297,7 @@ class MarketDemandResolutionService:
             type_id=type_id,
             period_days=period_days,
             fallback_reason="adam_zero_buy_from_sell" if adam_covered else "adam_not_covered",
+            preload=preload,
         )
         timing.esi_history_s = perf_counter() - t0
 
@@ -230,6 +319,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
                 esi_live_fallback_reason=esi_live_estimate.fallback_reason,
                 autocommit=autocommit,
+                preload=preload,
             )
             timing.upsert_s = perf_counter() - t0
             result.timing = timing
@@ -242,6 +332,7 @@ class MarketDemandResolutionService:
             type_id=type_id,
             period_days=period_days,
             autocommit=autocommit,
+            preload=preload,
         )
         timing.upsert_s = perf_counter() - t0
         result.timing = timing
@@ -255,6 +346,7 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
         autocommit: bool = True,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> MarketDemandResolutionResult:
         esi_live_estimate = self._estimate_esi_live_demand(
             session,
@@ -262,6 +354,7 @@ class MarketDemandResolutionService:
             type_id=type_id,
             period_days=period_days,
             fallback_reason="missing_structure_period",
+            preload=preload,
         )
         if esi_live_estimate is not None:
             return self._upsert_row(
@@ -280,6 +373,7 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
                 esi_live_fallback_reason=esi_live_estimate.fallback_reason,
                 autocommit=autocommit,
+                preload=preload,
             )
 
         return self._upsert_row(
@@ -298,6 +392,7 @@ class MarketDemandResolutionService:
             esi_live_buy_from_sell_ratio_yesterday=None,
             esi_live_fallback_reason="missing_structure_period_and_esi_history",
             autocommit=autocommit,
+            preload=preload,
         )
 
     def _delete_existing(
@@ -308,8 +403,10 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
         autocommit: bool = True,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> MarketDemandResolutionResult:
-        existing = session.scalar(
+        existing_key = (location_id, type_id, period_days)
+        existing = preload.existing_rows_by_key.get(existing_key) if preload is not None else session.scalar(
             select(MarketDemandResolved).where(
                 MarketDemandResolved.location_id == location_id,
                 MarketDemandResolved.type_id == type_id,
@@ -318,6 +415,8 @@ class MarketDemandResolutionService:
         )
         if existing is not None:
             session.delete(existing)
+            if preload is not None:
+                preload.existing_rows_by_key.pop(existing_key, None)
             if autocommit:
                 session.commit()
         return MarketDemandResolutionResult(created=False, row=None, points_used=0)
@@ -340,8 +439,10 @@ class MarketDemandResolutionService:
         esi_live_buy_from_sell_ratio_yesterday: float | None,
         esi_live_fallback_reason: str | None,
         autocommit: bool = True,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> MarketDemandResolutionResult:
-        record = session.scalar(
+        record_key = (location_id, type_id, period_days)
+        record = preload.existing_rows_by_key.get(record_key) if preload is not None else session.scalar(
             select(MarketDemandResolved).where(
                 MarketDemandResolved.location_id == location_id,
                 MarketDemandResolved.type_id == type_id,
@@ -366,6 +467,8 @@ class MarketDemandResolutionService:
                 computed_at=datetime.now(UTC),
             )
             session.add(record)
+            if preload is not None:
+                preload.existing_rows_by_key[record_key] = record
         else:
             record.demand_source = demand_source
             record.buy_from_sell_period = buy_from_sell_period
@@ -397,20 +500,25 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
         fallback_reason: str,
+        preload: MarketDemandBatchPreload | None = None,
     ) -> EsiLiveDemandEstimate | None:
-        location = session.get(Location, location_id)
+        location = preload.locations_by_id.get(location_id) if preload is not None else session.get(Location, location_id)
         if location is None:
             return None
 
-        history_rows = session.scalars(
-            select(EsiHistoryDaily)
-            .where(
-                EsiHistoryDaily.region_id == location.region_id,
-                EsiHistoryDaily.type_id == type_id,
-            )
-            .order_by(EsiHistoryDaily.date.desc())
-            .limit(max(period_days, 1))
-        ).all()
+        history_rows = (
+            preload.esi_history_by_region_type.get((location.region_id, type_id), [])
+            if preload is not None
+            else session.scalars(
+                select(EsiHistoryDaily)
+                .where(
+                    EsiHistoryDaily.region_id == location.region_id,
+                    EsiHistoryDaily.type_id == type_id,
+                )
+                .order_by(EsiHistoryDaily.date.desc())
+                .limit(max(period_days, 1))
+            ).all()
+        )
         if not history_rows:
             return None
 
