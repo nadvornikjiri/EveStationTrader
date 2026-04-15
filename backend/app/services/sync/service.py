@@ -41,6 +41,7 @@ from app.models.all_models import (
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
+    NpcStationDemandPeriod,
     OpportunityItem,
     OpportunitySourceSummary,
     Region,
@@ -1292,6 +1293,28 @@ class SyncService:
             progress_unit="downloaded records",
             message=f"Processing 0 / {total_downloaded_orders} downloaded ESI market orders.",
         )
+        last_ingest_progress = -1
+
+        def report_ingest_progress(current: int, total: int) -> None:
+            nonlocal last_ingest_progress
+            if total <= 0:
+                return
+            # Keep UI updates coarse enough to avoid excessive job-row churn.
+            if current < total and current - last_ingest_progress < 10_000:
+                return
+            if current == last_ingest_progress:
+                return
+            last_ingest_progress = current
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Processing downloaded ESI market orders",
+                progress_current=current,
+                progress_total=total,
+                progress_unit="downloaded records",
+                message=f"Processed {current} / {total} downloaded ESI market orders.",
+                isolated=True,
+            )
         # Resolve target station internal IDs for delta computation
         target_internal_ids: set[int] = set()
         if target_eve_ids:
@@ -1317,6 +1340,7 @@ class SyncService:
             universe_client=universe_client,
             cancellation_check=cancellation_check,
             target_location_ids=target_internal_ids if target_internal_ids else None,
+            progress_callback=report_ingest_progress,
         )
         total_processed += result.records_processed
         total_created += result.created
@@ -1357,14 +1381,25 @@ class SyncService:
                 demand_period_count=demand_period_count,
             )
 
+        rebuild_generated_count, rebuild_scope_count = self._rebuild_opportunities(
+            session,
+            job_id=job_id,
+            period_days=max(settings.default_analysis_period_days, 1),
+            cancellation_check=cancellation_check,
+            progress_phase_label="Rebuilding item opportunities",
+        )
+
         self._update_job_progress(
             session,
             job_id,
-            progress_phase="Processing downloaded ESI market orders",
-            progress_current=total_processed,
-            progress_total=total_downloaded_orders,
-            progress_unit="downloaded records",
-            message=f"Processed {total_processed} / {total_downloaded_orders} downloaded ESI market orders.",
+            progress_phase="Rebuilding item opportunities",
+            progress_current=rebuild_scope_count,
+            progress_total=rebuild_scope_count,
+            progress_unit="targets",
+            message=(
+                f"Rebuilt item opportunities for {rebuild_scope_count} / {rebuild_scope_count} targets "
+                f"({rebuild_generated_count} opportunity rows written)."
+            ),
         )
 
         message = (
@@ -1373,7 +1408,8 @@ class SyncService:
             f"{total_deleted} deleted, {total_stations_created} stations discovered, "
             f"{total_skipped_missing_items} skipped because item foundation data was missing, "
             f"{total_skipped_non_npc_locations} skipped because the location could not be resolved across {len(regions)} regions, "
-            f"{result.delta_count} order deltas, {demand_period_count} demand periods)."
+            f"{result.delta_count} order deltas, {demand_period_count} demand periods, "
+            f"{rebuild_generated_count} opportunity items across {rebuild_scope_count} target scopes)."
         )
         self._log_job_stage_checkpoint(
             "opportunity_rebuild",
@@ -2017,7 +2053,7 @@ class SyncService:
         if not order_pairs:
             return []
 
-        # Filter to items that have ESI history in the desired regions
+        # Items with live market orders at target stations AND ESI history
         items_with_orders: set[int] = {type_id for _, type_id in order_pairs}
         items_with_history: set[int] = set(
             session.scalars(
@@ -2027,12 +2063,32 @@ class SyncService:
                 )
             ).all()
         )
-
-        return [
+        order_based_pairs: list[tuple[int, int]] = [
             (location_id, type_id)
             for location_id, type_id in dict.fromkeys(order_pairs)
             if type_id in items_with_history
         ]
+
+        # Items with npc_station_demand_period at target stations
+        # (self-contained demand signal — no ESI history gate needed)
+        analysis_period_days = max(settings.default_analysis_period_days, 1)
+        period_based_pairs: list[tuple[int, int]] = list(
+            session.execute(
+                select(
+                    distinct(NpcStationDemandPeriod.location_id),
+                    NpcStationDemandPeriod.type_id,
+                ).where(
+                    NpcStationDemandPeriod.location_id.in_(target_location_ids),
+                    NpcStationDemandPeriod.period_days == analysis_period_days,
+                    NpcStationDemandPeriod.buy_from_sell_period > 0,
+                )
+            ).all()
+        )
+
+        # Union — order-based first (deduped by dict.fromkeys)
+        all_pairs: dict[tuple[int, int], None] = dict.fromkeys(order_based_pairs)
+        all_pairs.update(dict.fromkeys(period_based_pairs))
+        return list(all_pairs.keys())
 
     def _rebuild_opportunities(
         self,
@@ -2040,6 +2096,7 @@ class SyncService:
         job_id: int,
         period_days: int | None = None,
         cancellation_check: Callable[[], None] | None = None,
+        progress_phase_label: str | None = None,
     ) -> tuple[int, int]:
         rebuild_started_at = perf_counter()
         scope_load_started_at = perf_counter()
@@ -2059,6 +2116,17 @@ class SyncService:
             started_at=scope_load_started_at,
             scope_count=len(scopes),
         )
+        if progress_phase_label is not None:
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase=progress_phase_label,
+                progress_current=0,
+                progress_total=len(scopes),
+                progress_unit="targets",
+                message=f"{progress_phase_label} for 0 / {len(scopes)} targets.",
+                isolated=True,
+            )
 
         scope_count = 0
         generated_count = 0
@@ -2134,6 +2202,20 @@ class SyncService:
             )
             scope_count += 1
             generated_count += result.item_count
+            if progress_phase_label is not None:
+                self._update_job_progress(
+                    session,
+                    job_id,
+                    progress_phase=progress_phase_label,
+                    progress_current=scope_count,
+                    progress_total=len(scopes),
+                    progress_unit="targets",
+                    message=(
+                        f"{progress_phase_label}: {scope_count} / {len(scopes)} targets "
+                        f"({generated_count} opportunity rows written)."
+                    ),
+                    isolated=True,
+                )
 
         self._log_job_stage_checkpoint(
             "opportunity_rebuild",
@@ -2229,31 +2311,32 @@ class SyncService:
         source_location_id: int | None = None,
         type_id: int | None = None,
     ) -> bool:
-        scope_query = select(OpportunityItem.source_location_id, OpportunityItem.type_id).where(
-            OpportunityItem.target_location_id == target_location_id,
-            OpportunityItem.period_days == period_days,
+        requested_period_days = max(period_days, 1)
+        type_ids = self._trade_period_type_ids(
+            session,
+            target_location_id=target_location_id,
+            requested_type_id=type_id,
         )
-        if source_location_id is not None:
-            scope_query = scope_query.where(OpportunityItem.source_location_id == source_location_id)
-        if type_id is not None:
-            scope_query = scope_query.where(OpportunityItem.type_id == type_id)
-
-        existing_scope = session.execute(scope_query.distinct()).all()
-        if not existing_scope:
+        if not type_ids:
             return False
 
-        type_ids_by_source: dict[int, set[int]] = {}
-        for current_source_location_id, current_type_id in existing_scope:
-            type_ids_by_source.setdefault(current_source_location_id, set()).add(current_type_id)
+        source_location_ids = self._trade_period_source_location_ids(
+            session,
+            target_location_id=target_location_id,
+            type_ids=type_ids,
+            requested_source_location_id=source_location_id,
+        )
+        if not source_location_ids:
+            return False
 
-        for current_source_location_id, source_type_ids in type_ids_by_source.items():
-            OpportunityGenerationService().generate_for_target(
-                session,
-                target_location_id=target_location_id,
-                source_location_ids=[current_source_location_id],
-                type_ids=sorted(source_type_ids),
-                period_days=period_days,
-            )
+        OpportunityGenerationService().generate_for_target(
+            session,
+            target_location_id=target_location_id,
+            source_location_ids=source_location_ids,
+            type_ids=type_ids,
+            period_days=requested_period_days,
+            replace_entire_target_scope=source_location_id is None and type_id is None,
+        )
         return True
 
     def _trade_period_type_ids(
@@ -2851,6 +2934,7 @@ class SyncService:
         progress_total: int | None,
         progress_unit: str | None,
         message: str | None,
+        isolated: bool = False,
     ) -> None:
         def apply_progress() -> None:
             job_run = session.get(SyncJobRun, job_id)
@@ -2861,6 +2945,16 @@ class SyncService:
             job_run.progress_total = progress_total
             job_run.progress_unit = progress_unit
             job_run.message = message
+
+        if isolated:
+            progress_session = self.session_factory()
+            try:
+                session = progress_session
+                apply_progress()
+                progress_session.commit()
+            finally:
+                progress_session.close()
+            return
 
         apply_progress()
         session.commit()

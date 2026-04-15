@@ -7,7 +7,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.domain.enums import DemandSource, LocationType
-from app.models.all_models import AdamMarketOrdersTradeRaw, EsiHistoryDaily, Item, Location, MarketDemandResolved, StructureDemandPeriod
+from app.models.all_models import AdamMarketOrdersTradeRaw, EsiHistoryDaily, Item, Location, MarketDemandResolved, NpcStationDemandPeriod, StructureDemandPeriod
 
 
 @dataclass
@@ -34,8 +34,6 @@ class MarketDemandResolutionResult:
 class EsiLiveDemandEstimate:
     buy_from_sell_period: float
     sell_to_buy_period: float
-    buy_from_sell_yesterday: float
-    sell_to_buy_yesterday: float
     valid_days: int
     buy_from_sell_ratio_period: float | None
     buy_from_sell_ratio_yesterday: float | None
@@ -48,6 +46,7 @@ class MarketDemandBatchPreload:
     items_by_id: dict[int, Item] = field(default_factory=dict)
     esi_history_by_region_type: dict[tuple[int, int], list[EsiHistoryDaily]] = field(default_factory=dict)
     existing_rows_by_key: dict[tuple[int, int, int], MarketDemandResolved] = field(default_factory=dict)
+    station_periods_by_key: dict[tuple[int, int, int], NpcStationDemandPeriod] = field(default_factory=dict)
 
 
 class MarketDemandResolutionService:
@@ -114,6 +113,20 @@ class MarketDemandResolutionService:
                 {
                     (row.location_id, row.type_id, row.period_days): row
                     for row in existing_rows
+                }
+            )
+
+        for pair_chunk in cls._chunk_pairs(existing_pairs):
+            station_period_rows = session.scalars(
+                select(NpcStationDemandPeriod).where(
+                    NpcStationDemandPeriod.period_days == period_days,
+                    tuple_(NpcStationDemandPeriod.location_id, NpcStationDemandPeriod.type_id).in_(pair_chunk),
+                )
+            ).all()
+            preload.station_periods_by_key.update(
+                {
+                    (row.location_id, row.type_id, row.period_days): row
+                    for row in station_period_rows
                 }
             )
         return preload
@@ -188,8 +201,6 @@ class MarketDemandResolutionService:
                 demand_source=DemandSource.LOCAL_STRUCTURE.value,
                 buy_from_sell_period=structure_period.buy_from_sell_period,
                 sell_to_buy_period=structure_period.sell_to_buy_period,
-                buy_from_sell_yesterday=structure_period.buy_from_sell_yesterday,
-                sell_to_buy_yesterday=structure_period.sell_to_buy_yesterday,
                 points_used=1,
                 esi_live_valid_days=None,
                 esi_live_buy_from_sell_ratio_period=None,
@@ -277,14 +288,47 @@ class MarketDemandResolutionService:
                 demand_source=DemandSource.ADAM4EVE.value,
                 buy_from_sell_period=adam_bfs_period,
                 sell_to_buy_period=adam_stb_period,
-                buy_from_sell_yesterday=adam_bfs_yesterday,
-                sell_to_buy_yesterday=adam_stb_yesterday,
                 points_used=adam_points,
                 esi_live_valid_days=None,
                 esi_live_buy_from_sell_ratio_period=None,
                 esi_live_buy_from_sell_ratio_yesterday=None,
                 esi_live_fallback_reason=None,
                 autocommit=autocommit,
+            )
+            timing.upsert_s = perf_counter() - t0
+            result.timing = timing
+            return result
+
+        # Check npc_station_demand_period as secondary source (before ESI regional history fallback)
+        t0 = perf_counter()
+        station_period_key = (location_id, type_id, period_days)
+        station_period = (
+            preload.station_periods_by_key.get(station_period_key)
+            if preload is not None
+            else session.scalar(
+                select(NpcStationDemandPeriod).where(
+                    NpcStationDemandPeriod.location_id == location_id,
+                    NpcStationDemandPeriod.type_id == type_id,
+                    NpcStationDemandPeriod.period_days == period_days,
+                )
+            )
+        )
+        if station_period is not None and station_period.buy_from_sell_period > 0:
+            result = self._upsert_row(
+                session,
+                location_id=location_id,
+                type_id=type_id,
+                period_days=period_days,
+                demand_source=DemandSource.NPC_STATION_PERIOD.value,
+                buy_from_sell_period=station_period.buy_from_sell_period,
+                sell_to_buy_period=station_period.sell_to_buy_period,
+                points_used=int(station_period.coverage_pct * period_days),
+                esi_live_valid_days=None,
+                esi_live_buy_from_sell_ratio_period=None,
+                esi_live_buy_from_sell_ratio_yesterday=None,
+                esi_live_fallback_reason=None,
+                autocommit=autocommit,
+                preload=preload,
             )
             timing.upsert_s = perf_counter() - t0
             result.timing = timing
@@ -311,8 +355,6 @@ class MarketDemandResolutionService:
                 demand_source=DemandSource.ESI_LIVE.value,
                 buy_from_sell_period=esi_live_estimate.buy_from_sell_period,
                 sell_to_buy_period=esi_live_estimate.sell_to_buy_period,
-                buy_from_sell_yesterday=esi_live_estimate.buy_from_sell_yesterday,
-                sell_to_buy_yesterday=esi_live_estimate.sell_to_buy_yesterday,
                 points_used=esi_live_estimate.valid_days,
                 esi_live_valid_days=esi_live_estimate.valid_days,
                 esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
@@ -365,8 +407,6 @@ class MarketDemandResolutionService:
                 demand_source=DemandSource.ESI_LIVE.value,
                 buy_from_sell_period=esi_live_estimate.buy_from_sell_period,
                 sell_to_buy_period=esi_live_estimate.sell_to_buy_period,
-                buy_from_sell_yesterday=esi_live_estimate.buy_from_sell_yesterday,
-                sell_to_buy_yesterday=esi_live_estimate.sell_to_buy_yesterday,
                 points_used=esi_live_estimate.valid_days,
                 esi_live_valid_days=esi_live_estimate.valid_days,
                 esi_live_buy_from_sell_ratio_period=esi_live_estimate.buy_from_sell_ratio_period,
@@ -384,8 +424,6 @@ class MarketDemandResolutionService:
             demand_source=DemandSource.REGIONAL_FALLBACK.value,
             buy_from_sell_period=0.0,
             sell_to_buy_period=0.0,
-            buy_from_sell_yesterday=0.0,
-            sell_to_buy_yesterday=0.0,
             points_used=0,
             esi_live_valid_days=0,
             esi_live_buy_from_sell_ratio_period=None,
@@ -431,8 +469,6 @@ class MarketDemandResolutionService:
         demand_source: str,
         buy_from_sell_period: float,
         sell_to_buy_period: float,
-        buy_from_sell_yesterday: float,
-        sell_to_buy_yesterday: float,
         points_used: int,
         esi_live_valid_days: int | None,
         esi_live_buy_from_sell_ratio_period: float | None,
@@ -458,8 +494,6 @@ class MarketDemandResolutionService:
                 demand_source=demand_source,
                 buy_from_sell_period=buy_from_sell_period,
                 sell_to_buy_period=sell_to_buy_period,
-                buy_from_sell_yesterday=buy_from_sell_yesterday,
-                sell_to_buy_yesterday=sell_to_buy_yesterday,
                 esi_live_valid_days=esi_live_valid_days,
                 esi_live_buy_from_sell_ratio_period=esi_live_buy_from_sell_ratio_period,
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_buy_from_sell_ratio_yesterday,
@@ -473,8 +507,6 @@ class MarketDemandResolutionService:
             record.demand_source = demand_source
             record.buy_from_sell_period = buy_from_sell_period
             record.sell_to_buy_period = sell_to_buy_period
-            record.buy_from_sell_yesterday = buy_from_sell_yesterday
-            record.sell_to_buy_yesterday = sell_to_buy_yesterday
             record.esi_live_valid_days = esi_live_valid_days
             record.esi_live_buy_from_sell_ratio_period = esi_live_buy_from_sell_ratio_period
             record.esi_live_buy_from_sell_ratio_yesterday = esi_live_buy_from_sell_ratio_yesterday
@@ -525,8 +557,6 @@ class MarketDemandResolutionService:
         latest_history_date = max(row.date for row in history_rows)
         buy_from_sell_period = 0.0
         sell_to_buy_period = 0.0
-        buy_from_sell_yesterday = 0.0
-        sell_to_buy_yesterday = 0.0
         valid_days = 0
         valid_volume_period = 0.0
         buy_from_sell_ratio_yesterday: float | None = None
@@ -546,8 +576,6 @@ class MarketDemandResolutionService:
             valid_volume_period += float(row.volume)
             valid_days += 1
             if row.date == latest_history_date:
-                buy_from_sell_yesterday = day_buy_from_sell
-                sell_to_buy_yesterday = day_sell_to_buy
                 buy_from_sell_ratio_yesterday = ratio
 
         if valid_days == 0:
@@ -556,8 +584,6 @@ class MarketDemandResolutionService:
         return EsiLiveDemandEstimate(
             buy_from_sell_period=buy_from_sell_period,
             sell_to_buy_period=sell_to_buy_period,
-            buy_from_sell_yesterday=buy_from_sell_yesterday,
-            sell_to_buy_yesterday=sell_to_buy_yesterday,
             valid_days=valid_days,
             buy_from_sell_ratio_period=(buy_from_sell_period / valid_volume_period) if valid_volume_period > 0 else None,
             buy_from_sell_ratio_yesterday=buy_from_sell_ratio_yesterday,
