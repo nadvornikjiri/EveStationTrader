@@ -2674,3 +2674,12 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && .venv/bin/ruff check . --fix`
   - `cd backend && .venv/bin/pytest`
   - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0012_restore_esi_history_daily.py`, and `alembic/versions/20260409_0013_widen_esi_history_volume.py`
+
+## 2026-04-15 - MARKET-DEMAND-UPSERT-REFRESH-REMOVAL
+- Removed the post-commit `session.refresh(record)` from `MarketDemandResolutionService._upsert_row`, keeping the returned ORM row populated from the values assigned before commit.
+- Added a regression test that asserts the returned `result.row` immediately exposes `buy_from_sell_period`, `demand_source`, and `computed_at` without an explicit refresh in the test.
+- validation:
+  - `cd backend && .venv/bin/pytest tests/services/test_market_demand.py -m "" -q`
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy .`
+  - `cd backend && .venv/bin/pytest`

@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from time import perf_counter
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,10 +10,23 @@ from app.models.all_models import AdamMarketOrdersTradeRaw, EsiHistoryDaily, Ite
 
 
 @dataclass
+class DemandResolutionTiming:
+    """Accumulated wall-clock seconds for each sub-phase of a resolution call."""
+    adam_lookup_s: float = field(default=0.0)
+    esi_history_s: float = field(default=0.0)
+    upsert_s: float = field(default=0.0)
+
+    @property
+    def total_s(self) -> float:
+        return self.adam_lookup_s + self.esi_history_s + self.upsert_s
+
+
+@dataclass
 class MarketDemandResolutionResult:
     created: bool
     row: MarketDemandResolved | None
     points_used: int
+    timing: DemandResolutionTiming = field(default_factory=DemandResolutionTiming)
 
 
 @dataclass
@@ -109,6 +123,7 @@ class MarketDemandResolutionService:
         type_id: int,
         period_days: int,
     ) -> MarketDemandResolutionResult:
+        timing = DemandResolutionTiming()
         location = session.get(Location, location_id)
         item = session.get(Item, type_id)
         if location is None or item is None:
@@ -120,6 +135,7 @@ class MarketDemandResolutionService:
         adam_stb_period = 0.0
         adam_stb_yesterday = 0.0
         adam_points = 0
+        t0 = perf_counter()
         latest_scan_date = session.scalar(
             select(AdamMarketOrdersTradeRaw.c.scanDate).where(
                 AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
@@ -152,9 +168,11 @@ class MarketDemandResolutionService:
                     if scan_date == latest_scan_date:
                         adam_stb_yesterday += amount
             adam_points = len(distinct_dates)
+        timing.adam_lookup_s = perf_counter() - t0
 
         if adam_bfs_yesterday > 0 or adam_bfs_period > 0:
-            return self._upsert_row(
+            t0 = perf_counter()
+            result = self._upsert_row(
                 session,
                 location_id=location_id,
                 type_id=type_id,
@@ -170,7 +188,11 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_yesterday=None,
                 esi_live_fallback_reason=None,
             )
+            timing.upsert_s = perf_counter() - t0
+            result.timing = timing
+            return result
 
+        t0 = perf_counter()
         esi_live_estimate = self._estimate_esi_live_demand(
             session,
             location_id=location_id,
@@ -178,8 +200,11 @@ class MarketDemandResolutionService:
             period_days=period_days,
             fallback_reason="adam_zero_buy_from_sell",
         )
+        timing.esi_history_s = perf_counter() - t0
+
         if esi_live_estimate is not None:
-            return self._upsert_row(
+            t0 = perf_counter()
+            result = self._upsert_row(
                 session,
                 location_id=location_id,
                 type_id=type_id,
@@ -195,8 +220,15 @@ class MarketDemandResolutionService:
                 esi_live_buy_from_sell_ratio_yesterday=esi_live_estimate.buy_from_sell_ratio_yesterday,
                 esi_live_fallback_reason=esi_live_estimate.fallback_reason,
             )
+            timing.upsert_s = perf_counter() - t0
+            result.timing = timing
+            return result
 
-        return self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
+        t0 = perf_counter()
+        result = self._delete_existing(session, location_id=location_id, type_id=type_id, period_days=period_days)
+        timing.upsert_s = perf_counter() - t0
+        result.timing = timing
+        return result
 
     def _upsert_structure_fallback(
         self,
@@ -324,7 +356,6 @@ class MarketDemandResolutionService:
             record.computed_at = datetime.now(UTC)
 
         session.commit()
-        session.refresh(record)
         return MarketDemandResolutionResult(created=created, row=record, points_used=points_used)
 
     @staticmethod

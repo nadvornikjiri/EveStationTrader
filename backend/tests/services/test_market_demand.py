@@ -159,6 +159,37 @@ def test_upsert_market_demand_uses_adam4eve_for_npc_targets() -> None:
     assert result.row.esi_live_fallback_reason is None
 
 
+def test_upsert_row_result_has_correct_fields_without_refresh() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_adam_raw_history(
+        session,
+        location_id=npc_location_id,
+        values=[
+            ("2026-03-20", 0, 12.0),
+            ("2026-03-20", 1, 3.0),
+        ],
+    )
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[("2026-03-20", 108.0, 110.0, 100.0, 10)],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=1,
+    )
+
+    assert result.row is not None
+    assert result.row.buy_from_sell_period == 12.0
+    assert result.row.demand_source == "adam4eve"
+    assert result.row.computed_at is not None
+
+
 def test_upsert_market_demand_deletes_stale_npc_row_when_no_history_exists() -> None:
     session = build_session()
     npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
