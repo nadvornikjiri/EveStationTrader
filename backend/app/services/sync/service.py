@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 import logging
@@ -2021,6 +2022,12 @@ class SyncService:
         )
         if not target_location_ids:
             return []
+        target_locations_by_region: dict[int, list[int]] = defaultdict(list)
+        for location_id, region_id in session.execute(
+            select(Location.id, Location.region_id).where(Location.id.in_(target_location_ids))
+        ).all():
+            if region_id is not None:
+                target_locations_by_region[region_id].append(location_id)
 
         # Same desired-region logic as the ESI order sync
         desired_eve_region_ids: set[int] = set(settings.source_region_ids or [])
@@ -2050,8 +2057,6 @@ class SyncService:
                 EsiMarketOrder.location_id.in_(target_location_ids),
             )
         ).all()
-        if not order_pairs:
-            return []
 
         # Items with live market orders at target stations AND ESI history
         items_with_orders: set[int] = {type_id for _, type_id in order_pairs}
@@ -2072,8 +2077,9 @@ class SyncService:
         # Items with npc_station_demand_period at target stations
         # (self-contained demand signal — no ESI history gate needed)
         analysis_period_days = max(settings.default_analysis_period_days, 1)
-        period_based_pairs: list[tuple[int, int]] = list(
-            session.execute(
+        period_based_pairs: list[tuple[int, int]] = [
+            (location_id, type_id)
+            for location_id, type_id in session.execute(
                 select(
                     distinct(NpcStationDemandPeriod.location_id),
                     NpcStationDemandPeriod.type_id,
@@ -2083,11 +2089,27 @@ class SyncService:
                     NpcStationDemandPeriod.buy_from_sell_period > 0,
                 )
             ).all()
-        )
+        ]
 
-        # Union — order-based first (deduped by dict.fromkeys)
+        cutoff_date = date.today() - timedelta(days=analysis_period_days)
+        history_based_pairs: list[tuple[int, int]] = []
+        for region_id, type_id in session.execute(
+            select(
+                distinct(EsiHistoryDaily.region_id),
+                EsiHistoryDaily.type_id,
+            ).where(
+                EsiHistoryDaily.region_id.in_(desired_internal_region_ids),
+                EsiHistoryDaily.date >= cutoff_date,
+                EsiHistoryDaily.volume > 0,
+            )
+        ).all():
+            for location_id in target_locations_by_region.get(region_id, []):
+                history_based_pairs.append((location_id, type_id))
+
+        # Union — order-based first, then period-based, then history-only gaps
         all_pairs: dict[tuple[int, int], None] = dict.fromkeys(order_based_pairs)
         all_pairs.update(dict.fromkeys(period_based_pairs))
+        all_pairs.update(dict.fromkeys(history_based_pairs))
         return list(all_pairs.keys())
 
     def _rebuild_opportunities(

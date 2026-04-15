@@ -23,6 +23,7 @@ from app.models.all_models import (
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
+    NpcStationDemandPeriod,
     OpportunityItem,
     OpportunitySourceSummary,
     Region,
@@ -1738,6 +1739,126 @@ def test_everef_history_sync_preload_keeps_esi_demand_values_correct(
     assert demand_row is not None
     assert demand_row.demand_source == "esi_live"
     assert demand_row.buy_from_sell_period == pytest.approx(666.0)
+
+
+def test_esi_demand_refresh_keys_includes_history_only_items_for_target_region() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([location, item])
+    session.flush()
+    session.add(
+        EsiHistoryDaily(
+            region_id=region.id,
+            type_id=item.id,
+            date=date.today() - timedelta(days=1),
+            average=120.0,
+            highest=125.0,
+            lowest=115.0,
+            order_count=5,
+            volume=42,
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    service = SyncService(session_factory=lambda: session)
+
+    assert service._esi_demand_refresh_keys(session) == [(location.id, item.id)]
+
+
+def test_esi_demand_refresh_keys_returns_empty_when_no_orders_history_or_periods() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    session.add(system)
+    session.flush()
+    location = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system.id,
+        region_id=region.id,
+        name="Jita IV - Moon 4",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([location, item])
+    session.flush()
+    session.add(
+        NpcStationDemandPeriod(
+            location_id=location.id,
+            type_id=item.id,
+            period_days=7,
+            buy_from_sell_period=10.0,
+            sell_to_buy_period=1.0,
+            coverage_pct=1.0,
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [60003760],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    service = SyncService(session_factory=lambda: session)
+
+    assert service._esi_demand_refresh_keys(session) == []
 
 
 def test_opportunity_rebuild_does_not_refresh_esi_history_inline(monkeypatch: pytest.MonkeyPatch) -> None:
