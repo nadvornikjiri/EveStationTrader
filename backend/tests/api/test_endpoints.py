@@ -1077,7 +1077,29 @@ def test_get_auth_login_returns_actionable_redirect_payload(client) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["authorize_url"].startswith("https://login.eveonline.com/v2/oauth/authorize/?")
+    assert "state=" in payload["authorize_url"]
     assert payload["scopes"] == build_esi_scopes()
+
+
+def test_get_auth_login_generates_unique_state_per_request(client) -> None:
+    r1 = client.get("/api/auth/login")
+    r2 = client.get("/api/auth/login")
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["authorize_url"] != r2.json()["authorize_url"]
+
+
+def test_get_auth_callback_requires_state(client) -> None:
+    response = client.get("/api/auth/callback?code=somecode")
+    assert response.status_code == 400
+    assert "state" in response.json()["detail"].lower()
+
+
+def test_get_auth_callback_rejects_tampered_state(client) -> None:
+    response = client.get("/api/auth/callback?code=somecode&state=tampered.invalidsig")
+    assert response.status_code == 400
+    assert "state" in response.json()["detail"].lower()
 
 
 def test_get_character_connect_matches_auth_login_payload(client) -> None:
@@ -1085,4 +1107,7 @@ def test_get_character_connect_matches_auth_login_payload(client) -> None:
     connect_response = client.post("/api/characters/connect")
 
     assert connect_response.status_code == 200
-    assert connect_response.json() == login_response.json()
+    # Both return the same structure; authorize_url differs per-request due to unique state
+    assert connect_response.json()["scopes"] == login_response.json()["scopes"]
+    assert connect_response.json()["authorize_url"].startswith("https://login.eveonline.com/v2/oauth/authorize/?")
+    assert "state=" in connect_response.json()["authorize_url"]

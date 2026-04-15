@@ -1,4 +1,27 @@
+import hashlib
+import hmac
+import secrets
+
 from app.core.config import get_settings
+
+
+def generate_state() -> str:
+    """Generate a self-verifying HMAC-signed state token for OAuth CSRF protection."""
+    settings = get_settings()
+    token = secrets.token_urlsafe(32)
+    sig = hmac.new(settings.esi_client_secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+    return f"{token}.{sig}"
+
+
+def verify_state(state: str) -> bool:
+    """Verify that a state token was issued by us (HMAC signature check)."""
+    settings = get_settings()
+    parts = state.split(".", 1)
+    if len(parts) != 2:
+        return False
+    token, provided_sig = parts
+    expected_sig = hmac.new(settings.esi_client_secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected_sig, provided_sig)
 
 
 def build_esi_scopes() -> list[str]:

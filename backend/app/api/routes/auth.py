@@ -1,11 +1,11 @@
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps.auth import get_current_user
 from app.api.schemas.auth import AuthRedirectResponse, CurrentUser
 from app.api.schemas.common import MessageResponse
-from app.core.security import build_esi_scopes, get_auth_redirect_config
+from app.core.security import build_esi_scopes, generate_state, get_auth_redirect_config, verify_state
 from app.services.auth.service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -13,7 +13,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 def build_login_redirect_response() -> AuthRedirectResponse:
     params = get_auth_redirect_config()
-    authorize_url = f"https://login.eveonline.com/v2/oauth/authorize/?{urlencode({'response_type': 'code', **params})}"
+    state = generate_state()
+    authorize_url = f"https://login.eveonline.com/v2/oauth/authorize/?{urlencode({'response_type': 'code', 'state': state, **params})}"
     return AuthRedirectResponse(authorize_url=authorize_url, scopes=build_esi_scopes())
 
 
@@ -23,7 +24,11 @@ def login() -> AuthRedirectResponse:
 
 
 @router.get("/callback", response_model=CurrentUser | MessageResponse)
-def callback(code: str | None = None) -> CurrentUser | MessageResponse:
+def callback(code: str | None = None, state: str | None = None) -> CurrentUser | MessageResponse:
+    if not state:
+        raise HTTPException(status_code=400, detail="The state parameter is required.")
+    if not verify_state(state):
+        raise HTTPException(status_code=400, detail="Invalid state parameter.")
     if not code:
         return MessageResponse(message="No EVE SSO code provided.")
     return AuthService().handle_callback(code)
