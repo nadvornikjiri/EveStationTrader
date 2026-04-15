@@ -1566,6 +1566,45 @@ class SyncService:
             location_count=len(unique_location_ids),
             item_count=len(unique_type_ids),
         )
+        adam_covered_preload_started_at = perf_counter()
+        eve_location_id_by_internal = {
+            internal_id: location.location_id
+            for internal_id in unique_location_ids
+            if (location := session.get(Location, internal_id)) is not None
+        }
+        internal_location_id_by_eve = {
+            eve_location_id: internal_id for internal_id, eve_location_id in eve_location_id_by_internal.items()
+        }
+        eve_type_id_by_internal = {
+            internal_id: item.type_id
+            for internal_id in unique_type_ids
+            if (item := session.get(Item, internal_id)) is not None
+        }
+        internal_item_id_by_eve = {eve_type_id: internal_id for internal_id, eve_type_id in eve_type_id_by_internal.items()}
+        adam_covered_keys: set[tuple[int, int]] = set()
+        if eve_location_id_by_internal and eve_type_id_by_internal:
+            covered_rows = session.execute(
+                select(
+                    AdamMarketOrdersTradeRaw.c.location_id,
+                    AdamMarketOrdersTradeRaw.c.type_id,
+                )
+                .where(
+                    AdamMarketOrdersTradeRaw.c.location_id.in_(eve_location_id_by_internal.values()),
+                    AdamMarketOrdersTradeRaw.c.type_id.in_(eve_type_id_by_internal.values()),
+                )
+                .distinct()
+            ).all()
+            adam_covered_keys = {
+                (internal_location_id, internal_item_id)
+                for eve_location_id, eve_type_id in covered_rows
+                if (internal_location_id := internal_location_id_by_eve.get(eve_location_id)) is not None
+                if (internal_item_id := internal_item_id_by_eve.get(eve_type_id)) is not None
+            }
+        self._log_profile_checkpoint(
+            "preload_adam_covered_keys",
+            started_at=adam_covered_preload_started_at,
+            covered_count=len(adam_covered_keys),
+        )
         self._update_job_progress(
             session,
             job_id,
@@ -1589,6 +1628,7 @@ class SyncService:
                 location_id=location_id,
                 type_id=type_id,
                 period_days=analysis_period_days,
+                adam_covered=(location_id, type_id) in adam_covered_keys,
             )
             total_adam_s += result.timing.adam_lookup_s
             total_esi_history_s += result.timing.esi_history_s

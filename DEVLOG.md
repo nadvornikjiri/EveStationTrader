@@ -2696,3 +2696,17 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && .venv/bin/ruff check . --fix`
   - `cd backend && .venv/bin/mypy .`
   - `cd backend && .venv/bin/pytest`
+
+## 2026-04-15 - ADAM-COVERAGE-PRECHECK-FOR-ESI-DEMAND
+- Added an `adam_covered` fast-path flag to `MarketDemandResolutionService.upsert_for_location()` and `_upsert_npc_from_adam()` so NPC demand resolution can skip the per-key Adam `MAX(scanDate)` lookup entirely when sync already knows a key has no Adam coverage.
+- Updated EVE Ref history sync to preload internal/EVE identity maps from the warmed SQLAlchemy identity map, batch query distinct Adam-covered `(location_id, type_id)` pairs once, and pass that coverage result into each ESI-demand refresh iteration.
+- Added regression coverage proving `adam_covered=False` forces the existing ESI-live fallback path even when Adam raw rows exist in the database, with zero Adam lookup time recorded.
+- acceptance criteria covered:
+  - NPC upsert accepts and propagates an `adam_covered` flag into the Adam-backed resolution path.
+  - Non-covered keys skip the Adam lookup block and fall through to ESI-live fallback with the `adam_not_covered` reason.
+  - EVE Ref history sync preloads Adam-covered keys in one batch and passes per-key coverage into the refresh loop.
+  - Integration coverage verifies the non-covered path uses `esi_live` and records `adam_lookup_s == 0.0`.
+- validation:
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy .`
+  - `cd backend && .venv/bin/pytest`

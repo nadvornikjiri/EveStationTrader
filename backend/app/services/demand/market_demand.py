@@ -70,6 +70,7 @@ class MarketDemandResolutionService:
         location_id: int,
         type_id: int,
         period_days: int,
+        adam_covered: bool = True,
     ) -> MarketDemandResolutionResult:
         location = session.get(Location, location_id)
         if location is None:
@@ -81,6 +82,7 @@ class MarketDemandResolutionService:
                 location_id=location_id,
                 type_id=type_id,
                 period_days=period_days,
+                adam_covered=adam_covered,
             )
 
         structure_period = session.scalar(
@@ -122,6 +124,7 @@ class MarketDemandResolutionService:
         location_id: int,
         type_id: int,
         period_days: int,
+        adam_covered: bool = True,
     ) -> MarketDemandResolutionResult:
         timing = DemandResolutionTiming()
         location = session.get(Location, location_id)
@@ -135,40 +138,41 @@ class MarketDemandResolutionService:
         adam_stb_period = 0.0
         adam_stb_yesterday = 0.0
         adam_points = 0
-        t0 = perf_counter()
-        latest_scan_date = session.scalar(
-            select(AdamMarketOrdersTradeRaw.c.scanDate).where(
-                AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
-                AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
-            ).order_by(AdamMarketOrdersTradeRaw.c.scanDate.desc())
-        )
-        if latest_scan_date is not None:
-            window_start = latest_scan_date - timedelta(days=max(period_days - 1, 0))
-            raw_rows = session.execute(
-                select(
-                    AdamMarketOrdersTradeRaw.c.scanDate,
-                    AdamMarketOrdersTradeRaw.c.is_buy_order,
-                    AdamMarketOrdersTradeRaw.c.amount,
-                ).where(
+        if adam_covered:
+            t0 = perf_counter()
+            latest_scan_date = session.scalar(
+                select(AdamMarketOrdersTradeRaw.c.scanDate).where(
                     AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
                     AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
-                    AdamMarketOrdersTradeRaw.c.scanDate >= window_start,
-                    AdamMarketOrdersTradeRaw.c.scanDate <= latest_scan_date,
-                )
-            ).all()
-            distinct_dates: set[date] = set()
-            for scan_date, is_buy_order, amount in raw_rows:
-                distinct_dates.add(scan_date)
-                if is_buy_order == 0:
-                    adam_bfs_period += amount
-                    if scan_date == latest_scan_date:
-                        adam_bfs_yesterday += amount
-                else:
-                    adam_stb_period += amount
-                    if scan_date == latest_scan_date:
-                        adam_stb_yesterday += amount
-            adam_points = len(distinct_dates)
-        timing.adam_lookup_s = perf_counter() - t0
+                ).order_by(AdamMarketOrdersTradeRaw.c.scanDate.desc())
+            )
+            if latest_scan_date is not None:
+                window_start = latest_scan_date - timedelta(days=max(period_days - 1, 0))
+                raw_rows = session.execute(
+                    select(
+                        AdamMarketOrdersTradeRaw.c.scanDate,
+                        AdamMarketOrdersTradeRaw.c.is_buy_order,
+                        AdamMarketOrdersTradeRaw.c.amount,
+                    ).where(
+                        AdamMarketOrdersTradeRaw.c.location_id == location.location_id,
+                        AdamMarketOrdersTradeRaw.c.type_id == item.type_id,
+                        AdamMarketOrdersTradeRaw.c.scanDate >= window_start,
+                        AdamMarketOrdersTradeRaw.c.scanDate <= latest_scan_date,
+                    )
+                ).all()
+                distinct_dates: set[date] = set()
+                for scan_date, is_buy_order, amount in raw_rows:
+                    distinct_dates.add(scan_date)
+                    if is_buy_order == 0:
+                        adam_bfs_period += amount
+                        if scan_date == latest_scan_date:
+                            adam_bfs_yesterday += amount
+                    else:
+                        adam_stb_period += amount
+                        if scan_date == latest_scan_date:
+                            adam_stb_yesterday += amount
+                adam_points = len(distinct_dates)
+            timing.adam_lookup_s = perf_counter() - t0
 
         if adam_bfs_yesterday > 0 or adam_bfs_period > 0:
             t0 = perf_counter()
@@ -198,7 +202,7 @@ class MarketDemandResolutionService:
             location_id=location_id,
             type_id=type_id,
             period_days=period_days,
-            fallback_reason="adam_zero_buy_from_sell",
+            fallback_reason="adam_zero_buy_from_sell" if adam_covered else "adam_not_covered",
         )
         timing.esi_history_s = perf_counter() - t0
 

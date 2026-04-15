@@ -309,6 +309,42 @@ def test_upsert_market_demand_uses_esi_live_fallback_when_adam_resolves_to_zero(
     assert result.row.esi_live_fallback_reason == "adam_zero_buy_from_sell"
 
 
+def test_upsert_for_location_uses_esi_when_adam_not_covered() -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    add_adam_raw_history(
+        session,
+        location_id=npc_location_id,
+        values=[
+            ("2026-03-20", 0, 12.0),
+            ("2026-03-20", 1, 3.0),
+            ("2026-03-19", 0, 18.0),
+            ("2026-03-19", 1, 4.0),
+        ],
+    )
+    add_esi_history(
+        session,
+        region_id=10000002,
+        type_id=34,
+        values=[
+            ("2026-03-20", 108.0, 110.0, 100.0, 10),
+            ("2026-03-19", 101.0, 110.0, 100.0, 20),
+        ],
+    )
+
+    result = MarketDemandResolutionService().upsert_for_location(
+        session,
+        location_id=npc_location_id,
+        type_id=item_id,
+        period_days=2,
+        adam_covered=False,
+    )
+
+    assert result.row is not None
+    assert result.row.demand_source == "esi_live"
+    assert result.timing.adam_lookup_s == 0.0
+
+
 def test_upsert_market_demand_uses_esi_live_for_structures_without_local_period() -> None:
     session = build_session()
     _npc_location_id, structure_location_id, item_id = seed_locations_and_item(session)
