@@ -1556,10 +1556,16 @@ class SyncService:
         preload_started_at = perf_counter()
         unique_location_ids = {location_id for location_id, _ in esi_demand_keys}
         unique_type_ids = {type_id for _, type_id in esi_demand_keys}
-        if unique_location_ids:
+        locations = (
             session.scalars(select(Location).where(Location.id.in_(unique_location_ids))).all()
-        if unique_type_ids:
+            if unique_location_ids
+            else []
+        )
+        items = (
             session.scalars(select(Item).where(Item.id.in_(unique_type_ids))).all()
+            if unique_type_ids
+            else []
+        )
         self._log_profile_checkpoint(
             "preload_esi_demand_identity_map",
             started_at=preload_started_at,
@@ -1568,17 +1574,15 @@ class SyncService:
         )
         adam_covered_preload_started_at = perf_counter()
         eve_location_id_by_internal = {
-            internal_id: location.location_id
-            for internal_id in unique_location_ids
-            if (location := session.get(Location, internal_id)) is not None
+            location.id: location.location_id
+            for location in locations
         }
         internal_location_id_by_eve = {
             eve_location_id: internal_id for internal_id, eve_location_id in eve_location_id_by_internal.items()
         }
         eve_type_id_by_internal = {
-            internal_id: item.type_id
-            for internal_id in unique_type_ids
-            if (item := session.get(Item, internal_id)) is not None
+            item.id: item.type_id
+            for item in items
         }
         internal_item_id_by_eve = {eve_type_id: internal_id for internal_id, eve_type_id in eve_type_id_by_internal.items()}
         adam_covered_keys: set[tuple[int, int]] = set()
@@ -1605,6 +1609,9 @@ class SyncService:
             started_at=adam_covered_preload_started_at,
             covered_count=len(adam_covered_keys),
         )
+        # Keys already covered by adam4eve are handled by adam4eve_sync — exclude them.
+        esi_demand_keys = [k for k in esi_demand_keys if k not in adam_covered_keys]
+        total_esi_keys = len(esi_demand_keys)
         self._update_job_progress(
             session,
             job_id,
