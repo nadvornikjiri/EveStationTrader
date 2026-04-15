@@ -2737,3 +2737,10 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && .venv/bin/pytest -m integration tests/services/test_market_demand.py -q`
   - `cd backend && .venv/bin/pytest -m integration tests/services/test_sync_service.py::test_everef_history_sync_first_run_succeeds_with_mocked_downloads tests/services/test_sync_service.py::test_everef_history_sync_limits_downloads_to_analysis_window_even_with_existing_state tests/services/test_sync_service.py::test_everef_history_sync_triggers_esi_demand_refresh_after_ingest tests/services/test_sync_service.py::test_everef_history_sync_preload_keeps_esi_demand_values_correct -q`
   - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `app/services/npc_stations/deltas.py`, `alembic/versions/20260409_0012_restore_esi_history_daily.py`, and `alembic/versions/20260409_0013_widen_esi_history_volume.py`
+
+## 2026-04-15 - EVEREF-HISTORY-SYNC-CRON-SCHEDULE
+- Changed the worker registration for `everef_history_sync` from a drifting 24-hour interval to a fixed APScheduler cron schedule at 08:00 UTC.
+- Documented the investigation result in the root task tracker: EveRef history is expected to be 1 day behind CCP, and the original 2-day gap was a transient scheduler-timing issue rather than an ingestion bug.
+- Left ingestion logic untouched because `get_available_dates(...)` intentionally excludes today and matches EveRef's publish cadence.
+- validation:
+  - `cd backend && python -m pytest`

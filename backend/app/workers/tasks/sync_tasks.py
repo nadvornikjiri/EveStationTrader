@@ -43,8 +43,9 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     )
     scheduler.add_job(
         sync_everef_history_job,
-        "interval",
-        hours=24,
+        "cron",
+        hour=8,
+        minute=0,
         id="everef_history_sync",
         replace_existing=True,
     )

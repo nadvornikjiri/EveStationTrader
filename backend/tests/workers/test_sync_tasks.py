@@ -36,7 +36,7 @@ def test_register_jobs_keeps_heartbeat_and_rebuild_cadence() -> None:
 
     sync_tasks.register_jobs(scheduler)
 
-    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "interval"]
+    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "cron"]
     heartbeat_job = next(job for job in scheduler.jobs if job[2]["id"] == "heartbeat")
     rebuild_job = next(job for job in scheduler.jobs if job[2]["id"] == "rebuild_opportunities")
     everef_job = next(job for job in scheduler.jobs if job[2]["id"] == "everef_history_sync")
@@ -48,7 +48,8 @@ def test_register_jobs_keeps_heartbeat_and_rebuild_cadence() -> None:
     assert rebuild_job[2]["minutes"] == 10
     assert rebuild_job[2]["replace_existing"] is True
     assert everef_job[0] is sync_tasks.sync_everef_history_job
-    assert everef_job[2]["hours"] == 24
+    assert everef_job[2]["hour"] == 8
+    assert everef_job[2]["minute"] == 0
     assert everef_job[2]["replace_existing"] is True
 
 
