@@ -1023,3 +1023,180 @@ def test_generate_opportunities_falls_back_to_live_target_price_without_period_h
     assert row.target_station_sell_price == 120.0
     assert row.target_period_avg_price == 120.0
     assert row.target_period_profit == row.target_now_profit
+
+
+def _build_minimal_session_with_source_order(source_price: float = 100.0) -> tuple[Session, dict]:
+    """Helper: minimal DB with source sell order but no target live sell orders."""
+    session = build_test_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    target_sys = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    source_sys = System(system_id=30002187, region_id=region.id, name="Amarr", security_status=0.7)
+    session.add_all([target_sys, source_sys])
+    session.flush()
+
+    target = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=target_sys.id,
+        region_id=region.id,
+        name="Jita IV",
+    )
+    source = Location(
+        location_id=60008494,
+        location_type="npc_station",
+        system_id=source_sys.id,
+        region_id=region.id,
+        name="Amarr VIII",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([target, source, item])
+    session.flush()
+
+    session.add(
+        MarketDemandResolved(
+            location_id=target.id,
+            type_id=item.id,
+            period_days=14,
+            demand_source="adam4eve",
+            buy_from_sell_period=28.0,
+            sell_to_buy_period=4.0,
+        )
+    )
+    now = datetime.now(UTC)
+    session.add(
+        EsiMarketOrder(
+            order_id=9001,
+            region_id=region.id,
+            location_id=source.id,
+            type_id=item.id,
+            system_id=source_sys.id,
+            is_buy_order=False,
+            price=source_price,
+            volume_total=100,
+            volume_remain=100,
+            min_volume=1,
+            order_range="region",
+            issued=now,
+            duration=90,
+        )
+    )
+    session.commit()
+    return session, {"target_id": target.id, "source_id": source.id, "item_id": item.id}
+
+
+def test_price_fallback_live_source_used_when_live_target_orders_exist() -> None:
+    """When live target sell orders exist, target_price_source == 'live'."""
+    session = build_session()
+    ids = seed_trade_inputs(session)
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_location_id"],
+        source_location_ids=[ids["source_location_id"]],
+        type_ids=[ids["tritanium_id"]],
+        period_days=14,
+    )
+
+    row = session.scalar(select(OpportunityItem).where(OpportunityItem.type_id == ids["tritanium_id"]))
+    assert result.item_count >= 1
+    assert row is not None
+    assert row.target_price_source == "live"
+    assert row.target_station_sell_price == pytest.approx(120.0)
+
+
+def test_price_fallback_yesterday_used_when_no_live_target_orders() -> None:
+    """When no live target sell orders but MarketPricePeriod.current_price exists, use it as target price."""
+    session, ids = _build_minimal_session_with_source_order()
+
+    session.add(
+        MarketPricePeriod(
+            location_id=ids["target_id"],
+            type_id=ids["item_id"],
+            period_days=14,
+            current_price=130.0,
+            period_avg_price=145.0,
+            price_min=120.0,
+            price_max=150.0,
+        )
+    )
+    session.commit()
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_id"],
+        source_location_ids=[ids["source_id"]],
+        type_ids=[ids["item_id"]],
+        period_days=14,
+    )
+
+    row = session.scalar(select(OpportunityItem))
+    assert result.item_count == 1
+    assert row is not None
+    assert row.target_price_source == "yesterday"
+    assert row.target_station_sell_price == pytest.approx(130.0)
+    assert row.target_now_profit == pytest.approx(30.0)
+
+
+def test_price_fallback_period_avg_used_when_no_live_and_no_yesterday() -> None:
+    """When no live orders and current_price is None, fall back to period_avg_price."""
+    session, ids = _build_minimal_session_with_source_order()
+
+    session.add(
+        MarketPricePeriod(
+            location_id=ids["target_id"],
+            type_id=ids["item_id"],
+            period_days=14,
+            current_price=None,
+            period_avg_price=140.0,
+            price_min=130.0,
+            price_max=155.0,
+        )
+    )
+    session.commit()
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_id"],
+        source_location_ids=[ids["source_id"]],
+        type_ids=[ids["item_id"]],
+        period_days=14,
+    )
+
+    row = session.scalar(select(OpportunityItem))
+    assert result.item_count == 1
+    assert row is not None
+    assert row.target_price_source == "period_avg"
+    assert row.target_station_sell_price == pytest.approx(140.0)
+    assert row.target_now_profit == pytest.approx(40.0)
+
+
+def test_price_fallback_skips_item_when_all_prices_none() -> None:
+    """When no live orders and MarketPricePeriod has both prices None, item is skipped."""
+    session, ids = _build_minimal_session_with_source_order()
+
+    session.add(
+        MarketPricePeriod(
+            location_id=ids["target_id"],
+            type_id=ids["item_id"],
+            period_days=14,
+            current_price=None,
+            period_avg_price=None,
+            price_min=None,
+            price_max=None,
+        )
+    )
+    session.commit()
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_id"],
+        source_location_ids=[ids["source_id"]],
+        type_ids=[ids["item_id"]],
+        period_days=14,
+    )
+
+    assert result.item_count == 0
+    assert session.scalars(select(OpportunityItem)).all() == []
