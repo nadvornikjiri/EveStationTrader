@@ -1,6 +1,6 @@
 # Current task
 
-Expose target_price_source in API schema (trade.py) and frontend types (trade.ts).
+Add tests: live price used when available, yesterday fallback, period_avg fallback, skip when all None.
 
 # End goal with specs
 
@@ -54,8 +54,8 @@ SELECT target_price_source, COUNT(*) FROM opportunity_items GROUP BY target_pric
 - [x] Create Alembic migration 20260416_0020 adding the column with server_default='live'
 - [x] Apply migration with `cd backend && alembic upgrade head`
 - [x] Modify generation.py lines 424-427: replace hard skip with 3-tier fallback, track price source, include in row dict
-- [ ] Expose target_price_source in API schema (trade.py) and frontend types (trade.ts, trade.ts) <- current
-- [ ] Add tests: live price used when available, yesterday fallback, period_avg fallback, skip when all None
+- [x] Expose target_price_source in API schema (trade.py) and frontend types (trade.ts, trade.ts)
+- [ ] Add tests: live price used when available, yesterday fallback, period_avg fallback, skip when all None <- current
 - [ ] Run full test suite: `cd backend && python -m pytest`
 - [ ] Trigger opportunity rebuild and verify counts increased via SQL
 - [ ] Commit with descriptive message

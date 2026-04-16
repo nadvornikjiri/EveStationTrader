@@ -62,6 +62,7 @@ class OpportunityItemRow(BaseModel):
     shipping_cost: float
     demand_source: str
     esi_demand_day: float
+    target_price_source: str = "live"
 
 
 class TargetOpportunityItemRow(OpportunityItemRow):

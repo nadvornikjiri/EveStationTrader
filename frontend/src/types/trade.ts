@@ -57,6 +57,7 @@ export type OpportunityItem = {
   shipping_cost: number;
   demand_source: string;
   esi_demand_day: number;
+  target_price_source: string;
 };
 
 export type TargetOpportunityItem = OpportunityItem & {
