@@ -1017,6 +1017,67 @@ class TradeRepository:
             session.close()
         return datetime.now(UTC)
 
+    def _create_target_rebuild_job(self, target_location_id: int) -> int:
+        from app.models.all_models import SyncJobRun
+        job_session = self.session_factory()
+        try:
+            job_run = SyncJobRun(
+                job_type="target_rebuild",
+                status="running",
+                triggered_by="manual",
+                started_at=datetime.now(UTC),
+                records_processed=0,
+                target_type="location",
+                target_id=str(target_location_id),
+                progress_phase="Starting",
+                progress_current=None,
+                progress_total=None,
+                progress_unit=None,
+                message="Rebuilding opportunities for target.",
+            )
+            job_session.add(job_run)
+            job_session.flush()
+            job_session.commit()
+            return job_run.id
+        finally:
+            job_session.close()
+
+    def _update_target_rebuild_job(self, job_id: int, *, progress_phase: str, message: str) -> None:
+        from app.models.all_models import SyncJobRun
+        job_session = self.session_factory()
+        try:
+            job_run = job_session.get(SyncJobRun, job_id)
+            if job_run is None or job_run.finished_at is not None:
+                return
+            job_run.progress_phase = progress_phase
+            job_run.message = message
+            job_session.commit()
+        finally:
+            job_session.close()
+
+    def _finish_target_rebuild_job(self, job_id: int, *, started_at: datetime, error: Exception | None) -> None:
+        from app.models.all_models import SyncJobRun
+        job_session = self.session_factory()
+        try:
+            job_run = job_session.get(SyncJobRun, job_id)
+            if job_run is None:
+                return
+            finished_at = datetime.now(UTC)
+            job_run.finished_at = finished_at
+            job_run.duration_ms = max(int((finished_at - started_at).total_seconds() * 1000), 0)
+            if error is None:
+                job_run.status = "success"
+                job_run.progress_phase = "Completed"
+                job_run.message = "Rebuild complete."
+            else:
+                job_run.status = "failed"
+                job_run.progress_phase = "Failed"
+                job_run.message = f"Rebuild failed: {error}"
+                job_run.error_details = str(error)
+            job_session.commit()
+        finally:
+            job_session.close()
+
     def refresh_opportunities(
         self,
         target_location_id: int,
@@ -1028,8 +1089,11 @@ class TradeRepository:
         from app.services.sync.service import SyncService
         from app.models.all_models import MarketDemandResolved, MarketPricePeriod
 
+        started_at = datetime.now(UTC)
+        job_id = self._create_target_rebuild_job(target_location_id)
         session = self.session_factory()
         try:
+            self._update_target_rebuild_job(job_id, progress_phase="Resolving location", message="Resolving target location.")
             resolved_target_location_id = self._resolve_location_id(session, target_location_id)
             if resolved_target_location_id is None:
                 raise LookupError(f"Target location {target_location_id} was not found.")
@@ -1056,16 +1120,19 @@ class TradeRepository:
             if (
                 has_target_price_period is not None
                 and has_target_demand is not None
-                and sync_service.refresh_trade_scope_from_existing_rows(
+            ):
+                self._update_target_rebuild_job(job_id, progress_phase="Rebuilding opportunities", message="Refreshing opportunities from existing market data.")
+                if sync_service.refresh_trade_scope_from_existing_rows(
                     session,
                     target_location_id=resolved_target_location_id,
                     source_location_id=resolved_source_location_id,
                     type_id=type_id,
                     period_days=period_days,
-                )
-            ):
-                return
+                ):
+                    self._finish_target_rebuild_job(job_id, started_at=started_at, error=None)
+                    return
 
+            self._update_target_rebuild_job(job_id, progress_phase="Building trade period", message="Preparing trade period data.")
             sync_service.prepare_trade_period(
                 session,
                 target_location_id=resolved_target_location_id,
@@ -1074,5 +1141,9 @@ class TradeRepository:
                 period_days=period_days,
                 refresh_inputs=has_target_price_period is None or has_target_demand is None,
             )
+            self._finish_target_rebuild_job(job_id, started_at=started_at, error=None)
+        except Exception as exc:
+            self._finish_target_rebuild_job(job_id, started_at=started_at, error=exc)
+            raise
         finally:
             session.close()
