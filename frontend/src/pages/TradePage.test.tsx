@@ -817,7 +817,7 @@ test("uses the settings analysis period for data queries and refreshes", async (
   expect(mockUseSourceSummaries).toHaveBeenLastCalledWith(1, 21, expect.any(Object), true);
   expect(mockUseOpportunityItemDetail).toHaveBeenLastCalledWith(1, null, null, 21);
 
-  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await user.click(screen.getByRole("button", { name: "Rebuild Selected Target" }));
 
   expect(tradeApi.refreshTradeOpportunities).toHaveBeenCalledWith(1, 21);
 });
@@ -872,7 +872,7 @@ test("renders sortable headers for the grouped opportunity table", () => {
   }
 });
 
-test("refresh button triggers a backend rebuild before refetching grouped summaries", async () => {
+test("rebuild selected target button triggers a backend rebuild before refetching grouped summaries", async () => {
   const user = userEvent.setup();
   const summaryRefetch = vi.fn().mockResolvedValue(undefined);
   mockUseSourceSummaries.mockImplementation((targetLocationId: number | null) => ({
@@ -882,7 +882,7 @@ test("refresh button triggers a backend rebuild before refetching grouped summar
 
   renderPage();
 
-  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await user.click(screen.getByRole("button", { name: "Rebuild Selected Target" }));
 
   expect(tradeApi.refreshTradeOpportunities).toHaveBeenCalledWith(1, 14);
   expect(summaryRefetch).toHaveBeenCalled();

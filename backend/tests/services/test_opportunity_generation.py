@@ -1,10 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
+    AdamMarketPriceHistoryDaily,
     CharacterAsset,
     CharacterOrder,
     EsiHistoryDaily,
@@ -22,6 +23,7 @@ from app.models.all_models import (
     User,
 )
 from app.services.opportunities.generation import OpportunityGenerationService
+from app.services.pricing.market_price_periods import MarketPricePeriodService
 from tests.db_test_utils import build_test_session
 
 pytestmark = pytest.mark.integration
@@ -1200,3 +1202,134 @@ def test_price_fallback_skips_item_when_all_prices_none() -> None:
 
     assert result.item_count == 0
     assert session.scalars(select(OpportunityItem)).all() == []
+
+
+def test_price_fallback_yesterday_end_to_end_from_history() -> None:
+    """End-to-end: EveRef history -> MarketPricePeriod -> opportunity with yesterday fallback.
+
+    Verifies the full chain: raw history data is ingested, MarketPricePeriodService
+    computes current_price (= most recent day's average, i.e. yesterday), and then
+    opportunity generation uses that as the target sell price when no live ESI orders exist.
+    """
+    session = build_test_session()
+
+    # -- Foundation data --
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    target_sys = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    source_sys = System(system_id=30002187, region_id=region.id, name="Amarr", security_status=0.7)
+    session.add_all([target_sys, source_sys])
+    session.flush()
+
+    target = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=target_sys.id,
+        region_id=region.id,
+        name="Jita IV",
+    )
+    source = Location(
+        location_id=60008494,
+        location_type="npc_station",
+        system_id=source_sys.id,
+        region_id=region.id,
+        name="Amarr VIII",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([target, source, item])
+    session.flush()
+
+    # -- EveRef price history: 3 days, most recent = "yesterday" --
+    today = date.today()
+    yesterday_price = 250.0
+    history_rows = [
+        # Most recent day (yesterday) — this becomes current_price
+        AdamMarketPriceHistoryDaily(
+            location_id=target.id, type_id=item.id,
+            date=today - timedelta(days=1),
+            average=yesterday_price, highest=270.0, lowest=230.0,
+            order_count=50, volume=5000,
+        ),
+        AdamMarketPriceHistoryDaily(
+            location_id=target.id, type_id=item.id,
+            date=today - timedelta(days=2),
+            average=200.0, highest=220.0, lowest=180.0,
+            order_count=40, volume=4000,
+        ),
+        AdamMarketPriceHistoryDaily(
+            location_id=target.id, type_id=item.id,
+            date=today - timedelta(days=3),
+            average=150.0, highest=170.0, lowest=130.0,
+            order_count=30, volume=3000,
+        ),
+    ]
+    session.add_all(history_rows)
+    session.flush()
+
+    # -- Compute MarketPricePeriod from history (the pipeline step) --
+    price_result = MarketPricePeriodService().upsert_from_history(
+        session, location_id=target.id, type_id=item.id, period_days=14,
+    )
+    assert price_result.created is True
+    assert price_result.row is not None
+    # current_price should be yesterday's average (most recent history day)
+    assert price_result.row.current_price == pytest.approx(yesterday_price)
+    expected_period_avg = (250.0 + 200.0 + 150.0) / 3
+    assert price_result.row.period_avg_price == pytest.approx(expected_period_avg)
+
+    # -- Demand at target (no live sell orders at target!) --
+    session.add(
+        MarketDemandResolved(
+            location_id=target.id,
+            type_id=item.id,
+            period_days=14,
+            demand_source="adam4eve",
+            buy_from_sell_period=28.0,
+            sell_to_buy_period=4.0,
+        )
+    )
+
+    # -- Source sell order (at source station, NOT at target) --
+    source_price = 100.0
+    session.add(
+        EsiMarketOrder(
+            order_id=9999,
+            region_id=region.id,
+            location_id=source.id,
+            type_id=item.id,
+            system_id=source_sys.id,
+            is_buy_order=False,
+            price=source_price,
+            volume_total=200,
+            volume_remain=200,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.commit()
+
+    # -- Generate opportunities --
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=target.id,
+        source_location_ids=[source.id],
+        type_ids=[item.id],
+        period_days=14,
+    )
+
+    # -- Verify the full chain --
+    assert result.item_count == 1
+    row = session.scalar(select(OpportunityItem))
+    assert row is not None
+    # Price source should be "yesterday" (no live ESI sell orders at target)
+    assert row.target_price_source == "yesterday"
+    # Target sell price should be yesterday's average from EveRef history
+    assert row.target_station_sell_price == pytest.approx(yesterday_price)
+    # Period avg should come from MarketPricePeriod
+    assert row.target_period_avg_price == pytest.approx(expected_period_avg)
+    # Profit = yesterday_price - source_price
+    assert row.target_now_profit == pytest.approx(yesterday_price - source_price)

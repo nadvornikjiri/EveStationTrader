@@ -1108,42 +1108,7 @@ class SyncService:
                     f"({synced_count} characters, {discovered_count} accessible structures refreshed)."
                 )
         elif job_type == "opportunity_rebuild":
-            esi_order_sync_message: str | None = None
             rebuild_started_at = perf_counter()
-            if self._should_refresh_esi_market_orders_before_rebuild(session):
-                stage_started_at = perf_counter()
-                _, _, _, esi_order_sync_message = self._run_job_stage(
-                    session,
-                    job_id=job_id,
-                    stage_key="refresh_esi_market_orders",
-                    func=lambda: self._sync_esi_market_orders(
-                        session,
-                        job_id=job_id,
-                        debug_enabled=debug_enabled,
-                        cancellation_check=lambda: self._check_for_cancellation(session, job_id),
-                    ),
-                    success_metrics=lambda result: {"records_processed": result[0], "region_count": result[2]},
-                )
-                self._log_job_stage_checkpoint(
-                    "opportunity_rebuild",
-                    "refresh_esi_market_orders",
-                    started_at=stage_started_at,
-                )
-            else:
-                skipped_started_at = perf_counter()
-                self._record_completed_job_stage(
-                    session,
-                    job_id=job_id,
-                    stage_key="refresh_esi_market_orders",
-                    stage_started_at=skipped_started_at,
-                    status="skipped",
-                    metrics={"reason": "fresh_esi_market_orders_sync"},
-                )
-                self._log_job_stage_checkpoint(
-                    "opportunity_rebuild",
-                    "refresh_esi_market_orders_skipped",
-                    started_at=skipped_started_at,
-                )
             stage_started_at = perf_counter()
             generated_count, scope_count = self._run_job_stage(
                 session,
@@ -1178,8 +1143,6 @@ class SyncService:
                 target_type = "targets"
                 target_id = str(scope_count)
                 message = f"Rebuilt opportunities ({generated_count} item rows across {scope_count} target scopes)."
-                if esi_order_sync_message is not None:
-                    message = f"{esi_order_sync_message} {message}"
         elif job_type == "structure_snapshot_sync":
             structure_sync_result = self._sync_structure_snapshots(
                 session,
@@ -1382,35 +1345,13 @@ class SyncService:
                 demand_period_count=demand_period_count,
             )
 
-        rebuild_generated_count, rebuild_scope_count = self._rebuild_opportunities(
-            session,
-            job_id=job_id,
-            period_days=max(settings.default_analysis_period_days, 1),
-            cancellation_check=cancellation_check,
-            progress_phase_label="Rebuilding item opportunities",
-        )
-
-        self._update_job_progress(
-            session,
-            job_id,
-            progress_phase="Rebuilding item opportunities",
-            progress_current=rebuild_scope_count,
-            progress_total=rebuild_scope_count,
-            progress_unit="targets",
-            message=(
-                f"Rebuilt item opportunities for {rebuild_scope_count} / {rebuild_scope_count} targets "
-                f"({rebuild_generated_count} opportunity rows written)."
-            ),
-        )
-
         message = (
             "Synced ESI market orders "
             f"({total_processed} active orders, {total_created} created, {total_updated} updated, "
             f"{total_deleted} deleted, {total_stations_created} stations discovered, "
             f"{total_skipped_missing_items} skipped because item foundation data was missing, "
             f"{total_skipped_non_npc_locations} skipped because the location could not be resolved across {len(regions)} regions, "
-            f"{result.delta_count} order deltas, {demand_period_count} demand periods, "
-            f"{rebuild_generated_count} opportunity items across {rebuild_scope_count} target scopes)."
+            f"{result.delta_count} order deltas, {demand_period_count} demand periods)."
         )
         self._log_job_stage_checkpoint(
             "opportunity_rebuild",

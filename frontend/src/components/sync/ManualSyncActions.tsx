@@ -22,7 +22,7 @@ const actions = [
   },
   {
     key: "esi_market_orders_sync",
-    runLabel: "Sync NPC Orders Now",
+    runLabel: "Sync NPC Orders + Split Estimation Now",
     clearLabel: "Clear NPC Orders Data",
   },
   {
@@ -42,7 +42,7 @@ const actions = [
   },
   {
     key: "opportunity_rebuild",
-    runLabel: "Rebuild Opportunities Now",
+    runLabel: "Rebuild All Opportunities Now",
     clearLabel: "Clear Opportunity Data",
   },
 ];

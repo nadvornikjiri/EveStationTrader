@@ -12,10 +12,10 @@ def heartbeat_job() -> None:
     logger.info("worker heartbeat at %s", datetime.now(UTC).isoformat())
 
 
-def rebuild_opportunities_job() -> None:
-    result = SyncService().trigger_job("opportunity_rebuild")
+def sync_esi_market_orders_job() -> None:
+    result = SyncService().trigger_job("esi_market_orders_sync")
     logger.info(
-        "opportunity rebuild completed: job_id=%s status=%s records=%s",
+        "esi market orders sync completed: job_id=%s status=%s records=%s",
         result.id,
         result.status,
         result.records_processed,
@@ -35,10 +35,10 @@ def sync_everef_history_job() -> None:
 def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(heartbeat_job, "interval", minutes=5, id="heartbeat", replace_existing=True)
     scheduler.add_job(
-        rebuild_opportunities_job,
+        sync_esi_market_orders_job,
         "interval",
         minutes=10,
-        id="rebuild_opportunities",
+        id="esi_market_orders_sync",
         replace_existing=True,
     )
     scheduler.add_job(

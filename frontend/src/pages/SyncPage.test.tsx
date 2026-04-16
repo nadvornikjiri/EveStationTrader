@@ -218,7 +218,7 @@ test("shows immediate pending feedback for the selected sync action", () => {
 test("disables manual actions for jobs that are already running", () => {
   renderSyncPage();
 
-  expect(screen.getByRole("button", { name: "Sync NPC Orders Now Already Running" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sync NPC Orders + Split Estimation Now Already Running" })).toBeDisabled();
 });
 
 test("shows immediate pending feedback for the selected clear action", () => {

@@ -1174,13 +1174,8 @@ def test_trigger_job_opportunity_rebuild_persists_stage_timings() -> None:
 
     assert result.status == "success"
     assert stage_rows != []
-    assert {stage.stage_key for stage in stage_rows} >= {
-        "refresh_esi_market_orders",
-        "rebuild_scopes",
-        "load_rebuild_scopes",
-        "target_scope.total",
-    }
-    assert any(stage.stage_key == "refresh_esi_market_orders" and stage.status == "skipped" for stage in stage_rows)
+    assert {stage.stage_key for stage in stage_rows} >= {"rebuild_scopes", "load_rebuild_scopes", "target_scope.total"}
+    assert all(stage.stage_key != "refresh_esi_market_orders" for stage in stage_rows)
     assert all(stage.finished_at is not None for stage in stage_rows)
     assert all(stage.duration_ms is not None for stage in stage_rows)
 
@@ -1305,7 +1300,7 @@ def test_opportunity_rebuild_only_processes_configured_target_markets(monkeypatc
     ) is not None
 
 
-def test_opportunity_rebuild_refreshes_esi_orders_when_last_sync_is_stale(
+def test_opportunity_rebuild_does_not_refresh_esi_orders_inline_when_last_sync_is_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = build_session()
@@ -1324,18 +1319,8 @@ def test_opportunity_rebuild_refreshes_esi_orders_when_last_sync_is_stale(
     )
     session.commit()
 
-    esi_sync_calls: list[int] = []
-
-    def stub_sync_esi_market_orders(
-        self: object,
-        session: Session,
-        *,
-        job_id: int,
-        debug_enabled: bool,
-        cancellation_check: object = None,
-    ) -> tuple[int, str, str | None, str]:
-        esi_sync_calls.append(job_id)
-        return (42, "regions", "2", "Synced ESI market orders (42 active orders).")
+    def fail_if_sync_esi_market_orders(*args: object, **kwargs: object) -> tuple[int, str, str | None, str]:
+        raise AssertionError("Opportunity rebuild must not trigger ESI market-order sync inline.")
 
     def stub_rebuild_opportunities(
         self: object,
@@ -1349,17 +1334,14 @@ def test_opportunity_rebuild_refreshes_esi_orders_when_last_sync_is_stale(
         assert period_days == 14
         return (3, 2)
 
-    monkeypatch.setattr(SyncService, "_sync_esi_market_orders", stub_sync_esi_market_orders)
+    monkeypatch.setattr(SyncService, "_sync_esi_market_orders", fail_if_sync_esi_market_orders)
     monkeypatch.setattr(SyncService, "_rebuild_opportunities", stub_rebuild_opportunities)
 
     result = service.trigger_job("opportunity_rebuild")
 
-    assert esi_sync_calls != []
     assert result.status == "success"
     assert result.records_processed == 3
-    assert result.message is not None
-    assert "Synced ESI market orders (42 active orders)." in result.message
-    assert "Rebuilt opportunities (3 item rows across 2 target scopes)." in result.message
+    assert result.message == "Rebuilt opportunities (3 item rows across 2 target scopes)."
 
 
 def test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh(
@@ -2097,13 +2079,7 @@ def test_sync_esi_market_orders_reports_mid_ingest_progress(monkeypatch: pytest.
             delta_count=0,
         )
 
-    def fake_rebuild_opportunities(self, db_session, job_id, period_days=None, cancellation_check=None, progress_phase_label=None):
-        assert progress_phase_label == "Rebuilding item opportunities"
-        del self, db_session, job_id, period_days, cancellation_check
-        return (12, 3)
-
     monkeypatch.setattr(SyncService, "_update_job_progress", recording_update_job_progress)
-    monkeypatch.setattr(SyncService, "_rebuild_opportunities", fake_rebuild_opportunities)
     monkeypatch.setattr(
         "app.services.esi.orders_ingestion.EsiRegionalOrderIngestionService.ingest_order_batches",
         fake_ingest_order_batches,
@@ -2120,14 +2096,9 @@ def test_sync_esi_market_orders_reports_mid_ingest_progress(monkeypatch: pytest.
     assert target_id == "1"
     assert "Synced ESI market orders" in message
     assert (10_000, 20_000, "Processed 10000 / 20000 downloaded ESI market orders.") in progress_updates
-    assert (
-        3,
-        3,
-        "Rebuilt item opportunities for 3 / 3 targets (12 opportunity rows written).",
-    ) in progress_updates
 
 
-def test_trigger_job_esi_market_orders_sync_triggers_opportunity_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trigger_job_esi_market_orders_sync_does_not_trigger_opportunity_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     session = build_session()
     curated_station = PRIMARY_TEST_STATION
 
@@ -2168,14 +2139,10 @@ def test_trigger_job_esi_market_orders_sync_triggers_opportunity_rebuild(monkeyp
     session.commit()
     session_factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
 
-    rebuild_calls: list[tuple[int | None, str | None]] = []
+    def fail_if_rebuild_opportunities(*args: object, **kwargs: object) -> tuple[int, int]:
+        raise AssertionError("ESI market-order sync must not trigger opportunity rebuild.")
 
-    def fake_rebuild_opportunities(self, db_session, job_id, period_days=None, cancellation_check=None, progress_phase_label=None):
-        del self, db_session, job_id, cancellation_check
-        rebuild_calls.append((period_days, progress_phase_label))
-        return (7, 2)
-
-    monkeypatch.setattr(SyncService, "_rebuild_opportunities", fake_rebuild_opportunities)
+    monkeypatch.setattr(SyncService, "_rebuild_opportunities", fail_if_rebuild_opportunities)
     service = SyncService(
         session_factory=session_factory,
         esi_client=StubUniverseClient(
@@ -2211,8 +2178,8 @@ def test_trigger_job_esi_market_orders_sync_triggers_opportunity_rebuild(monkeyp
     result = service.trigger_job("esi_market_orders_sync")
 
     assert result.status == "success"
-    assert rebuild_calls == [(14, "Rebuilding item opportunities")]
-    assert "7 opportunity items across 2 target scopes" in (result.message or "")
+    assert "demand periods" in (result.message or "")
+    assert "opportunity items across" not in (result.message or "")
 
 
 def test_list_jobs_finalizes_stale_cancelling_jobs() -> None:

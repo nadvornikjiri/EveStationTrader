@@ -1,6 +1,6 @@
 # Current task
 
-Run cd backend && python -m pytest and confirm passes.
+All backlog items complete. All done.
 
 # End goal with specs
 
@@ -31,5 +31,8 @@ Acceptance: clicking button opens modal, modal shows live phase text, green succ
 - [x] Frontend: create frontend/src/components/RebuildProgressModal.tsx (polls /sync/jobs, shows phase+bar, green success, red error, Close button)
 - [x] Frontend: update TradePage.tsx handleRebuildSelectedTarget to open modal before POST and set isComplete on success
 - [x] Run cd frontend && npx tsc --noEmit and fix any TS errors
-- [ ] Run cd backend && python -m pytest and confirm passes <- current
-- [ ] Commit all changes with descriptive message
+- [x] Run cd backend && python -m pytest and confirm passes (31 unit tests pass, integration tests excluded by pyproject.toml config)
+- [x] Commit all changes with descriptive message
+
+## Loop Control
+STOP
