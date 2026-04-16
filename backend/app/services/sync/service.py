@@ -2150,17 +2150,10 @@ class SyncService:
                 isolated=True,
             )
 
-        configured_target_eve_ids = (
-            SettingsService(session_factory=lambda: session).get_settings_for_session(session).target_market_location_ids
-            or []
-        )
-        configured_npc_ids = set(
-            session.scalars(
-                select(Location.id).where(
-                    Location.location_id.in_(configured_target_eve_ids),
-                    Location.location_type == "npc_station",
-                )
-            ).all()
+        # Locations that have Adam4EVE price history (for any item) — these are the configured
+        # source hubs. Queried once per rebuild; avoids depending on settings being populated.
+        known_source_location_ids: set[int] = set(
+            session.scalars(select(MarketPricePeriod.location_id).distinct()).all()
         )
 
         scope_count = 0
@@ -2179,7 +2172,7 @@ class SyncService:
             )
             if not type_ids:
                 continue
-            candidate_source_ids = configured_npc_ids - {target_location_id}
+            candidate_source_ids = known_source_location_ids - {target_location_id}
             source_location_ids: list[int] = list(
                 session.scalars(
                     select(EsiMarketOrder.location_id)
