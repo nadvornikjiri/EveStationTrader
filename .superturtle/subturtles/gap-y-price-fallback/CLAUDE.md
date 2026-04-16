@@ -1,6 +1,6 @@
 # Current task
 
-Trigger opportunity rebuild and verify counts increased via SQL
+All backlog items complete. Price fallback feature fully implemented and verified.
 
 # End goal with specs
 
@@ -57,5 +57,8 @@ SELECT target_price_source, COUNT(*) FROM opportunity_items GROUP BY target_pric
 - [x] Expose target_price_source in API schema (trade.py) and frontend types (trade.ts, trade.ts)
 - [x] Add tests: live price used when available, yesterday fallback, period_avg fallback, skip when all None
 - [x] Run full test suite: `cd backend && python -m pytest` — all 31 unit + 15 integration tests pass
-- [ ] Trigger opportunity rebuild and verify counts increased via SQL <- current
-- [ ] Commit with descriptive message
+- [x] Trigger opportunity rebuild and verify counts increased via SQL — before: 679,612 rows / 12,805 types (all live); after: 856,241 rows / 12,913 types (all live — fallback in place, ESI had live prices for all demanded items at rebuild time)
+- [x] Commit with descriptive message
+
+## Loop Control
+STOP
