@@ -2150,6 +2150,19 @@ class SyncService:
                 isolated=True,
             )
 
+        configured_target_eve_ids = (
+            SettingsService(session_factory=lambda: session).get_settings_for_session(session).target_market_location_ids
+            or []
+        )
+        configured_npc_ids = set(
+            session.scalars(
+                select(Location.id).where(
+                    Location.location_id.in_(configured_target_eve_ids),
+                    Location.location_type == "npc_station",
+                )
+            ).all()
+        )
+
         scope_count = 0
         generated_count = 0
         scope_generation_started_at = perf_counter()
@@ -2166,13 +2179,14 @@ class SyncService:
             )
             if not type_ids:
                 continue
+            candidate_source_ids = configured_npc_ids - {target_location_id}
             source_location_ids: list[int] = list(
                 session.scalars(
-                    select(MarketPricePeriod.location_id)
+                    select(EsiMarketOrder.location_id)
                     .where(
-                        MarketPricePeriod.period_days == scope_period_days,
-                        MarketPricePeriod.type_id.in_(type_ids),
-                        MarketPricePeriod.location_id != target_location_id,
+                        EsiMarketOrder.location_id.in_(candidate_source_ids),
+                        EsiMarketOrder.type_id.in_(type_ids),
+                        EsiMarketOrder.is_buy_order.is_(False),
                     )
                     .distinct()
                 ).all()
