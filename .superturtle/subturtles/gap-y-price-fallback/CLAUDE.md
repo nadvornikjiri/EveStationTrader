@@ -1,6 +1,6 @@
 # Current task
 
-Modify generation.py lines 424-427: replace hard skip with 3-tier fallback (live ESI → yesterday → period_avg), track price source, include in row dict.
+Expose target_price_source in API schema (trade.py) and frontend types (trade.ts).
 
 # End goal with specs
 
@@ -53,8 +53,8 @@ SELECT target_price_source, COUNT(*) FROM opportunity_items GROUP BY target_pric
 - [x] Add `target_price_source` column to OpportunityItem model in all_models.py (String(16), default="live")
 - [x] Create Alembic migration 20260416_0020 adding the column with server_default='live'
 - [x] Apply migration with `cd backend && alembic upgrade head`
-- [ ] Modify generation.py lines 424-427: replace hard skip with 3-tier fallback, track price source, include in row dict <- current
-- [ ] Expose target_price_source in API schema (trade.py) and frontend types (trade.ts, trade.ts)
+- [x] Modify generation.py lines 424-427: replace hard skip with 3-tier fallback, track price source, include in row dict
+- [ ] Expose target_price_source in API schema (trade.py) and frontend types (trade.ts, trade.ts) <- current
 - [ ] Add tests: live price used when available, yesterday fallback, period_avg fallback, skip when all None
 - [ ] Run full test suite: `cd backend && python -m pytest`
 - [ ] Trigger opportunity rebuild and verify counts increased via SQL

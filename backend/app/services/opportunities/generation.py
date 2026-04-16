@@ -423,7 +423,15 @@ class OpportunityGenerationService:
             esi_demand_day = esi_history_avg_by_type.get(type_id, 0.0)
             target_price = target_prices_by_type.get(type_id)
             target_now_price = target_min_price_by_type.get(type_id)
-            if target_now_price is None:
+            if target_now_price is not None:
+                target_price_source = "live"
+            elif target_price is not None and target_price.current_price is not None:
+                target_now_price = target_price.current_price
+                target_price_source = "yesterday"
+            elif target_price is not None and target_price.period_avg_price is not None:
+                target_now_price = target_price.period_avg_price
+                target_price_source = "period_avg"
+            else:
                 continue
             actual_source_ids = actual_source_ids_by_type.get(type_id, [])
             if not actual_source_ids:
@@ -485,6 +493,7 @@ class OpportunityGenerationService:
                         "demand_source": demand.demand_source,
                         "esi_demand_day": esi_demand_day,
                         "computed_at": computed_at,
+                        "target_price_source": target_price_source,
                     }
                 )
                 generated_count += 1
