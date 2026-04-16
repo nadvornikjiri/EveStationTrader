@@ -1,6 +1,6 @@
 # Current task
 
-Frontend: update TradePage.tsx handleRebuildSelectedTarget to open modal before POST and set isComplete on success.
+Run cd backend && python -m pytest and confirm passes.
 
 # End goal with specs
 
@@ -29,7 +29,7 @@ Acceptance: clicking button opens modal, modal shows live phase text, green succ
 - [x] Read ShoppingListOverlay.tsx and StatusCards.tsx for modal/progress bar patterns
 - [x] Backend: wrap refresh_opportunities body in SyncJobRun create/update/finish using isolated sessions (separate session_factory() calls, each committed immediately)
 - [x] Frontend: create frontend/src/components/RebuildProgressModal.tsx (polls /sync/jobs, shows phase+bar, green success, red error, Close button)
-- [ ] Frontend: update TradePage.tsx handleRebuildSelectedTarget to open modal before POST and set isComplete on success <- current
-- [ ] Run cd frontend && npx tsc --noEmit and fix any TS errors
-- [ ] Run cd backend && python -m pytest and confirm passes
+- [x] Frontend: update TradePage.tsx handleRebuildSelectedTarget to open modal before POST and set isComplete on success
+- [x] Run cd frontend && npx tsc --noEmit and fix any TS errors
+- [ ] Run cd backend && python -m pytest and confirm passes <- current
 - [ ] Commit all changes with descriptive message

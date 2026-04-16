@@ -3,6 +3,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 import { refreshTradeOpportunities } from "../api/trade";
 import { InTransitOverlay } from "../components/trade/InTransitOverlay";
 import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
+import { RebuildProgressModal } from "../components/trade/RebuildProgressModal";
 import { ShoppingListOverlay } from "../components/trade/ShoppingListOverlay";
 import {
   SourceSummaryTable,
@@ -76,6 +77,9 @@ export function TradePage() {
   const [expandedRowRenderLimit, setExpandedRowRenderLimit] = useState(INITIAL_EXPANDED_ROW_RENDER_LIMIT);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [isRebuildModalOpen, setIsRebuildModalOpen] = useState(false);
+  const [rebuildStartedAt, setRebuildStartedAt] = useState<Date | null>(null);
+  const [isRebuildComplete, setIsRebuildComplete] = useState(false);
   const [shoppingList, setShoppingList] = useState<ShoppingListEntry[]>([]);
   const [isShoppingListOpen, setIsShoppingListOpen] = useState(false);
   const [isInTransitOpen, setIsInTransitOpen] = useState(false);
@@ -253,22 +257,27 @@ export function TradePage() {
     });
   };
 
-  const handleRefresh = async () => {
+  const handleRebuildSelectedTarget = async () => {
     if (targetId === null || isRefreshing) {
       return;
     }
 
+    const startedAt = new Date();
     setIsRefreshing(true);
     setRefreshError(null);
+    setIsRebuildComplete(false);
+    setRebuildStartedAt(startedAt);
+    setIsRebuildModalOpen(true);
     try {
       await refreshTradeOpportunities(targetId, periodDays);
+      setIsRebuildComplete(true);
       await summaries.refetch();
       await items.refetch();
       if (sourceId !== null && selectedTypeId !== null) {
         await itemDetail.refetch();
       }
     } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : "Trade refresh failed.");
+      setRefreshError(error instanceof Error ? error.message : "Target rebuild failed.");
     } finally {
       setIsRefreshing(false);
     }
@@ -396,10 +405,10 @@ export function TradePage() {
           type="button"
           disabled={targetId === null || isRefreshing}
           onClick={() => {
-            void handleRefresh();
+            void handleRebuildSelectedTarget();
           }}
         >
-          {isRefreshing ? "Refreshing..." : "Refresh"}
+          {isRefreshing ? "Rebuilding Selected Target..." : "Rebuild Selected Target"}
         </button>
       </header>
       {refreshError ? <p role="alert">{refreshError}</p> : null}
@@ -596,6 +605,13 @@ export function TradePage() {
         onMinimize={handleMinimizeInTransit}
         onSave={(payload) => upsertInTransitAsset.mutate(payload)}
         onDelete={(entryId) => deleteInTransitAsset.mutate({ entryId })}
+      />
+      <RebuildProgressModal
+        isOpen={isRebuildModalOpen}
+        rebuildStartedAt={rebuildStartedAt}
+        isComplete={isRebuildComplete}
+        error={refreshError}
+        onClose={() => setIsRebuildModalOpen(false)}
       />
     </div>
   );
