@@ -15,6 +15,7 @@ coverage/
 .env.local
 .env.*.local
 backend/.pytest_cache/
+backend/.cache/
 frontend/coverage/
 frontend/.vite/
 postgres-data/
