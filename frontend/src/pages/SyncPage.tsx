@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import { FallbackDiagnosticsTable } from "../components/sync/FallbackDiagnosticsTable";
 import { JobHistoryTable } from "../components/sync/JobHistoryTable";
 import { ManualSyncActions } from "../components/sync/ManualSyncActions";
@@ -10,12 +12,42 @@ import {
   useSyncJobs,
   useSyncStatus,
 } from "../hooks/useSyncData";
+import type { SyncJobRun, SyncStatusCard } from "../types/sync";
 
 function formatError(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
   return fallback;
+}
+
+function mergeStatusCardsWithJobs(cards: SyncStatusCard[], jobs: SyncJobRun[]): SyncStatusCard[] {
+  const activeJobsByType = new Map<string, SyncJobRun>();
+  for (const job of jobs) {
+    if (job.status !== "running" && job.status !== "cancelling") {
+      continue
+    }
+    const existing = activeJobsByType.get(job.job_type);
+    if (existing === undefined || new Date(job.started_at).getTime() > new Date(existing.started_at).getTime()) {
+      activeJobsByType.set(job.job_type, job);
+    }
+  }
+
+  return cards.map((card) => {
+    const activeJob = activeJobsByType.get(card.key);
+    if (activeJob === undefined) {
+      return card;
+    }
+    return {
+      ...card,
+      status: activeJob.status === "cancelling" ? "degraded" : "running",
+      active_message: activeJob.message,
+      progress_phase: activeJob.progress_phase,
+      progress_current: activeJob.progress_current,
+      progress_total: activeJob.progress_total,
+      progress_unit: activeJob.progress_unit,
+    };
+  });
 }
 
 export function SyncPage() {
@@ -46,6 +78,10 @@ export function SyncPage() {
       : diagnostics.isError
         ? formatError(diagnostics.error, "Unable to load fallback diagnostics.")
         : null;
+  const displayedCards = useMemo(
+    () => mergeStatusCardsWithJobs(status.data ?? [], jobs.data ?? []),
+    [jobs.data, status.data],
+  );
 
   return (
     <div className="page-stack">
@@ -60,7 +96,7 @@ export function SyncPage() {
           <strong>Sync dashboard error:</strong> {dashboardError}
         </section>
       ) : null}
-      <StatusCards cards={status.data ?? []} />
+      <StatusCards cards={displayedCards} />
       {latestRunFailed ? (
         <section aria-live="assertive" className="sync-alert sync-alert-error" role="alert">
           <strong>Sync job failed:</strong> {latestRunSummary}

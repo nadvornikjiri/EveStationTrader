@@ -12,7 +12,7 @@ from app.services.esi.client import EsiClient
 
 
 class SsoCapableEsiClient(Protocol):
-    def exchange_code(self, code: str) -> dict: ...
+    def exchange_code(self, code: str, *, code_verifier: str | None = None) -> dict: ...
 
     def fetch_character_identity(self, access_token: str) -> dict: ...
 
@@ -27,8 +27,8 @@ class AuthService:
         self.session_factory = session_factory
         self.esi_client = esi_client or EsiClient()
 
-    def handle_callback(self, code: str) -> CurrentUser:
-        token_payload = self.esi_client.exchange_code(code)
+    def handle_callback(self, code: str, *, code_verifier: str | None = None) -> CurrentUser:
+        token_payload = self.esi_client.exchange_code(code, code_verifier=code_verifier)
         identity = self.esi_client.fetch_character_identity(token_payload["access_token"])
         expires_at = datetime.fromisoformat(token_payload["expires_at"])
         scopes = token_payload.get("scopes", [])

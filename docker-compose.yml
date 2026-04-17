@@ -32,8 +32,8 @@ services:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://eve_trader:eve_trader@postgres:5432/eve_trader
       REDIS_URL: redis://redis:6379/0
-      ESI_CLIENT_ID: change-me
-      ESI_CLIENT_SECRET: change-me
+      ESI_CLIENT_ID: ef906bad30bf4739b76a09a0bcaec8ca
+      ESI_CLIENT_SECRET: eat_1jowmqCSTPSvLnQO6vlFKdmx48JXTYj7T_2JgJND
       ESI_CALLBACK_URL: http://localhost:8000/api/auth/callback
       FRONTEND_URL: http://localhost:5173
     volumes:
@@ -54,8 +54,8 @@ services:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://eve_trader:eve_trader@postgres:5432/eve_trader
       REDIS_URL: redis://redis:6379/0
-      ESI_CLIENT_ID: change-me
-      ESI_CLIENT_SECRET: change-me
+      ESI_CLIENT_ID: ef906bad30bf4739b76a09a0bcaec8ca
+      ESI_CLIENT_SECRET: eat_1jowmqCSTPSvLnQO6vlFKdmx48JXTYj7T_2JgJND
       ESI_CALLBACK_URL: http://localhost:8000/api/auth/callback
       FRONTEND_URL: http://localhost:5173
     volumes:

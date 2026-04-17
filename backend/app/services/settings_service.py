@@ -1,14 +1,17 @@
+import json
 import logging
+from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.schemas.settings import UserSettingsResponse, UserSettingsUpdate
+from app.api.schemas.settings import RegionOption, UserSettingsResponse, UserSettingsUpdate
 from app.db.session import SessionLocal
-from app.models.all_models import Location, UserSetting
+from app.models.all_models import Location, Region, UserSetting
 
 _SETTINGS_KEY = "defaults"
+_PUBLIC_STRUCTURE_CATALOG_PATH = Path(__file__).resolve().parents[1] / "data" / "public_structure_catalog.json"
 _DEFAULT_TARGET_MARKET_LOCATION_IDS = [
     60003760,  # Jita IV - Moon 4 - Caldari Navy Assembly Plant
     60008494,  # Amarr VIII (Oris) - Emperor Family Academy
@@ -74,6 +77,14 @@ class SettingsService:
         finally:
             session.close()
 
+    def list_source_region_options(self) -> list[RegionOption]:
+        session = self.session_factory()
+        try:
+            rows = session.scalars(select(Region).order_by(Region.name.asc())).all()
+            return [RegionOption(region_id=region.region_id, name=region.name) for region in rows]
+        finally:
+            session.close()
+
     def _load_settings(self, session: Session) -> UserSettingsResponse:
         default_target_market_location_ids = self._default_target_market_location_ids(session)
         row = session.scalar(select(UserSetting).where(UserSetting.user_id.is_(None), UserSetting.key == _SETTINGS_KEY))
@@ -88,9 +99,14 @@ class SettingsService:
         default_filters = value.get("default_filters", {})
         if not isinstance(default_filters, dict):
             default_filters = {}
+        persisted_target_market_location_ids = [int(location_id) for location_id in list(value.get("target_market_location_ids", []))]
         merged_value = dict(_DEFAULT_SETTINGS)
-        merged_value["target_market_location_ids"] = default_target_market_location_ids
         merged_value.update(value)
+        merged_value["target_market_location_ids"] = (
+            persisted_target_market_location_ids
+            if "target_market_location_ids" in value
+            else default_target_market_location_ids
+        )
         merged_value["default_filters"] = {
             **_DEFAULT_SETTINGS["default_filters"],
             **cast(dict[str, Any], default_filters),
@@ -100,12 +116,35 @@ class SettingsService:
     @staticmethod
     def _default_target_market_location_ids(session: Session) -> list[int]:
         configured_ids = list(_DEFAULT_TARGET_MARKET_LOCATION_IDS)
+        configured_ids.extend(SettingsService._catalog_structure_target_ids())
         perimeter_ttt_id = session.scalar(
             select(Location.location_id).where(Location.name.ilike("%tranquility trading tower%"))
         )
         if perimeter_ttt_id is not None and perimeter_ttt_id not in configured_ids:
             configured_ids.append(int(perimeter_ttt_id))
-        return configured_ids
+        return list(dict.fromkeys(configured_ids))
+
+    @staticmethod
+    def _catalog_structure_target_ids() -> list[int]:
+        if not _PUBLIC_STRUCTURE_CATALOG_PATH.exists():
+            return []
+        try:
+            payload = json.loads(_PUBLIC_STRUCTURE_CATALOG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        structure_locations = payload.get("structure_locations", [])
+        if not isinstance(structure_locations, list):
+            return []
+        ids: list[int] = []
+        for entry in structure_locations:
+            if not isinstance(entry, dict):
+                continue
+            structure_id = entry.get("structure_id")
+            if isinstance(structure_id, int):
+                ids.append(structure_id)
+        return ids
 
     @staticmethod
     def _build_settings_response(value: dict[str, Any]) -> UserSettingsResponse:

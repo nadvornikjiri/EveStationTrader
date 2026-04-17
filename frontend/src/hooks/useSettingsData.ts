@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getSettings, updateSettings } from "../api/settings";
+import { getSettings, getSourceRegionOptions, updateSettings } from "../api/settings";
 
 export function useSettings() {
   return useQuery({
@@ -18,5 +18,13 @@ export function useUpdateSettings() {
       queryClient.setQueryData(["settings"], settings);
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
     },
+  });
+}
+
+export function useSourceRegionOptions() {
+  return useQuery({
+    queryKey: ["sourceRegionOptions"],
+    queryFn: getSourceRegionOptions,
+    placeholderData: (previousData) => previousData,
   });
 }

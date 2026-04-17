@@ -132,6 +132,15 @@ class FoundationDataService:
                     )
                 )
                 result.locations += 1
+            else:
+                if location.location_type != LocationType.STRUCTURE.value:
+                    location.location_type = LocationType.STRUCTURE.value
+                if location.system_id != system_lookup[metadata.system_id]:
+                    location.system_id = system_lookup[metadata.system_id]
+                if location.region_id != region_lookup[metadata.region_id]:
+                    location.region_id = region_lookup[metadata.region_id]
+                if self._should_replace_name(existing_name=location.name, incoming_name=metadata.name):
+                    location.name = metadata.name
             self._maybe_checkpoint(session, index)
 
     def _seed_station(
@@ -187,8 +196,9 @@ class FoundationDataService:
     def _should_replace_name(*, existing_name: str, incoming_name: str) -> bool:
         if existing_name == incoming_name:
             return False
-        incoming_is_placeholder = incoming_name.startswith("Station ")
-        existing_is_placeholder = existing_name.startswith("Station ")
+        placeholder_prefixes = ("Station ", "Structure ")
+        incoming_is_placeholder = incoming_name.startswith(placeholder_prefixes)
+        existing_is_placeholder = existing_name.startswith(placeholder_prefixes)
         if incoming_is_placeholder and not existing_is_placeholder:
             return False
         return True

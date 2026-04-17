@@ -1,12 +1,13 @@
 import io
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from app.models.all_models import Location, Region, Station, System
-from app.repositories.seed_data import RegionSeed, StaticFoundationSeedSource, StationSeed, SystemSeed
+from app.repositories.seed_data import RegionSeed, StaticFoundationSeedSource, StationSeed, StructureLocationSeed, SystemSeed
 from app.services.sync.foundation_import import CcpSdeClient
 from app.services.sync.foundation_import import FoundationImportService
 from tests.db_test_utils import build_test_session
@@ -72,8 +73,11 @@ def _build_fixture_zip(*, include_station_names: bool) -> bytes:
 
 
 class StubCcpSdeClient(CcpSdeClient):
-    def __init__(self, *, download: bytes | None) -> None:
-        super().__init__(static_data_jsonl_url="https://example.invalid/eve-online-static-data-latest-jsonl.zip")
+    def __init__(self, *, download: bytes | None, structure_catalog_path: str | Path | None = None) -> None:
+        super().__init__(
+            static_data_jsonl_url="https://example.invalid/eve-online-static-data-latest-jsonl.zip",
+            structure_catalog_path=structure_catalog_path,
+        )
         self.download = download
 
     def _download_zip_bytes(self) -> bytes:
@@ -108,6 +112,40 @@ def test_ccp_sde_client_uses_plain_jsonl_zip_without_station_names() -> None:
     source = client.build_seed_source()
 
     assert source.stations()[0].name == "Station 60003760"
+
+
+def test_ccp_sde_client_merges_static_structure_catalog_into_seed_source(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "public_structure_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "structure_locations": [
+                    {
+                        "structure_id": 1022167642188,
+                        "system_id": 30000142,
+                        "region_id": 10000002,
+                        "name": "Jita Public Structure",
+                    }
+                ],
+                "tracked_structures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = StubCcpSdeClient(
+        download=_build_fixture_zip(include_station_names=True),
+        structure_catalog_path=catalog_path,
+    )
+
+    source = client.build_seed_source()
+
+    assert source.structure_locations() == {
+        1022167642188: StructureLocationSeed(
+            system_id=30000142,
+            region_id=10000002,
+            name="Jita Public Structure",
+        )
+    }
 
 
 def test_ccp_sde_client_surfaces_download_failures() -> None:

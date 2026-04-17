@@ -3,6 +3,7 @@ import json
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar, cast
 
 import httpx
@@ -14,9 +15,11 @@ from app.repositories.seed_data import (
     FoundationSeedSource,
     ItemSeed,
     RegionSeed,
+    StructureLocationSeed,
     StaticFoundationSeedSource,
     StationSeed,
     SystemSeed,
+    TrackedStructureSeed,
 )
 from app.services.sync.foundation_data import FoundationDataService, FoundationSeedResult
 
@@ -31,9 +34,19 @@ T = TypeVar("T")
 
 
 class CcpSdeClient:
-    def __init__(self, static_data_jsonl_url: str | None = None) -> None:
+    DEFAULT_STRUCTURE_CATALOG_PATH = Path(__file__).resolve().parents[2] / "data" / "public_structure_catalog.json"
+
+    def __init__(
+        self,
+        static_data_jsonl_url: str | None = None,
+        *,
+        structure_catalog_path: str | Path | None = None,
+    ) -> None:
         self.settings = get_settings()
         self.static_data_jsonl_url = static_data_jsonl_url or self.settings.ccp_static_data_jsonl_url
+        self.structure_catalog_path = (
+            Path(structure_catalog_path) if structure_catalog_path is not None else self.DEFAULT_STRUCTURE_CATALOG_PATH
+        )
 
     def build_seed_source(self) -> FoundationSeedSource:
         zip_bytes = self._download_zip_bytes()
@@ -53,12 +66,56 @@ class CcpSdeClient:
             categories = self._load_name_lookup(self._read_jsonl_records(archive, "categories.jsonl"))
             groups = self._load_group_lookup(self._read_jsonl_records(archive, "groups.jsonl"), categories)
             items = self._load_items(self._read_jsonl_records(archive, "types.jsonl"), groups)
+            structure_locations, tracked_structures = self._load_structure_catalog()
             return StaticFoundationSeedSource(
                 regions_data=regions,
                 systems_data=systems,
                 stations_data=stations,
                 items_data=items,
+                structure_locations_data=structure_locations,
+                tracked_structures_data=tracked_structures,
             )
+
+    def _load_structure_catalog(
+        self,
+    ) -> tuple[dict[int, StructureLocationSeed], tuple[TrackedStructureSeed, ...]]:
+        if not self.structure_catalog_path.exists():
+            return {}, ()
+
+        payload = json.loads(self.structure_catalog_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Static structure catalog must be a JSON object.")
+
+        raw_structure_locations = payload.get("structure_locations", [])
+        if not isinstance(raw_structure_locations, list):
+            raise ValueError("Static structure catalog 'structure_locations' must be a JSON array.")
+
+        structure_locations: dict[int, StructureLocationSeed] = {}
+        for entry in raw_structure_locations:
+            if not isinstance(entry, dict):
+                raise ValueError("Static structure catalog entries must be JSON objects.")
+            structure_id = self._require_int(entry, "structure_id")
+            structure_locations[structure_id] = StructureLocationSeed(
+                system_id=self._require_int(entry, "system_id"),
+                region_id=self._require_int(entry, "region_id"),
+                name=self._require_str(entry, "name"),
+            )
+
+        raw_tracked_structures = payload.get("tracked_structures", [])
+        if not isinstance(raw_tracked_structures, list):
+            raise ValueError("Static structure catalog 'tracked_structures' must be a JSON array.")
+
+        tracked_structures = tuple(
+            TrackedStructureSeed(
+                structure_id=self._require_int(entry, "structure_id"),
+                name=self._require_str(entry, "name"),
+                tracking_tier=self._require_str(entry, "tracking_tier"),
+            )
+            for entry in raw_tracked_structures
+            if isinstance(entry, dict)
+        )
+
+        return structure_locations, tracked_structures
 
     def _read_jsonl_records(self, archive: zipfile.ZipFile, filename: str) -> list[dict[str, object]]:
         archive_name = self._find_archive_member(archive, filename)
@@ -224,6 +281,12 @@ class CcpSdeClient:
         if isinstance(value, (int, float)):
             return float(value)
         return 0.0
+
+    def _require_str(self, record: dict[str, object], key: str) -> str:
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"Expected string field '{key}'.")
 
     def _require_name(self, value: object, *, fallback_key: str | None = None) -> str:
         name = self._optional_name(value)

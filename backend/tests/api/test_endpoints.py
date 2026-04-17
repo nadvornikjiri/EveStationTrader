@@ -1019,7 +1019,20 @@ def test_get_settings(client) -> None:
     assert response.json()["trade_groups_page_size"] == 20
     assert response.json()["debug_enabled"] is False
     assert response.json()["target_market_location_ids"]
+    assert 1022167642188 in response.json()["target_market_location_ids"]
+    assert 1027252601364 in response.json()["target_market_location_ids"]
+    assert 1035334853996 in response.json()["target_market_location_ids"]
     assert response.json()["source_region_ids"]
+
+
+def test_get_source_region_options(client) -> None:
+    response = client.get("/api/settings/source-regions")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"region_id": 10000043, "name": "Domain"},
+        {"region_id": 10000002, "name": "The Forge"},
+    ]
 
 
 def test_put_settings_persists_debug_flag(client) -> None:
@@ -1061,6 +1074,38 @@ def test_put_settings_persists_debug_flag(client) -> None:
         assert row.value["source_region_ids"] == [10000002, 10000043]
     finally:
         session.close()
+
+
+def test_put_settings_allows_removing_target_market_hubs(client) -> None:
+    put_response = client.put(
+        "/api/settings",
+        json={
+            "default_analysis_period_days": 14,
+            "trade_groups_page_size": 20,
+            "debug_enabled": False,
+            "sales_tax_rate": 0.036,
+            "broker_fee_rate": 0.03,
+            "default_user_structure_poll_interval_minutes": 30,
+            "snapshot_retention_days": 30,
+            "fallback_policy": "regional_fallback",
+            "shipping_cost_per_m3": 350.0,
+            "target_market_location_ids": [60003760],
+            "source_region_ids": [10000002],
+            "default_filters": {
+                "min_item_profit": 15_000_000,
+                "roi_now": 0.20,
+                "target_demand_day": 1,
+            },
+        },
+    )
+
+    assert put_response.status_code == 200
+    assert put_response.json()["target_market_location_ids"] == [60003760]
+
+    get_response = client.get("/api/settings")
+
+    assert get_response.status_code == 200
+    assert get_response.json()["target_market_location_ids"] == [60003760]
 
 
 def test_get_auth_me(client) -> None:

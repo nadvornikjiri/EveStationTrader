@@ -1,10 +1,82 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { SyncPage } from "./SyncPage";
 
 const hookState = vi.hoisted(() => ({
+  statusData: [
+    {
+      key: "worker",
+      label: "Worker Health",
+      status: "healthy",
+      last_successful_sync: "2026-03-20T09:00:00Z",
+      next_scheduled_sync: "2026-03-20T09:10:00Z",
+      recent_error_count: 0,
+      active_message: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+    },
+    {
+      key: "esi_market_orders_sync",
+      label: "ESI market orders sync",
+      status: "running",
+      last_successful_sync: null,
+      next_scheduled_sync: null,
+      recent_error_count: 0,
+      active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      progress_phase: "Processing downloaded ESI market orders",
+      progress_current: 60,
+      progress_total: 100,
+      progress_unit: "downloaded records",
+    },
+  ],
+  jobsData: [
+    {
+      id: 1,
+      started_at: "2026-03-20T09:00:00Z",
+      finished_at: "2026-03-20T09:00:30Z",
+      job_type: "foundation_import_sync",
+      status: "success",
+      duration_ms: 30000,
+      records_processed: 18,
+      target_type: "manual",
+      target_id: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+      message: "Imported universe foundation data.",
+      error_details: null,
+    },
+    {
+      id: 2,
+      started_at: "2026-03-23T12:00:00Z",
+      finished_at: null,
+      job_type: "esi_market_orders_sync",
+      status: "running",
+      duration_ms: null,
+      records_processed: 60,
+      target_type: "regions",
+      target_id: "1",
+      progress_phase: "Processing downloaded ESI market orders",
+      progress_current: 60,
+      progress_total: 100,
+      progress_unit: "downloaded records",
+      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      error_details: null,
+    },
+  ],
+  diagnosticsData: [
+    {
+      structure_name: "Perimeter Market Keepstar",
+      structure_id: 1,
+      demand_source: "local_structure",
+      coverage_pct: 0.82,
+    },
+  ],
   runJob: {
     isPending: false,
     isError: false,
@@ -45,82 +117,13 @@ const hookState = vi.hoisted(() => ({
 
 vi.mock("../hooks/useSyncData", () => ({
   useSyncStatus: () => ({
-    data: [
-      {
-        key: "worker",
-        label: "Worker Health",
-        status: "healthy",
-        last_successful_sync: "2026-03-20T09:00:00Z",
-        next_scheduled_sync: "2026-03-20T09:10:00Z",
-        recent_error_count: 0,
-        active_message: null,
-        progress_phase: null,
-        progress_current: null,
-        progress_total: null,
-        progress_unit: null,
-      },
-      {
-        key: "esi_market_orders_sync",
-        label: "ESI market orders sync",
-        status: "running",
-        last_successful_sync: null,
-        next_scheduled_sync: null,
-        recent_error_count: 0,
-        active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
-        progress_phase: "Processing downloaded ESI market orders",
-        progress_current: 60,
-        progress_total: 100,
-        progress_unit: "downloaded records",
-      },
-    ],
+    data: hookState.statusData,
   }),
   useSyncJobs: () => ({
-    data: [
-      {
-        id: 1,
-        started_at: "2026-03-20T09:00:00Z",
-        finished_at: "2026-03-20T09:00:30Z",
-        job_type: "foundation_import_sync",
-        status: "success",
-        duration_ms: 30000,
-        records_processed: 18,
-        target_type: "manual",
-        target_id: null,
-        progress_phase: null,
-        progress_current: null,
-        progress_total: null,
-        progress_unit: null,
-        message: "Imported universe foundation data.",
-        error_details: null,
-      },
-      {
-        id: 2,
-        started_at: "2026-03-23T12:00:00Z",
-        finished_at: null,
-        job_type: "esi_market_orders_sync",
-        status: "running",
-        duration_ms: null,
-        records_processed: 60,
-        target_type: "regions",
-        target_id: "1",
-        progress_phase: "Processing downloaded ESI market orders",
-        progress_current: 60,
-        progress_total: 100,
-        progress_unit: "downloaded records",
-        message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
-        error_details: null,
-      },
-    ],
+    data: hookState.jobsData,
   }),
   useFallbackDiagnostics: () => ({
-    data: [
-      {
-        structure_name: "Perimeter Market Keepstar",
-        structure_id: 1,
-        demand_source: "local_structure",
-        coverage_pct: 0.82,
-      },
-    ],
+    data: hookState.diagnosticsData,
   }),
   useRunSyncJob: () => hookState.runJob,
   useClearSyncData: () => hookState.clearData,
@@ -145,6 +148,78 @@ function renderSyncPage() {
 }
 
 afterEach(() => {
+  hookState.statusData = [
+    {
+      key: "worker",
+      label: "Worker Health",
+      status: "healthy",
+      last_successful_sync: "2026-03-20T09:00:00Z",
+      next_scheduled_sync: "2026-03-20T09:10:00Z",
+      recent_error_count: 0,
+      active_message: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+    },
+    {
+      key: "esi_market_orders_sync",
+      label: "ESI market orders sync",
+      status: "running",
+      last_successful_sync: null,
+      next_scheduled_sync: null,
+      recent_error_count: 0,
+      active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      progress_phase: "Processing downloaded ESI market orders",
+      progress_current: 60,
+      progress_total: 100,
+      progress_unit: "downloaded records",
+    },
+  ];
+  hookState.jobsData = [
+    {
+      id: 1,
+      started_at: "2026-03-20T09:00:00Z",
+      finished_at: "2026-03-20T09:00:30Z",
+      job_type: "foundation_import_sync",
+      status: "success",
+      duration_ms: 30000,
+      records_processed: 18,
+      target_type: "manual",
+      target_id: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+      message: "Imported universe foundation data.",
+      error_details: null,
+    },
+    {
+      id: 2,
+      started_at: "2026-03-23T12:00:00Z",
+      finished_at: null,
+      job_type: "esi_market_orders_sync",
+      status: "running",
+      duration_ms: null,
+      records_processed: 60,
+      target_type: "regions",
+      target_id: "1",
+      progress_phase: "Processing downloaded ESI market orders",
+      progress_current: 60,
+      progress_total: 100,
+      progress_unit: "downloaded records",
+      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      error_details: null,
+    },
+  ];
+  hookState.diagnosticsData = [
+    {
+      structure_name: "Perimeter Market Keepstar",
+      structure_id: 1,
+      demand_source: "local_structure",
+      coverage_pct: 0.82,
+    },
+  ];
   hookState.runJob.isPending = false;
   hookState.runJob.isError = false;
   hookState.runJob.error = null;
@@ -204,6 +279,54 @@ test("shows running progress for active sync jobs", () => {
   expect(screen.getAllByText(/12\.0 downloaded records\/s/)).not.toHaveLength(0);
   expect(screen.getByLabelText("ESI market orders sync progress")).toBeInTheDocument();
   expect(screen.getByLabelText("esi_market_orders_sync progress")).toBeInTheDocument();
+});
+
+test("overlays fresher active job progress onto stale status cards", () => {
+  hookState.statusData = [
+    {
+      key: "esi_market_orders_sync",
+      label: "ESI market orders sync",
+      status: "healthy",
+      last_successful_sync: "2026-03-20T09:00:00Z",
+      next_scheduled_sync: null,
+      recent_error_count: 0,
+      active_message: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+    },
+  ];
+  hookState.jobsData = [
+    {
+      id: 2,
+      started_at: "2026-03-23T12:00:00Z",
+      finished_at: null,
+      job_type: "esi_market_orders_sync",
+      status: "running",
+      duration_ms: null,
+      records_processed: 60,
+      target_type: "regions",
+      target_id: "1",
+      progress_phase: "Processing downloaded ESI market orders",
+      progress_current: 60,
+      progress_total: 100,
+      progress_unit: "downloaded records",
+      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      error_details: null,
+    },
+  ];
+  hookState.diagnosticsData = [];
+
+  renderSyncPage();
+
+  const statusCard = screen.getByText("ESI market orders sync").closest("article");
+
+  expect(statusCard).not.toBeNull();
+  expect(within(statusCard as HTMLElement).getByText("running")).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getByText("Processing downloaded ESI market orders")).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getByText("60 / 100 downloaded records")).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getByText(/12\.0 downloaded records\/s/)).toBeInTheDocument();
 });
 
 test("shows immediate pending feedback for the selected sync action", () => {

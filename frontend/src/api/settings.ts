@@ -15,8 +15,17 @@ export type UserSettings = {
   default_filters: Record<string, unknown>;
 };
 
+export type RegionOption = {
+  region_id: number;
+  name: string;
+};
+
 export function getSettings() {
   return apiGet<UserSettings>("/settings");
+}
+
+export function getSourceRegionOptions() {
+  return apiGet<RegionOption[]>("/settings/source-regions");
 }
 
 export function updateSettings(settings: UserSettings) {

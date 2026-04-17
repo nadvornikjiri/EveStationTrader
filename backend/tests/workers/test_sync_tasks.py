@@ -36,10 +36,11 @@ def test_register_jobs_keeps_heartbeat_and_sync_cadence() -> None:
 
     sync_tasks.register_jobs(scheduler)
 
-    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "cron"]
+    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "cron", "interval"]
     heartbeat_job = next(job for job in scheduler.jobs if job[2]["id"] == "heartbeat")
     esi_job = next(job for job in scheduler.jobs if job[2]["id"] == "esi_market_orders_sync")
     everef_job = next(job for job in scheduler.jobs if job[2]["id"] == "everef_history_sync")
+    character_job = next(job for job in scheduler.jobs if job[2]["id"] == "character_sync")
 
     assert heartbeat_job[0] is sync_tasks.heartbeat_job
     assert heartbeat_job[2]["minutes"] == 5
@@ -51,6 +52,9 @@ def test_register_jobs_keeps_heartbeat_and_sync_cadence() -> None:
     assert everef_job[2]["hour"] == 8
     assert everef_job[2]["minute"] == 0
     assert everef_job[2]["replace_existing"] is True
+    assert character_job[0] is sync_tasks.sync_characters_job
+    assert character_job[2]["minutes"] == 15
+    assert character_job[2]["replace_existing"] is True
 
 
 def test_runner_main_registers_jobs_and_starts_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:

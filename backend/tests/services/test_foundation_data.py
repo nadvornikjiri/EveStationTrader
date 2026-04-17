@@ -186,6 +186,24 @@ def test_foundation_data_bootstrap_preserves_resolved_station_name_when_seed_is_
     assert repaired_location.name == "Resolved Mock Station"
 
 
+def test_foundation_data_bootstrap_backfills_placeholder_structure_names() -> None:
+    session = build_session()
+    service = FoundationDataService(seed_source=MockFoundationSeedSource())
+    service.bootstrap(session)
+
+    location = session.scalar(select(Location).where(Location.location_id == 99940001))
+    assert location is not None
+    location.name = "Structure 99940001"
+    session.commit()
+
+    result = service.bootstrap(session)
+
+    repaired_location = session.scalar(select(Location).where(Location.location_id == 99940001))
+    assert repaired_location is not None
+    assert result.records_processed == 0
+    assert repaired_location.name == "Mock Structure"
+
+
 @pytest.mark.parametrize(
     ("snapshot_text", "expected_message"),
     [

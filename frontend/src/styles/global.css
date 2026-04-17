@@ -224,6 +224,210 @@ label {
   font-size: 0.92rem;
 }
 
+.settings-multi-select {
+  position: relative;
+}
+
+.settings-multi-select__trigger {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  min-height: 50px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-multi-select__trigger:focus-within {
+  border-color: rgba(102, 183, 255, 0.34);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 0 3px rgba(102, 183, 255, 0.12);
+}
+
+.settings-multi-select__value {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  cursor: text;
+  padding: 1px 0;
+}
+
+.settings-multi-select__placeholder {
+  color: var(--muted);
+  line-height: 2;
+  font-size: 0.95rem;
+}
+
+.settings-multi-select__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: rgba(102, 183, 255, 0.1);
+  border: 1px solid rgba(102, 183, 255, 0.18);
+  color: #e7f2ff;
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+.settings-multi-select__chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-multi-select__chip-remove {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+  font-size: 0.82rem;
+  transition: color 120ms ease;
+}
+
+.settings-multi-select__chip-remove:hover {
+  color: #eef5ff;
+}
+
+.settings-multi-select__chip--summary {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  color: #d7e6fb;
+}
+
+.settings-multi-select__caret {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settings-multi-select__toggle {
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: transparent;
+  color: #dce8f8;
+  min-width: 34px;
+  padding: 0 8px;
+  flex: 0 0 auto;
+  transition: background 120ms ease;
+}
+
+.settings-multi-select__toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-multi-select__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: #122032;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.24);
+}
+
+.settings-multi-select__search {
+  display: block;
+}
+
+.settings-multi-select__search input {
+  width: 100%;
+  padding: 9px 11px;
+}
+
+.settings-multi-select__options {
+  display: grid;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-multi-select__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  transition: background 120ms ease;
+}
+
+.settings-multi-select__option:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-multi-select__option-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-multi-select__option-description {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.settings-multi-select__check {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #eef5ff;
+  font-size: 0.8rem;
+  flex: 0 0 auto;
+}
+
+.settings-multi-select__check.is-selected {
+  border-color: rgba(240, 180, 79, 0.4);
+  background: rgba(240, 180, 79, 0.18);
+}
+
+.settings-multi-select__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  padding: 10px 4px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 input,
 select,
 .refresh-button {

@@ -1,0 +1,23 @@
+{
+  "structure_locations": [
+    {
+      "structure_id": 1022167642188,
+      "system_id": 30002537,
+      "region_id": 10000030,
+      "name": "Amamake - 5 times nearly AT winners"
+    },
+    {
+      "structure_id": 1027252601364,
+      "system_id": 30002537,
+      "region_id": 10000030,
+      "name": "Amamake Twin Death Fortizar"
+    },
+    {
+      "structure_id": 1035334853996,
+      "system_id": 30002537,
+      "region_id": 10000030,
+      "name": "Amamake Industrial Tatara"
+    }
+  ],
+  "tracked_structures": []
+}

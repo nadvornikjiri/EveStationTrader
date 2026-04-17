@@ -1,6 +1,6 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from sqlalchemy import func, select
@@ -49,6 +49,8 @@ class CharacterSyncCapableEsiClient(Protocol):
 
     def fetch_accessible_structures(self, access_token: str) -> list[EsiAccessibleStructureRecord]: ...
 
+    def resolve_structure_info(self, access_token: str, structure_id: int) -> dict | None: ...
+
 
 class CharacterService:
     def __init__(
@@ -85,14 +87,35 @@ class CharacterService:
         finally:
             session.close()
 
+    def _ensure_valid_token(self, session: Session, character: EsiCharacter) -> str:
+        """Refresh the access token if expired, return a valid access token."""
+        token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
+        if token is None:
+            raise LookupError(f"No token found for character {character.character_name}")
+
+        # Refresh if token expires within 2 minutes
+        if token.expires_at and token.expires_at < datetime.now(UTC) + timedelta(minutes=2):
+            from app.services.esi.client import EsiClient
+
+            esi = EsiClient()
+            try:
+                refreshed = esi.refresh_access_token(token.refresh_token)
+                token.access_token = refreshed["access_token"]
+                token.refresh_token = refreshed.get("refresh_token", token.refresh_token)
+                token.expires_at = datetime.fromisoformat(refreshed["expires_at"])
+                session.flush()
+            except Exception:
+                raise LookupError(f"Token refresh failed for character {character.character_name}")
+
+        return token.access_token
+
     def sync_character(self, character_id: int) -> list[CharacterAccessibleStructure]:
         session = self.session_factory()
         try:
             character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
             if character is None:
                 raise LookupError(f"Character {character_id} was not found.")
-            token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
-            access_token = token.access_token if token is not None else ""
+            access_token = self._ensure_valid_token(session, character)
 
             self._sync_character_assets(
                 session,
@@ -118,6 +141,9 @@ class CharacterService:
             if sync_state is None:
                 sync_state = EsiCharacterSyncState(character_id=character.id)
                 session.add(sync_state)
+
+            # Resolve names for any unresolved structures in the locations table
+            self._resolve_structure_names(session, access_token)
 
             sync_state.last_successful_sync = datetime.now(UTC)
             sync_state.assets_sync_status = "ok"
@@ -290,20 +316,27 @@ class CharacterService:
             location_id: resolved_id
             for location_id, resolved_id in session.execute(select(Location.location_id, Location.id)).all()
         }
+        # Aggregate duplicate (type_id, location_id) pairs — ESI returns individual
+        # items (e.g., fitted modules) as separate entries.
+        aggregated: dict[tuple[int, int | None], int] = {}
         for asset in fetched_assets:
             external_type_id = int(asset["type_id"])
             resolved_type_id = resolved_item_ids.get(external_type_id)
             if resolved_type_id is None:
                 continue
             external_location_id = asset.get("location_id")
+            key = (resolved_type_id, external_location_id)
+            aggregated[key] = aggregated.get(key, 0) + max(int(asset["quantity"]), 0)
+
+        for (resolved_type_id, external_location_id), quantity in aggregated.items():
             session.add(
                 CharacterAsset(
                     character_id=character.id,
                     type_id=resolved_type_id,
-                    quantity=max(int(asset["quantity"]), 0),
+                    quantity=quantity,
                     external_location_id=external_location_id,
                     resolved_location_id=resolved_location_ids.get(external_location_id) if external_location_id else None,
-                    location_name=asset.get("location_name"),
+                    location_name=None,
                 )
             )
 
@@ -420,6 +453,7 @@ class CharacterService:
                 persisted_structure.last_snapshot_at = discovered_structure.last_snapshot_at
                 persisted_structure.confidence_score = discovered_structure.confidence_score
 
+            self._upsert_structure_location_from_discovery(session, discovered_structure)
             persisted_structures.append(persisted_structure)
 
         for persisted_structure in persisted_structures:
@@ -427,6 +461,70 @@ class CharacterService:
                 self._upsert_tracked_structure(session, character.id, persisted_structure)
 
         return persisted_structures
+
+    def _upsert_structure_location_from_discovery(
+        self,
+        session: Session,
+        discovered_structure: DiscoveredStructureInput,
+    ) -> Location | None:
+        system = self._resolve_system(session, discovered_structure.system_name, discovered_structure.region_name)
+        if system is None:
+            return None
+
+        location = session.scalar(select(Location).where(Location.location_id == discovered_structure.structure_id))
+        if location is None:
+            location = Location(
+                location_id=discovered_structure.structure_id,
+                location_type="structure",
+                system_id=system.id,
+                region_id=system.region_id,
+                name=discovered_structure.structure_name,
+            )
+            session.add(location)
+            return location
+
+        location.location_type = "structure"
+        location.system_id = system.id
+        location.region_id = system.region_id
+        location.name = discovered_structure.structure_name
+        return location
+
+    def _resolve_structure_names(self, session: Session, access_token: str) -> int:
+        """Resolve names for structures in the locations table that have placeholder names.
+
+        Returns the number of structures successfully resolved.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        unresolved = session.execute(
+            select(Location.location_id).where(
+                Location.location_type == "structure",
+                Location.name.like("Structure %"),
+            )
+        ).scalars().all()
+
+        if not unresolved:
+            return 0
+
+        logger.info("Resolving names for %d unresolved structures", len(unresolved))
+        resolved_count = 0
+        for structure_id in unresolved:
+            info = self.esi_client.resolve_structure_info(access_token, structure_id)
+            if info and info.get("name"):
+                location = session.scalar(
+                    select(Location).where(Location.location_id == structure_id)
+                )
+                if location:
+                    location.name = info["name"]
+                    resolved_count += 1
+
+        if resolved_count:
+            session.flush()
+            logger.info("Resolved %d / %d structure names", resolved_count, len(unresolved))
+
+        return resolved_count
 
     def _split_scopes(self, granted_scopes: str) -> list[str]:
         return granted_scopes.split() if granted_scopes else []

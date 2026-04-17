@@ -1,16 +1,9 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import type { UserSettings } from "../api/settings";
+import { SearchableMultiSelect } from "../components/settings/SearchableMultiSelect";
 import { useTargetOptions } from "../hooks/useTradeData";
-import { useSettings, useUpdateSettings } from "../hooks/useSettingsData";
-
-const KNOWN_SOURCE_REGIONS = [
-  { region_id: 10000002, name: "The Forge" },
-  { region_id: 10000043, name: "Domain" },
-  { region_id: 10000032, name: "Sinq Laison" },
-  { region_id: 10000042, name: "Metropolis" },
-  { region_id: 10000030, name: "Heimatar" },
-] as const;
+import { useSettings, useSourceRegionOptions, useUpdateSettings } from "../hooks/useSettingsData";
 
 const DEFAULT_SETTINGS: UserSettings = {
   default_analysis_period_days: 14,
@@ -63,6 +56,7 @@ export function SettingsPage() {
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
   const targetOptions = useTargetOptions();
+  const sourceRegionOptions = useSourceRegionOptions();
   const [formState, setFormState] = useState<UserSettings>(DEFAULT_SETTINGS);
   const [hasLocalEdits, setHasLocalEdits] = useState(false);
 
@@ -73,6 +67,23 @@ export function SettingsPage() {
   }, [hasLocalEdits, settings.data]);
 
   const filters = parseFilters(formState.default_filters);
+  const targetLocationOptions = useMemo(
+    () =>
+      (targetOptions.data ?? []).map((location) => ({
+        id: location.location_id,
+        label: location.name,
+        description: `${location.system_name}, ${location.region_name}`,
+      })),
+    [targetOptions.data],
+  );
+  const sourceRegionSelectOptions = useMemo(
+    () =>
+      (sourceRegionOptions.data ?? []).map((region) => ({
+        id: region.region_id,
+        label: region.name,
+      })),
+    [sourceRegionOptions.data],
+  );
 
   function updateFilter(key: keyof DefaultFilters, value: number) {
     setHasLocalEdits(true);
@@ -251,24 +262,15 @@ export function SettingsPage() {
               <h2>Target Market Hubs</h2>
               <p>Select the markets that should appear as destination hubs on the trade page.</p>
             </div>
-            <div className="settings-checkbox-list" role="group" aria-label="Target Market Hubs">
-              {(targetOptions.data ?? []).map((location) => (
-                <label key={location.location_id} className="settings-toggle">
-                  <div>
-                    <span>{location.name}</span>
-                    <p>
-                      {location.system_name}, {location.region_name}
-                    </p>
-                  </div>
-                  <input
-                    aria-label={location.name}
-                    type="checkbox"
-                    checked={formState.target_market_location_ids.includes(location.location_id)}
-                    onChange={() => toggleTargetLocation(location.location_id)}
-                  />
-                </label>
-              ))}
-            </div>
+            <SearchableMultiSelect
+              title="Target Market Hubs"
+              placeholder="Select target markets"
+              searchPlaceholder="Search target markets"
+              emptyLabel="No target markets match this search."
+              options={targetLocationOptions}
+              selectedIds={formState.target_market_location_ids}
+              onToggle={toggleTargetLocation}
+            />
           </section>
 
           <section className="settings-card">
@@ -276,21 +278,15 @@ export function SettingsPage() {
               <h2>Source Regions</h2>
               <p>Select which EVE regions are scanned when syncing market orders.</p>
             </div>
-            <div className="settings-checkbox-list" role="group" aria-label="Source Regions">
-              {KNOWN_SOURCE_REGIONS.map((region) => (
-                <label key={region.region_id} className="settings-toggle">
-                  <div>
-                    <span>{region.name}</span>
-                  </div>
-                  <input
-                    aria-label={region.name}
-                    type="checkbox"
-                    checked={formState.source_region_ids.includes(region.region_id)}
-                    onChange={() => toggleSourceRegion(region.region_id)}
-                  />
-                </label>
-              ))}
-            </div>
+            <SearchableMultiSelect
+              title="Source Regions"
+              placeholder="Select source regions"
+              searchPlaceholder="Search regions"
+              emptyLabel="No regions match this search."
+              options={sourceRegionSelectOptions}
+              selectedIds={formState.source_region_ids}
+              onToggle={toggleSourceRegion}
+            />
           </section>
 
           <fieldset className="settings-fieldset">

@@ -18,3 +18,8 @@ class UserSettingsResponse(BaseModel):
 
 class UserSettingsUpdate(UserSettingsResponse):
     pass
+
+
+class RegionOption(BaseModel):
+    region_id: int
+    name: str

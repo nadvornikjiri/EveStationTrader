@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -65,6 +65,10 @@ class MockCharacterSyncEsiClient:
             }
         ]
 
+    def resolve_structure_info(self, access_token: str, structure_id: int) -> dict | None:
+        assert access_token == "test-access-token"
+        return None
+
 
 def seed_character_data(session: Session) -> None:
     region = Region(region_id=10000002, name="The Forge")
@@ -126,8 +130,8 @@ def seed_character_data(session: Session) -> None:
     session.add(
         EsiCharacterSyncState(
             character_id=first_character.id,
-            last_token_refresh=datetime(2026, 3, 21, 10, 0, tzinfo=UTC),
-            last_successful_sync=datetime(2026, 3, 21, 10, 5, tzinfo=UTC),
+            last_token_refresh=datetime.now(UTC) - timedelta(minutes=10),
+            last_successful_sync=datetime.now(UTC) - timedelta(minutes=5),
             assets_sync_status="ok",
             orders_sync_status="stale",
             skills_sync_status="pending",
@@ -141,7 +145,7 @@ def seed_character_data(session: Session) -> None:
             character_id=first_character_id,
             access_token="test-access-token",
             refresh_token="refresh-token",
-            expires_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
         )
     )
     session.add_all(
@@ -431,6 +435,80 @@ def test_discover_character_accessible_structures_updates_existing_rows_without_
     assert tracked_location.name == "Perimeter Market Keepstar Updated"
 
 
+def test_discover_character_accessible_structures_upserts_target_selectable_location_for_untracked_structure() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    discovered = service.discover_character_accessible_structures(
+        90000042,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985686,
+                structure_name="Jita Public Market Hub",
+                system_name="Jita",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 15, 0, tzinfo=UTC),
+                tracking_enabled=False,
+                polling_tier="user",
+                confidence_score=0.37,
+            )
+        ],
+    )
+
+    assert len(discovered) == 1
+    assert discovered[0].tracking_enabled is False
+
+    location = session.scalar(select(Location).where(Location.location_id == 1022734985686))
+    assert location is not None
+    assert location.location_type == "structure"
+    assert location.name == "Jita Public Market Hub"
+
+    tracked_structure = session.scalar(select(TrackedStructure).where(TrackedStructure.structure_id == 1022734985686))
+    assert tracked_structure is None
+
+
+def test_discover_character_accessible_structures_replaces_placeholder_structure_location_name() -> None:
+    session = build_session()
+    seed_character_data(session)
+    service = CharacterService(session_factory=lambda: session)
+
+    perimeter_system = session.scalar(select(System).where(System.system_id == 30000144))
+    region = session.scalar(select(Region).where(Region.region_id == 10000002))
+    assert perimeter_system is not None
+    assert region is not None
+    session.add(
+        Location(
+            location_id=1022734985688,
+            location_type="structure",
+            system_id=perimeter_system.id,
+            region_id=region.id,
+            name="Structure 1022734985688",
+        )
+    )
+    session.commit()
+
+    service.discover_character_accessible_structures(
+        90000042,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985688,
+                structure_name="Perimeter Freeport Exchange",
+                system_name="Perimeter",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 21, 16, 0, tzinfo=UTC),
+                tracking_enabled=False,
+                polling_tier="user",
+                confidence_score=0.41,
+            )
+        ],
+    )
+
+    location = session.scalar(select(Location).where(Location.location_id == 1022734985688))
+    assert location is not None
+    assert location.name == "Perimeter Freeport Exchange"
+
+
 def test_discover_character_accessible_structures_raises_for_missing_character() -> None:
     session = build_session()
     service = CharacterService(session_factory=lambda: session)
@@ -482,6 +560,10 @@ def test_sync_character_persists_discovery_and_updates_sync_state() -> None:
     assert assets[0].quantity == 11
     assert len(orders) == 1
     assert orders[0].volume_remain == 9
+    discovered_location = session.scalar(select(Location).where(Location.location_id == 1022734985687))
+    assert discovered_location is not None
+    assert discovered_location.location_type == "structure"
+    assert discovered_location.name == "Jita Sync Relay"
 
 
 def test_sync_character_is_idempotent_and_raises_for_missing_character() -> None:

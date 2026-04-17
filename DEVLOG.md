@@ -1,3 +1,28 @@
+## 2026-04-17
+
+- task id: `STATIC-STRUCTURE-TARGET-SETTINGS-2026-04-17`
+- title: Auto-Include Static Catalog Targets In Active Settings
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: fixed the gap between static structure import and the trade target dropdown. The trade UI reads `/api/targets`, which is driven by persisted `target_market_location_ids`, so importing structure `locations` alone was not enough on existing installs. Settings loading now unions the built-in static structure catalog IDs into the configured target list, so curated public structures like the Amamake entries become active trade targets without manual settings edits.
+- validation:
+  - `cd backend && ./.venv/bin/python - <<'PY' ... SettingsService().get_settings() ... PY`
+  - `cd backend && ./.venv/bin/python - <<'PY' ... TradeRepository().list_targets() ... PY`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/api/test_endpoints.py::test_get_settings -q`
+  - `cd backend && ./.venv/bin/ruff check app/services/settings_service.py tests/api/test_endpoints.py --fix`
+  - note: repo-wide `mypy .` still has pre-existing unrelated failures in `app/services/opportunities/generation.py`, `app/services/npc_stations/deltas.py`, multiple `alembic/versions/*` files, `tests/services/test_auth_service.py`, and `tests/services/test_sync_service.py`
+
+- task id: `STATIC-STRUCTURE-CATALOG-2026-04-17`
+- title: Seed Static Public Structure Targets
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: added a built-in static public-structure catalog to the foundation import and used it to seed Amamake structure `locations` without waiting for character sync or market-order discovery. Foundation bootstrap now upserts existing structure locations in place, so placeholder names like `Structure <id>` are replaced by the static catalog on rerun instead of being left stale. Added regression coverage for catalog merging and placeholder-structure name backfill.
+- validation:
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_foundation_import.py -q`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/services/test_foundation_data.py -q`
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/pytest`
+  - `cd backend && ./.venv/bin/mypy .`
+  - note: `mypy .` is still blocked by pre-existing unrelated errors in `app/services/opportunities/generation.py`, `app/services/npc_stations/deltas.py`, multiple `alembic/versions/*` files, `tests/services/test_auth_service.py`, and `tests/services/test_sync_service.py`
+
 ## 2026-04-15
 
 - task id: `EVEREF-ESI-DEMAND-PROFILING-2026-04-15`
@@ -2744,3 +2769,18 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - Left ingestion logic untouched because `get_available_dates(...)` intentionally excludes today and matches EveRef's publish cadence.
 - validation:
   - `cd backend && python -m pytest`
+
+## 2026-04-17 - SYNC-DASHBOARD-STATUS-CARD-FRESHNESS
+- Updated the sync dashboard so the top status cards overlay live progress and message fields from active job-history rows when `/sync/jobs` is fresher than `/sync/status`.
+- Kept the merge scoped by `job_type -> card.key`, preferring the latest active run per job type and preserving non-active cards unchanged.
+- Added a regression test that feeds stale status-card data plus a running job row and asserts the top card shows the running progress message instead of the stale healthy snapshot.
+- validation:
+  - `cd frontend && npm test -- --run src/pages/SyncPage.test.tsx`
+
+## 2026-04-17 - SETTINGS-SEARCHABLE-MULTISELECTS
+- Replaced the always-expanded checkbox lists for `Target Market Hubs` and `Source Regions` with collapsed searchable multi-select dropdowns on the settings page.
+- Added a new `/api/settings/source-regions` endpoint so source-region options come from imported `regions` rows instead of the old five-region frontend constant, allowing selection of any imported region.
+- Added frontend coverage for the collapsed selector flow and backend API coverage for the new source-region options endpoint.
+- validation:
+  - `cd frontend && npm test -- --run src/pages/SettingsPage.test.tsx`
+  - `cd backend && ./.venv/bin/pytest -m integration tests/api/test_endpoints.py::test_get_settings tests/api/test_endpoints.py::test_get_source_region_options`
