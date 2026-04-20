@@ -34,6 +34,7 @@ from app.models.all_models import (
     CharacterAsset,
     CharacterOrder,
     EsiCharacter,
+    EsiCharacterToken,
     EsiCharacterSyncState,
     EsiHistoryDaily,
     EsiMarketOrder,
@@ -149,6 +150,126 @@ class StructureSnapshotBatch:
 
 class StructureSnapshotCapableClient(Protocol):
     def fetch_structure_snapshot(self, structure_id: int) -> StructureSnapshotBatch | None: ...
+
+
+class SettingsScopedStructureSnapshotClient:
+    STRUCTURE_MARKETS_SCOPE = "esi-markets.structure_markets.v1"
+
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session] = SessionLocal,
+        esi_client: EsiClient | None = None,
+    ) -> None:
+        self.session_factory = session_factory
+        self.esi_client = esi_client or EsiClient()
+
+    def fetch_structure_snapshot(self, structure_id: int) -> StructureSnapshotBatch | None:
+        session = self.session_factory()
+        try:
+            candidate_characters = self._candidate_characters(session, structure_id)
+            if not candidate_characters:
+                return None
+
+            item_ids_by_type_id = {
+                type_id: item_id
+                for type_id, item_id in session.execute(select(Item.type_id, Item.id)).all()
+            }
+            fetched_at = datetime.now(UTC)
+
+            for accessible_structure, character in candidate_characters:
+                access_token = self._ensure_valid_token(session, character)
+                order_rows = self.esi_client.fetch_structure_orders(access_token, structure_id)
+                if order_rows is None:
+                    continue
+
+                normalized_orders: list[StructureOrderInput] = []
+                for row in order_rows:
+                    resolved_type_id = item_ids_by_type_id.get(row["type_id"])
+                    if resolved_type_id is None:
+                        continue
+                    issued_at = datetime.fromisoformat(row["issued"]) if row["issued"] is not None else None
+                    normalized_orders.append(
+                        StructureOrderInput(
+                            order_id=row["order_id"],
+                            type_id=resolved_type_id,
+                            is_buy_order=row["is_buy_order"],
+                            price=row["price"],
+                            volume_remain=row["volume_remain"],
+                            issued=issued_at,
+                            duration=row["duration"],
+                        )
+                    )
+
+                if accessible_structure is not None:
+                    accessible_structure.access_verified_at = fetched_at
+                    accessible_structure.last_snapshot_at = fetched_at
+                session.commit()
+                return StructureSnapshotBatch(
+                    structure_id=structure_id,
+                    snapshot_time=fetched_at,
+                    orders=normalized_orders,
+                )
+
+            session.commit()
+            return None
+        finally:
+            session.close()
+
+    def _candidate_characters(
+        self,
+        session: Session,
+        structure_id: int,
+    ) -> list[tuple[CharacterAccessibleStructure | None, EsiCharacter]]:
+        accessible_rows = session.execute(
+            select(CharacterAccessibleStructure, EsiCharacter)
+            .join(EsiCharacter, EsiCharacter.id == CharacterAccessibleStructure.character_id)
+            .join(EsiCharacterToken, EsiCharacterToken.character_id == EsiCharacter.id)
+            .where(
+                CharacterAccessibleStructure.structure_id == structure_id,
+                EsiCharacter.sync_enabled.is_(True),
+            )
+            .order_by(
+                CharacterAccessibleStructure.tracking_enabled.desc(),
+                CharacterAccessibleStructure.access_verified_at.desc(),
+                EsiCharacter.id.asc(),
+            )
+        ).all()
+        if accessible_rows:
+            filtered_rows = [
+                row for row in accessible_rows if self._character_has_scope(row[1], self.STRUCTURE_MARKETS_SCOPE)
+            ]
+            if filtered_rows:
+                return [(row[0], row[1]) for row in filtered_rows]
+
+        return [
+            (None, character)
+            for character in session.scalars(
+                select(EsiCharacter)
+                .join(EsiCharacterToken, EsiCharacterToken.character_id == EsiCharacter.id)
+                .where(EsiCharacter.sync_enabled.is_(True))
+                .order_by(EsiCharacter.id.asc())
+            ).all()
+            if self._character_has_scope(character, self.STRUCTURE_MARKETS_SCOPE)
+        ]
+
+    @staticmethod
+    def _character_has_scope(character: EsiCharacter, scope: str) -> bool:
+        return scope in (character.granted_scopes or "").split()
+
+    def _ensure_valid_token(self, session: Session, character: EsiCharacter) -> str:
+        token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
+        if token is None:
+            raise LookupError(f"No token found for character {character.character_name}")
+
+        if token.expires_at < datetime.now(UTC) + timedelta(minutes=2):
+            refreshed = self.esi_client.refresh_access_token(token.refresh_token)
+            token.access_token = refreshed["access_token"]
+            token.refresh_token = refreshed.get("refresh_token", token.refresh_token)
+            token.expires_at = datetime.fromisoformat(refreshed["expires_at"])
+            session.flush()
+
+        return token.access_token
 
 
 class JobCancelledError(RuntimeError):
@@ -280,7 +401,9 @@ class SyncService:
         self.adam_client = adam_client or Adam4EveClient()
         self.esi_client = esi_client or EsiClient()
         self.foundation_client = foundation_client or CcpSdeClient()
-        self.structure_snapshot_client = structure_snapshot_client
+        self.structure_snapshot_client = structure_snapshot_client or SettingsScopedStructureSnapshotClient(
+            session_factory=session_factory
+        )
         self.bulk_imports = BulkImportService()
 
     @staticmethod
@@ -1684,6 +1807,73 @@ class SyncService:
         max_age = timedelta(minutes=self.PRE_REBUILD_ESI_MARKET_ORDER_MAX_AGE_MINUTES)
         return (datetime.now(UTC) - latest_success_at) >= max_age
 
+    def _selected_structure_targets(self, session: Session) -> list[Location]:
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        target_eve_ids = settings.target_market_location_ids or []
+        if not target_eve_ids:
+            return []
+        return list(
+            session.scalars(
+            select(Location)
+            .where(
+                Location.location_id.in_(target_eve_ids),
+                Location.location_type == "structure",
+            )
+            .order_by(Location.location_id.asc())
+            ).all()
+        )
+
+    def _ensure_selected_structure_targets_tracked(
+        self,
+        session: Session,
+        *,
+        selected_structures: Sequence[Location],
+    ) -> list[TrackedStructure]:
+        if not selected_structures:
+            return []
+
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        poll_interval = max(int(settings.default_user_structure_poll_interval_minutes), 1)
+        tracked_by_structure_id = {
+            tracked.structure_id: tracked
+            for tracked in session.scalars(
+                select(TrackedStructure).where(
+                    TrackedStructure.structure_id.in_([row.location_id for row in selected_structures])
+                )
+            ).all()
+        }
+
+        tracked_rows: list[TrackedStructure] = []
+        for location in selected_structures:
+            tracked = tracked_by_structure_id.get(location.location_id)
+            if tracked is None:
+                tracked = TrackedStructure(
+                    structure_id=location.location_id,
+                    name=location.name,
+                    system_id=location.system_id,
+                    region_id=location.region_id,
+                    tracking_tier="target",
+                    poll_interval_minutes=poll_interval,
+                    is_enabled=True,
+                    confidence_score=1.0,
+                    notes="settings_target",
+                )
+                session.add(tracked)
+            else:
+                tracked.name = location.name
+                tracked.system_id = location.system_id
+                tracked.region_id = location.region_id
+                tracked.tracking_tier = "target"
+                tracked.poll_interval_minutes = poll_interval
+                tracked.is_enabled = True
+                tracked.confidence_score = max(float(tracked.confidence_score), 1.0)
+                if tracked.notes in (None, "", "settings_target"):
+                    tracked.notes = "settings_target"
+            tracked_rows.append(tracked)
+
+        session.flush()
+        return tracked_rows
+
     def _sync_structure_snapshots(
         self,
         session: Session,
@@ -1693,12 +1883,11 @@ class SyncService:
         if self.structure_snapshot_client is None:
             return StructureSnapshotSyncResult(0, 0, 0, 0, (), (), 0)
 
-        tracked_structures = session.scalars(
-            select(TrackedStructure)
-            .join(Location, Location.location_id == TrackedStructure.structure_id)
-            .where(TrackedStructure.is_enabled.is_(True), Location.location_type == "structure")
-            .order_by(TrackedStructure.structure_id.asc())
-        ).all()
+        selected_structures = self._selected_structure_targets(session)
+        tracked_structures = self._ensure_selected_structure_targets_tracked(
+            session,
+            selected_structures=selected_structures,
+        )
         if not tracked_structures:
             return StructureSnapshotSyncResult(0, 0, 0, 0, (), (), 0)
 
@@ -1713,8 +1902,11 @@ class SyncService:
         for tracked_structure in tracked_structures:
             if cancellation_check is not None:
                 cancellation_check()
+            tracked_structure.last_polled_at = datetime.now(UTC)
             batch = self.structure_snapshot_client.fetch_structure_snapshot(tracked_structure.structure_id)
-            if batch is None or not batch.orders:
+            if batch is None:
+                continue
+            if not batch.orders:
                 continue
             if batch.structure_id != tracked_structure.structure_id:
                 raise ValueError("structure snapshot batch structure_id did not match tracked structure")
@@ -1730,6 +1922,7 @@ class SyncService:
                 continue
 
             structure_count += 1
+            tracked_structure.last_successful_poll_at = normalized_snapshot_time
             snapshot_result = snapshot_service.persist_snapshot(
                 session,
                 structure_id=tracked_structure.structure_id,
@@ -1944,10 +2137,13 @@ class SyncService:
         self,
         session: Session,
     ) -> list[tuple[int, int]]:
-        """Return (internal_location_id, internal_item_id) pairs for NPC stations
-        where ESI market orders exist AND the region has ESI history data for that item.
-        Applies the same target-station / source-region constraints as the ESI order sync
-        so the scope stays manageable."""
+        """Return (internal_location_id, internal_item_id) pairs for target markets.
+
+        NPC stations can contribute order-based and station-period-based keys.
+        Structure targets can still contribute history-based fallback keys when the
+        region has ESI history for the item, even if local structure snapshots are
+        unavailable.
+        """
         settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
         target_eve_ids: list[int] = settings.target_market_location_ids or []
         if not target_eve_ids:
@@ -1957,7 +2153,7 @@ class SyncService:
             session.scalars(
                 select(Location.id).where(
                     Location.location_id.in_(target_eve_ids),
-                    Location.location_type == "npc_station",
+                    Location.location_type.in_(("npc_station", "structure")),
                 )
             ).all()
         )
@@ -1989,7 +2185,8 @@ class SyncService:
         if not desired_internal_region_ids:
             return []
 
-        # Items with live market orders at target stations
+        # Items with live market orders at target markets. In practice this covers NPC
+        # stations because structure-local orders are not loaded into esi_market_orders.
         order_pairs = session.execute(
             select(
                 distinct(EsiMarketOrder.location_id),
@@ -2015,8 +2212,8 @@ class SyncService:
             if type_id in items_with_history
         ]
 
-        # Items with npc_station_demand_period at target stations
-        # (self-contained demand signal — no ESI history gate needed)
+        # Items with npc_station_demand_period at target NPC stations
+        # (self-contained demand signal — no ESI history gate needed).
         analysis_period_days = max(settings.default_analysis_period_days, 1)
         period_based_pairs: list[tuple[int, int]] = [
             (location_id, type_id)
@@ -2299,7 +2496,7 @@ class SyncService:
         if not source_location_ids:
             return False
 
-        OpportunityGenerationService().generate_for_target(
+        result = OpportunityGenerationService().generate_for_target(
             session,
             target_location_id=target_location_id,
             source_location_ids=source_location_ids,
@@ -2307,7 +2504,10 @@ class SyncService:
             period_days=requested_period_days,
             replace_entire_target_scope=source_location_id is None and type_id is None,
         )
-        return True
+        # If no opportunities were generated, signal that the caller should
+        # fall through to a full prepare_trade_period with refreshed inputs
+        # (e.g. stale zero-demand rows for structures without snapshot data).
+        return result.item_count > 0
 
     def _trade_period_type_ids(
         self,
@@ -2605,6 +2805,7 @@ class SyncService:
         session: Session,
         *,
         region_ids: list[int],
+        lookback_days: int,
     ) -> list[AdamStationHistoryWorksetEntry]:
         if not region_ids:
             return []
@@ -2625,6 +2826,36 @@ class SyncService:
             .distinct()
             .order_by(Region.id.asc(), Location.id.asc(), Item.id.asc())
         ).all()
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
+        selected_structure_locations = session.execute(
+            select(
+                Region.id,
+                Region.region_id,
+                Location.id,
+                Location.location_id,
+                Item.id,
+                Item.type_id,
+            )
+            .select_from(Location)
+            .join(Region, Region.id == Location.region_id)
+            .join(
+                EsiHistoryDaily,
+                and_(
+                    EsiHistoryDaily.region_id == Region.id,
+                    EsiHistoryDaily.date >= datetime.now(UTC).date() - timedelta(days=max(lookback_days, 1)),
+                    EsiHistoryDaily.volume > 0,
+                ),
+            )
+            .join(Item, Item.id == EsiHistoryDaily.type_id)
+            .where(
+                Region.id.in_(region_ids),
+                Location.location_type == "structure",
+                Location.location_id.in_(settings.target_market_location_ids or []),
+            )
+            .distinct()
+            .order_by(Region.id.asc(), Location.id.asc(), Item.id.asc())
+        ).all()
+        rows = list(dict.fromkeys([*rows, *selected_structure_locations]))
         return [
             AdamStationHistoryWorksetEntry(
                 internal_region_id=internal_region_id,
@@ -2653,6 +2884,7 @@ class SyncService:
     ) -> bool:
         if not region_ids:
             return False
+        settings = SettingsService(session_factory=lambda: session).get_settings_for_session(session)
         missing_row = session.execute(
             select(EsiMarketOrder.id)
             .join(Location, Location.id == EsiMarketOrder.location_id)
@@ -2672,7 +2904,38 @@ class SyncService:
             )
             .limit(1)
         ).first()
-        return missing_row is not None
+        if missing_row is not None:
+            return True
+
+        selected_structure_missing_row = session.execute(
+            select(Location.id)
+            .join(Region, Region.id == Location.region_id)
+            .join(
+                EsiHistoryDaily,
+                and_(
+                    EsiHistoryDaily.region_id == Region.id,
+                    EsiHistoryDaily.date >= datetime.now(UTC).date() - timedelta(days=max(period_days, 1)),
+                    EsiHistoryDaily.volume > 0,
+                ),
+            )
+            .join(Item, Item.id == EsiHistoryDaily.type_id)
+            .outerjoin(
+                MarketPricePeriod,
+                and_(
+                    MarketPricePeriod.location_id == Location.id,
+                    MarketPricePeriod.type_id == Item.id,
+                    MarketPricePeriod.period_days == period_days,
+                ),
+            )
+            .where(
+                Region.id.in_(region_ids),
+                Location.location_type == "structure",
+                Location.location_id.in_(settings.target_market_location_ids or []),
+                MarketPricePeriod.id.is_(None),
+            )
+            .limit(1)
+        ).first()
+        return selected_structure_missing_row is not None
 
     def _sync_adam_regional_price_history(
         self,
@@ -2685,6 +2948,7 @@ class SyncService:
         workset_entries = self._history_sync_workset(
             session,
             region_ids=[region.id for region in regions],
+            lookback_days=lookback_days,
         )
         if not workset_entries:
             return (0, 0, 0, 0)

@@ -1,3 +1,27 @@
+## 2026-04-19
+
+- task id: `SETTINGS-SCOPED-STRUCTURE-ESI-SYNC-2026-04-19`
+- title: Restrict Structure ESI Sync To Selected Target Markets
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: added a real authenticated structure-market pull path and wired it into `SyncService` by default, but scoped it strictly to structure targets selected in settings. `structure_snapshot_sync` now derives its workset from `target_market_location_ids`, auto-upserts selected structure targets into `tracked_structures`, and ignores unselected tracked structures. The default snapshot client reuses connected-character tokens, prefers characters already known to have access to the structure, fetches `/markets/structures/{structure_id}/`, and records snapshot times back onto `character_accessible_structures` when pulls succeed.
+- validation:
+  - `docker compose exec -T backend python -m ruff check app/services/esi/client.py app/services/sync/service.py tests/services/test_sync_service.py --fix`
+  - `docker compose exec -T backend python -m mypy app/services/esi/client.py app/services/sync/service.py`
+  - `docker compose exec -T backend python - <<'PY' ... SyncService(...).trigger_job(\"structure_snapshot_sync\") ... PY`
+  - note: the direct Postgres-backed verification confirmed only the selected structure target was polled and unselected tracked structures were ignored
+  - note: targeted integration `pytest` remains blocked inside the backend container by the existing `tests/db_test_utils.py` bootstrap/cwd issue
+
+- task id: `STRUCTURE-ESI-FALLBACK-SCOPE-2026-04-19`
+- title: Include Structure Targets In ESI History Fallback Scope
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: fixed a scope bug in `_esi_demand_refresh_keys()` that excluded structure targets from the ESI-history fallback refresh path. Structure targets now participate in the history-based key union, so items with regional ESI history but no local structure snapshot data can still derive `market_demand_resolved` rows and reach opportunity generation. Added regression coverage for a structure-target history-only item case mirroring the missing `Polarized Rocket Launcher` behavior.
+- validation:
+  - `docker compose exec -T backend python -m ruff check app/services/sync/service.py tests/services/test_sync_service.py --fix`
+  - `docker compose exec -T backend python -m mypy app/services/sync/service.py tests/services/test_sync_service.py`
+  - `docker compose exec -T backend python - <<'PY' ... SyncService()._esi_demand_refresh_keys(session) ... PY`
+  - note: targeted `mypy` still reports pre-existing unrelated failures in `app/services/npc_stations/deltas.py`, `app/services/opportunities/generation.py`, and older sections of `tests/services/test_sync_service.py`
+  - note: targeted integration `pytest` is currently blocked inside the backend container because `tests/db_test_utils.py` resolves `REPO_ROOT` incorrectly under the container mount and then fails Alembic/Docker-based test bootstrap
+
 ## 2026-04-17
 
 - task id: `STATIC-STRUCTURE-TARGET-SETTINGS-2026-04-17`

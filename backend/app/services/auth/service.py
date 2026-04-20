@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 from sqlalchemy import select
@@ -33,6 +33,7 @@ class AuthService:
         expires_at = datetime.fromisoformat(token_payload["expires_at"])
         scopes = token_payload.get("scopes", [])
         granted_scopes = " ".join(scopes) if isinstance(scopes, list) else str(scopes)
+        reconnected_existing_character = False
 
         session = self.session_factory()
         try:
@@ -57,12 +58,14 @@ class AuthService:
                 session.add(character)
                 session.flush()
             else:
+                reconnected_existing_character = True
                 user = session.get(User, character.user_id)
                 if user is None:
                     raise ValueError("existing character is missing user")
                 character.character_name = identity["character_name"]
                 character.corporation_name = identity.get("corporation_name")
                 character.granted_scopes = granted_scopes
+                character.sync_enabled = True
 
             token = session.scalar(
                 select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id)
@@ -85,9 +88,16 @@ class AuthService:
             )
             is_new_sync_state = sync_state is None
             if sync_state is None:
-                session.add(EsiCharacterSyncState(character_id=character.id))
+                sync_state = EsiCharacterSyncState(character_id=character.id)
+                session.add(sync_state)
 
-            # Enqueue initial sync job for newly connected characters
+            if sync_state is not None:
+                sync_state.last_token_refresh = datetime.now(UTC)
+                sync_state.assets_sync_status = "pending"
+                sync_state.orders_sync_status = "pending"
+                sync_state.skills_sync_status = "pending"
+                sync_state.structures_sync_status = "pending"
+
             if is_new_sync_state:
                 session.add(
                     SyncJobRun(
@@ -97,6 +107,19 @@ class AuthService:
                         target_type="character",
                         target_id=str(character.character_id),
                         message=f"Initial sync for {character.character_name}",
+                    )
+                )
+            elif reconnected_existing_character and not self._has_pending_character_sync_job(
+                session, character_id=character.character_id
+            ):
+                session.add(
+                    SyncJobRun(
+                        job_type="character_sync",
+                        status="pending",
+                        triggered_by="sso_reconnect",
+                        target_type="character",
+                        target_id=str(character.character_id),
+                        message=f"Refresh sync for {character.character_name} after reconnect",
                     )
                 )
 
@@ -118,6 +141,19 @@ class AuthService:
             )
         finally:
             session.close()
+
+    def _has_pending_character_sync_job(self, session: Session, *, character_id: int) -> bool:
+        return (
+            session.scalar(
+                select(SyncJobRun.id).where(
+                    SyncJobRun.job_type == "character_sync",
+                    SyncJobRun.target_type == "character",
+                    SyncJobRun.target_id == str(character_id),
+                    SyncJobRun.status.in_(("pending", "running")),
+                )
+            )
+            is not None
+        )
 
     def get_current_user(self) -> CurrentUser:
         session = self.session_factory()

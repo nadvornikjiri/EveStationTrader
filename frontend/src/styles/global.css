@@ -77,7 +77,7 @@ select {
 .main-content {
   padding: 28px;
   min-width: 0;
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 .page-stack {

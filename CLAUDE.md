@@ -27,6 +27,7 @@ Data coverage gap fixes complete. Pipeline now captures all legitimately tradeab
 - Do NOT alter existing `DemandSource` enum values (only add new ones)
 - All demand resolution changes must be backward-compatible (existing rows must not be degraded)
 - No direct DB schema changes without a new Alembic migration
+- After any frontend code change, always run `docker compose restart frontend` so the changes take effect
 
 ## Notes
 

@@ -136,10 +136,66 @@ def test_handle_callback_updates_existing_character_and_token_without_duplicates
     assert len(sync_states) == 1
     assert characters[0].character_name == "Audit Trader Updated"
     assert characters[0].corporation_name == "Brave Collective"
+    assert characters[0].sync_enabled is True
     assert characters[0].granted_scopes == "esi-wallet.read_character_wallet.v1"
     assert tokens[0].access_token == "access-2"
     assert tokens[0].refresh_token == "refresh-2"
+    assert sync_states[0].last_token_refresh is not None
+    assert sync_states[0].assets_sync_status == "pending"
+    assert sync_states[0].orders_sync_status == "pending"
+    assert sync_states[0].structures_sync_status == "pending"
 
-    # Re-auth should NOT create additional sync jobs
     jobs = session.scalars(select(SyncJobRun).where(SyncJobRun.job_type == "character_sync")).all()
-    assert len(jobs) == 1
+    assert len(jobs) == 2
+    assert {job.triggered_by for job in jobs} == {"sso_connect", "sso_reconnect"}
+
+
+def test_handle_callback_reconnect_reenables_character_sync() -> None:
+    session = build_session()
+    client = MockEsiClient()
+    service = AuthService(session_factory=lambda: session, esi_client=client)
+    service.handle_callback("first-code")
+
+    character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    sync_state = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
+    assert character is not None
+    assert sync_state is not None
+
+    character.sync_enabled = False
+    sync_state.assets_sync_status = "ok"
+    sync_state.orders_sync_status = "ok"
+    sync_state.skills_sync_status = "ok"
+    sync_state.structures_sync_status = "ok"
+    sync_state.last_successful_sync = datetime.now(UTC)
+    session.commit()
+
+    client.token_payload = {
+        "access_token": "access-3",
+        "refresh_token": "refresh-3",
+        "expires_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+        "scopes": ["esi-assets.read_assets.v1", "esi-markets.structure_markets.v1"],
+    }
+
+    service.handle_callback("second-code")
+
+    session.expire_all()
+    refreshed_character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    assert refreshed_character is not None
+    refreshed_sync_state = session.scalar(
+        select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == refreshed_character.id)
+    )
+    reconnect_jobs = session.scalars(
+        select(SyncJobRun).where(
+            SyncJobRun.job_type == "character_sync",
+            SyncJobRun.triggered_by == "sso_reconnect",
+            SyncJobRun.target_id == "90000042",
+        )
+    ).all()
+
+    assert refreshed_sync_state is not None
+    assert refreshed_character.sync_enabled is True
+    assert refreshed_sync_state.assets_sync_status == "pending"
+    assert refreshed_sync_state.orders_sync_status == "pending"
+    assert refreshed_sync_state.skills_sync_status == "pending"
+    assert refreshed_sync_state.structures_sync_status == "pending"
+    assert len(reconnect_jobs) == 1

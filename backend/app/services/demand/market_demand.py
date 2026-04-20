@@ -192,7 +192,7 @@ class MarketDemandResolutionService:
                 StructureDemandPeriod.period_days == period_days,
             )
         )
-        if structure_period is not None:
+        if structure_period is not None and structure_period.buy_from_sell_period > 0:
             return self._upsert_row(
                 session,
                 location_id=location_id,

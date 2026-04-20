@@ -105,6 +105,16 @@ class EsiAccessibleStructureRecord(TypedDict):
     polling_tier: str
 
 
+class EsiStructureOrderRecord(TypedDict):
+    order_id: int
+    type_id: int
+    is_buy_order: bool
+    price: float
+    volume_remain: int
+    issued: str | None
+    duration: int | None
+
+
 class EsiClient:
     # Shared rate limit state across all EsiClient instances
     rate_limit_state: EsiRateLimitState = EsiRateLimitState()
@@ -495,6 +505,60 @@ class EsiClient:
                 }
         except Exception:
             return None
+
+    def fetch_structure_orders(self, access_token: str, structure_id: int) -> list[EsiStructureOrderRecord] | None:
+        """Fetch all market orders for a structure the character can access.
+
+        Returns `None` when the structure is inaccessible or missing for the
+        authenticated character, and a list (possibly empty) on success.
+        """
+        try:
+            with httpx.Client(base_url=ESI_BASE_URL, headers=self.get_headers(), timeout=30.0) as client:
+                first_response = self._authenticated_request(
+                    client,
+                    "GET",
+                    f"/markets/structures/{structure_id}/",
+                    access_token=access_token,
+                    params={"page": 1},
+                )
+                if first_response.status_code == 304:
+                    return []
+                orders = self._parse_structure_orders_payload(first_response.json())
+                total_pages = int(first_response.headers.get("X-Pages", "1"))
+                for page in range(2, total_pages + 1):
+                    page_response = self._authenticated_request(
+                        client,
+                        "GET",
+                        f"/markets/structures/{structure_id}/",
+                        access_token=access_token,
+                        params={"page": page},
+                    )
+                    if page_response.status_code != 304:
+                        orders.extend(self._parse_structure_orders_payload(page_response.json()))
+                return orders
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404):
+                return None
+            raise
+
+    def _parse_structure_orders_payload(self, payload: object) -> list[EsiStructureOrderRecord]:
+        if not isinstance(payload, list):
+            raise ValueError("ESI structure orders response must be a list of rows.")
+        return [self._normalize_structure_order_row(entry) for entry in payload]
+
+    def _normalize_structure_order_row(self, entry: object) -> EsiStructureOrderRecord:
+        payload = self._require_mapping(entry, "structure order row")
+        issued = payload.get("issued")
+        duration = payload.get("duration")
+        return {
+            "order_id": self._require_integer(payload, "order_id"),
+            "type_id": self._require_integer(payload, "type_id"),
+            "is_buy_order": self._require_boolean(payload, "is_buy_order"),
+            "price": self._require_numeric(payload, "price"),
+            "volume_remain": self._require_integer(payload, "volume_remain"),
+            "issued": self._normalize_datetime(issued) if isinstance(issued, str) else None,
+            "duration": int(duration) if isinstance(duration, int) else None,
+        }
 
     def _character_id_from_token(self, access_token: str) -> int:
         """Extract character ID from an EVE SSO JWT access token."""

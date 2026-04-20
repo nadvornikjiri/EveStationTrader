@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import delete, select
@@ -16,6 +16,7 @@ from app.models.all_models import (
     BulkImportCursor,
     BulkImportFile,
     EsiCharacter,
+    EsiCharacterToken,
     EsiHistoryDaily,
     EsiMarketOrder,
     EveRefHistorySyncState,
@@ -47,7 +48,7 @@ from app.services.adam4eve.history_ingestion import AdamStationPriceHistoryRecor
 from app.services.sync.bulk_imports import CachedImportFile
 from app.services.esi.client import EsiRegionalOrderRecord
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
-from app.services.sync.service import StructureSnapshotBatch, SyncService
+from app.services.sync.service import SettingsScopedStructureSnapshotClient, StructureSnapshotBatch, SyncService
 from tests.db_test_utils import build_test_session, create_test_engine, reset_schema
 
 pytestmark = pytest.mark.integration
@@ -477,9 +478,35 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
 class StubStructureSnapshotClient:
     def __init__(self, batches: dict[int, StructureSnapshotBatch]) -> None:
         self.batches = batches
+        self.calls: list[int] = []
 
     def fetch_structure_snapshot(self, structure_id: int) -> StructureSnapshotBatch | None:
+        self.calls.append(structure_id)
         return self.batches.get(structure_id)
+
+
+class ScopeAwareStructureEsiClient:
+    def __init__(self) -> None:
+        self.tokens_used: list[str] = []
+
+    def fetch_structure_orders(self, access_token: str, structure_id: int) -> list[dict[str, object]] | None:
+        self.tokens_used.append(access_token)
+        if access_token == "token-with-structure-scope":
+            return [
+                {
+                    "order_id": 1,
+                    "type_id": 34,
+                    "is_buy_order": False,
+                    "price": 99.5,
+                    "volume_remain": 12,
+                    "issued": "2026-03-20T10:00:00+00:00",
+                    "duration": 90,
+                }
+            ]
+        raise AssertionError(f"unexpected token used for structure import: {access_token} (structure {structure_id})")
+
+    def refresh_access_token(self, refresh_token: str) -> dict[str, str]:
+        raise AssertionError(f"unexpected refresh for token {refresh_token}")
 
 
 class StubAdamClient:
@@ -742,6 +769,30 @@ def seed_structure_snapshot_sync_inputs(session: Session) -> tuple[int, int]:
             poll_interval_minutes=10,
             is_enabled=True,
             confidence_score=0.88,
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [structure.location_id],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
         )
     )
     session.commit()
@@ -1785,6 +1836,67 @@ def test_esi_demand_refresh_keys_includes_history_only_items_for_target_region()
     assert service._esi_demand_refresh_keys(session) == [(location.id, item.id)]
 
 
+def test_esi_demand_refresh_keys_includes_history_only_items_for_structure_targets() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.4)
+    session.add(system)
+    session.flush()
+    location = Location(
+        location_id=1022167642188,
+        location_type="structure",
+        system_id=system.id,
+        region_id=region.id,
+        name="Test Structure",
+    )
+    item = Item(type_id=34290, name="Polarized Rocket Launcher", volume_m3=5.0, group_name="Launcher", category_name="Module")
+    session.add_all([location, item])
+    session.flush()
+    session.add(
+        EsiHistoryDaily(
+            region_id=region.id,
+            type_id=item.id,
+            date=date.today() - timedelta(days=1),
+            average=1_200_000.0,
+            highest=1_260_000.0,
+            lowest=1_100_000.0,
+            order_count=3,
+            volume=7,
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [1022167642188],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    service = SyncService(session_factory=lambda: session)
+
+    assert service._esi_demand_refresh_keys(session) == [(location.id, item.id)]
+
+
 def test_esi_demand_refresh_keys_returns_empty_when_no_orders_history_or_periods() -> None:
     session = build_session()
     region = Region(region_id=10000002, name="The Forge")
@@ -2508,6 +2620,31 @@ def test_trigger_job_structure_snapshot_sync_uses_character_tracked_structure_ro
             )
         ],
     )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [1022734985680],
+                "source_region_ids": [],
+                "default_filters": {
+                    "min_item_profit": 1_000_000,
+                    "roi_now": 0.10,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
 
     StructureSnapshotService().persist_snapshot(
         session,
@@ -2545,6 +2682,205 @@ def test_trigger_job_structure_snapshot_sync_uses_character_tracked_structure_ro
     assert result.target_type == "structures"
     assert result.target_id == "1"
     assert result.records_processed == 4
+
+
+def test_settings_scoped_structure_snapshot_client_skips_characters_without_structure_scope() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([system, item])
+    session.flush()
+
+    user = User(primary_character_id=None)
+    session.add(user)
+    session.flush()
+
+    without_scope = EsiCharacter(
+        user_id=user.id,
+        character_id=90000042,
+        character_name="No Structure Scope",
+        corporation_name="Signal Cartel",
+        granted_scopes="esi-assets.read_assets.v1",
+        sync_enabled=True,
+    )
+    with_scope = EsiCharacter(
+        user_id=user.id,
+        character_id=90000077,
+        character_name="Has Structure Scope",
+        corporation_name="Signal Cartel",
+        granted_scopes="esi-assets.read_assets.v1 esi-markets.structure_markets.v1",
+        sync_enabled=True,
+    )
+    session.add_all([without_scope, with_scope])
+    session.flush()
+
+    session.add_all(
+        [
+            EsiCharacterToken(
+                character_id=without_scope.id,
+                access_token="token-without-structure-scope",
+                refresh_token="refresh-1",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            EsiCharacterToken(
+                character_id=with_scope.id,
+                access_token="token-with-structure-scope",
+                refresh_token="refresh-2",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        ]
+    )
+    session.commit()
+
+    character_service = CharacterService(session_factory=lambda: session)
+    character_service.discover_character_accessible_structures(
+        without_scope.character_id,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985680,
+                structure_name="Jita Freeport",
+                system_name="Jita",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 20, 11, 0, tzinfo=UTC),
+                tracking_enabled=True,
+            )
+        ],
+    )
+    character_service.discover_character_accessible_structures(
+        with_scope.character_id,
+        [
+            DiscoveredStructureInput(
+                structure_id=1022734985680,
+                structure_name="Jita Freeport",
+                system_name="Jita",
+                region_name="The Forge",
+                access_verified_at=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+                tracking_enabled=True,
+            )
+        ],
+    )
+
+    esi_client = ScopeAwareStructureEsiClient()
+    client = SettingsScopedStructureSnapshotClient(session_factory=lambda: session, esi_client=cast(Any, esi_client))
+
+    batch = client.fetch_structure_snapshot(1022734985680)
+
+    assert batch is not None
+    assert batch.structure_id == 1022734985680
+    assert [order.order_id for order in batch.orders] == [1]
+    assert esi_client.tokens_used == ["token-with-structure-scope"]
+
+
+def test_trigger_job_structure_snapshot_sync_ignores_unselected_tracked_structures() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    system = System(system_id=30000144, region_id=region.id, name="Perimeter", security_status=0.9)
+    session.add(system)
+    session.flush()
+
+    selected_location = Location(
+        location_id=1022734985679,
+        location_type="structure",
+        system_id=system.id,
+        region_id=region.id,
+        name="Selected Structure",
+    )
+    extra_location = Location(
+        location_id=1022734985681,
+        location_type="structure",
+        system_id=system.id,
+        region_id=region.id,
+        name="Ignored Structure",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([selected_location, extra_location, item])
+    session.flush()
+
+    session.add_all(
+        [
+            TrackedStructure(
+                structure_id=selected_location.location_id,
+                name=selected_location.name,
+                system_id=system.id,
+                region_id=region.id,
+                tracking_tier="core",
+                poll_interval_minutes=10,
+                is_enabled=True,
+                confidence_score=0.88,
+            ),
+            TrackedStructure(
+                structure_id=extra_location.location_id,
+                name=extra_location.name,
+                system_id=system.id,
+                region_id=region.id,
+                tracking_tier="core",
+                poll_interval_minutes=10,
+                is_enabled=True,
+                confidence_score=0.88,
+            ),
+            UserSetting(
+                user_id=None,
+                key="defaults",
+                value={
+                    "default_analysis_period_days": 14,
+                    "trade_groups_page_size": 20,
+                    "debug_enabled": False,
+                    "sales_tax_rate": 0.036,
+                    "broker_fee_rate": 0.03,
+                    "default_user_structure_poll_interval_minutes": 30,
+                    "snapshot_retention_days": 30,
+                    "fallback_policy": "regional_fallback",
+                    "shipping_cost_per_m3": 350.0,
+                    "target_market_location_ids": [selected_location.location_id],
+                    "source_region_ids": [],
+                    "default_filters": {
+                        "min_item_profit": 1_000_000,
+                        "roi_now": 0.10,
+                        "target_demand_day": 1,
+                    },
+                },
+            ),
+        ]
+    )
+    session.commit()
+
+    StructureSnapshotService().persist_snapshot(
+        session,
+        structure_id=selected_location.location_id,
+        snapshot_time=datetime(2026, 3, 19, 10, 0, tzinfo=UTC),
+        orders=[StructureOrderInput(order_id=1, type_id=item.id, is_buy_order=False, price=100.0, volume_remain=50)],
+    )
+
+    snapshot_client = StubStructureSnapshotClient(
+        {
+            selected_location.location_id: StructureSnapshotBatch(
+                structure_id=selected_location.location_id,
+                snapshot_time=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+                orders=[StructureOrderInput(order_id=1, type_id=item.id, is_buy_order=False, price=100.0, volume_remain=25)],
+            ),
+            extra_location.location_id: StructureSnapshotBatch(
+                structure_id=extra_location.location_id,
+                snapshot_time=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+                orders=[StructureOrderInput(order_id=2, type_id=item.id, is_buy_order=False, price=100.0, volume_remain=25)],
+            ),
+        }
+    )
+    service = SyncService(session_factory=lambda: session, structure_snapshot_client=snapshot_client)
+
+    result = service.trigger_job("structure_snapshot_sync")
+
+    assert result.status == "success"
+    assert snapshot_client.calls == [selected_location.location_id]
+    assert session.scalar(
+        select(StructureSnapshot.id).where(StructureSnapshot.structure_id == extra_location.location_id)
+    ) is None
 
 
 def test_trigger_job_character_sync_processes_all_enabled_characters() -> None:

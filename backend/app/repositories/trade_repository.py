@@ -961,14 +961,18 @@ class TradeRepository:
     def _resolve_location_id(session: Session, location_reference: int) -> int | None:
         from app.models.all_models import Location
 
-        return session.scalar(
-            select(Location.id).where(
-                or_(
-                    Location.id == location_reference,
-                    Location.location_id == location_reference,
-                )
+        # Location.id is a 32-bit INTEGER; structure EVE IDs exceed that range.
+        # Only compare against Location.id when the value fits in 32 bits.
+        max_int32 = 2_147_483_647
+        if location_reference <= max_int32:
+            condition = or_(
+                Location.id == location_reference,
+                Location.location_id == location_reference,
             )
-        )
+        else:
+            condition = Location.location_id == location_reference
+
+        return session.scalar(select(Location.id).where(condition))
 
     @staticmethod
     def _resolve_type_id(session: Session, type_reference: int) -> int | None:
