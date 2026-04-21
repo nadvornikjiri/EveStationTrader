@@ -2808,3 +2808,15 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
 - validation:
   - `cd frontend && npm test -- --run src/pages/SettingsPage.test.tsx`
   - `cd backend && ./.venv/bin/pytest -m integration tests/api/test_endpoints.py::test_get_settings tests/api/test_endpoints.py::test_get_source_region_options`
+
+## 2026-04-21 - ADAM-VOLUME-HISTORY-MIGRATION-MODELS
+- Added Alembic revision `20260421_0022` to create `adam_market_volume_history_raw`, `adam_market_volume_history_daily`, and `market_volume_period` with the planned uniqueness and lookup indexes.
+- Registered `AdamMarketVolumeHistoryRaw`, `AdamMarketVolumeHistoryDaily`, and `MarketVolumePeriod` in the SQLAlchemy model set and exported them through `app.models`.
+- Added metadata tests covering the new raw, daily, and period table definitions, including keys, indexes, and nullability for the period aggregates.
+- validation:
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy .`
+  - `cd backend && .venv/bin/pytest`
+  - `cd backend && .venv/bin/alembic upgrade head`
+  - `cd backend && .venv/bin/python - <<'PY' ... inspector.get_table_names() ... PY`
+  - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `alembic/versions/20260409_0012_restore_esi_history_daily.py`, `alembic/versions/20260409_0013_widen_esi_history_volume.py`, and `alembic/versions/20260415_0019_drop_demand_yesterday_columns.py`

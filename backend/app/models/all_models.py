@@ -304,6 +304,33 @@ AdamMarketPriceHistoryRaw = Table(
 )
 
 
+AdamMarketVolumeHistoryRaw = Table(
+    "adam_market_volume_history_raw",
+    Base.metadata,
+    Column("location_id", BigInteger, nullable=False),
+    Column("region_id", BigInteger, nullable=False),
+    Column("type_id", Integer, nullable=False),
+    Column("date", Date, nullable=False),
+    Column("sell_volume_avg", BigInteger, nullable=False),
+    UniqueConstraint("location_id", "type_id", "date"),
+    Index("ix_adam_market_volume_history_raw_location_id_type_id", "location_id", "type_id"),
+)
+
+
+class AdamMarketVolumeHistoryDaily(Base):
+    __tablename__ = "adam_market_volume_history_daily"
+    __table_args__ = (
+        UniqueConstraint("location_id", "type_id", "date"),
+        Index("ix_adam_market_volume_history_daily_location_id_type_id", "location_id", "type_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    date: Mapped[date] = mapped_column(Date)
+    sell_volume_avg: Mapped[int] = mapped_column(BigInteger)
+
+
 class AdamNpcDemandSyncState(Base):
     __tablename__ = "adam_npc_demand_sync_state"
 
@@ -442,6 +469,22 @@ class MarketPricePeriod(Base):
     period_avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MarketVolumePeriod(Base):
+    __tablename__ = "market_volume_period"
+    __table_args__ = (
+        UniqueConstraint("location_id", "type_id", "period_days"),
+        Index("ix_market_volume_period_location_id_type_id", "location_id", "type_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    type_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    period_days: Mapped[int] = mapped_column(Integer)
+    current_sell_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    period_avg_sell_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -1,6 +1,8 @@
 from app.models.all_models import (
     AdamMarketPriceHistoryDaily,
     AdamMarketPriceHistoryRaw,
+    AdamMarketVolumeHistoryDaily,
+    AdamMarketVolumeHistoryRaw,
     AdamMarketOrdersTradeRaw,
     AdamMarketPriceSyncState,
     CharacterAccessibleStructure,
@@ -13,6 +15,7 @@ from app.models.all_models import (
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
+    MarketVolumePeriod,
     OpportunityItem,
     OpportunitySourceSummary,
     Region,
@@ -32,6 +35,8 @@ from app.models.all_models import (
 __all__ = [
     "AdamMarketPriceHistoryDaily",
     "AdamMarketPriceHistoryRaw",
+    "AdamMarketVolumeHistoryDaily",
+    "AdamMarketVolumeHistoryRaw",
     "AdamMarketPriceSyncState",
     "AdamMarketOrdersTradeRaw",
     "CharacterAccessibleStructure",
@@ -44,6 +49,7 @@ __all__ = [
     "Location",
     "MarketDemandResolved",
     "MarketPricePeriod",
+    "MarketVolumePeriod",
     "OpportunityItem",
     "OpportunitySourceSummary",
     "Region",
