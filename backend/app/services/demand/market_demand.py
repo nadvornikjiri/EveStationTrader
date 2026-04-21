@@ -1,9 +1,11 @@
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import bindparam, select, text, tuple_
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.domain.enums import DemandSource, LocationType
@@ -51,6 +53,121 @@ class MarketDemandBatchPreload:
 
 class MarketDemandResolutionService:
     _PAIR_CHUNK_SIZE = 1000
+    _TARGET_MARKET_KEY_COUNT_SQL = text(
+        """
+        SELECT COUNT(*)
+        FROM (
+            SELECT DISTINCT
+                locations.id AS location_id,
+                items.id AS type_id
+            FROM adam_market_orders_trade_raw AS raw
+            JOIN locations
+              ON locations.location_id = raw.location_id
+            JOIN items
+              ON items.type_id = raw.type_id
+            WHERE locations.id IN :target_location_ids
+              AND locations.region_id IN :source_region_ids
+              AND locations.location_type = :npc_location_type
+        ) AS candidate_keys
+        """
+    ).bindparams(
+        bindparam("target_location_ids", expanding=True),
+        bindparam("source_region_ids", expanding=True),
+    )
+    _TARGET_MARKET_STALE_CLEANUP_SQL = text(
+        """
+        DELETE FROM market_demand_resolved
+        WHERE location_id IN :target_location_ids
+          AND period_days = :period_days
+          AND demand_source = :demand_source
+          AND NOT EXISTS (
+              SELECT 1
+              FROM adam_market_orders_trade_raw AS raw
+              JOIN locations
+                ON locations.location_id = raw.location_id
+              JOIN items
+                ON items.type_id = raw.type_id
+              WHERE locations.id = market_demand_resolved.location_id
+                AND items.id = market_demand_resolved.type_id
+                AND locations.region_id IN :source_region_ids
+                AND locations.location_type = :npc_location_type
+          )
+        """
+    ).bindparams(
+        bindparam("target_location_ids", expanding=True),
+        bindparam("source_region_ids", expanding=True),
+    )
+    _TARGET_MARKET_REFRESH_SQL = text(
+        """
+        INSERT INTO market_demand_resolved (
+            location_id,
+            type_id,
+            period_days,
+            demand_source,
+            buy_from_sell_period,
+            sell_to_buy_period,
+            esi_live_valid_days,
+            esi_live_buy_from_sell_ratio_period,
+            esi_live_buy_from_sell_ratio_yesterday,
+            esi_live_fallback_reason,
+            computed_at
+        )
+        SELECT
+            aggregated.location_id,
+            aggregated.type_id,
+            :period_days,
+            :demand_source,
+            aggregated.buy_from_sell_period,
+            aggregated.sell_to_buy_period,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NOW()
+        FROM (
+            SELECT
+                scoped.location_id,
+                scoped.type_id,
+                COALESCE(SUM(CASE WHEN scoped.is_buy_order = 0 THEN scoped.amount ELSE 0 END), 0) AS buy_from_sell_period,
+                COALESCE(SUM(CASE WHEN scoped.is_buy_order = 1 THEN scoped.amount ELSE 0 END), 0) AS sell_to_buy_period
+            FROM (
+                SELECT
+                    locations.id AS location_id,
+                    items.id AS type_id,
+                    raw.is_buy_order,
+                    raw.amount,
+                    raw."scanDate",
+                    MAX(raw."scanDate") OVER (
+                        PARTITION BY locations.id, items.id
+                    ) AS latest_scan_date
+                FROM adam_market_orders_trade_raw AS raw
+                JOIN locations
+                  ON locations.location_id = raw.location_id
+                JOIN items
+                  ON items.type_id = raw.type_id
+                WHERE locations.id IN :target_location_ids
+                  AND locations.region_id IN :source_region_ids
+                  AND locations.location_type = :npc_location_type
+            ) AS scoped
+            WHERE scoped."scanDate" >= scoped.latest_scan_date - CAST(:lookback_days AS INTEGER)
+            GROUP BY scoped.location_id, scoped.type_id
+        ) AS aggregated
+        WHERE aggregated.buy_from_sell_period > 0
+        ON CONFLICT (location_id, type_id, period_days)
+        DO UPDATE SET
+            demand_source = EXCLUDED.demand_source,
+            buy_from_sell_period = EXCLUDED.buy_from_sell_period,
+            sell_to_buy_period = EXCLUDED.sell_to_buy_period,
+            esi_live_valid_days = EXCLUDED.esi_live_valid_days,
+            esi_live_buy_from_sell_ratio_period = EXCLUDED.esi_live_buy_from_sell_ratio_period,
+            esi_live_buy_from_sell_ratio_yesterday = EXCLUDED.esi_live_buy_from_sell_ratio_yesterday,
+            esi_live_fallback_reason = EXCLUDED.esi_live_fallback_reason,
+            computed_at = EXCLUDED.computed_at
+        """
+    ).bindparams(
+        bindparam("target_location_ids", expanding=True),
+        bindparam("source_region_ids", expanding=True),
+    )
 
     @classmethod
     def build_batch_preload(
@@ -144,11 +261,14 @@ class MarketDemandResolutionService:
         *,
         demand_keys: list[tuple[int, int]],
         period_days: int,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> int:
         if not demand_keys:
             return 0
+        deduped_keys = list(dict.fromkeys(demand_keys))
+        total = len(deduped_keys)
         refreshed_count = 0
-        for location_id, type_id in dict.fromkeys(demand_keys):
+        for index, (location_id, type_id) in enumerate(deduped_keys):
             result = self.upsert_for_location(
                 session,
                 location_id=location_id,
@@ -157,7 +277,115 @@ class MarketDemandResolutionService:
             )
             if result.row is not None:
                 refreshed_count += 1
+            if progress_callback is not None and (index % 500 == 0 or index == total - 1):
+                progress_callback(index + 1, total)
         return refreshed_count
+
+    def count_target_markets_from_adam(
+        self,
+        session: Session,
+        *,
+        target_location_ids: list[int],
+        source_region_ids: list[int],
+    ) -> int:
+        normalized_target_ids = sorted(set(target_location_ids))
+        normalized_region_ids = sorted(set(source_region_ids))
+        if not normalized_target_ids or not normalized_region_ids:
+            return 0
+
+        if session.get_bind().dialect.name != "postgresql":
+            return len(
+                self._target_market_demand_keys_from_adam(
+                    session,
+                    target_location_ids=normalized_target_ids,
+                    source_region_ids=normalized_region_ids,
+                )
+            )
+
+        return int(
+            session.execute(
+                self._TARGET_MARKET_KEY_COUNT_SQL,
+                {
+                    "target_location_ids": normalized_target_ids,
+                    "source_region_ids": normalized_region_ids,
+                    "npc_location_type": LocationType.NPC_STATION.value,
+                },
+            ).scalar_one()
+        )
+
+    def refresh_target_markets_from_adam(
+        self,
+        session: Session,
+        *,
+        target_location_ids: list[int],
+        source_region_ids: list[int],
+        period_days: int,
+    ) -> int:
+        normalized_target_ids = sorted(set(target_location_ids))
+        normalized_region_ids = sorted(set(source_region_ids))
+        if not normalized_target_ids or not normalized_region_ids:
+            return 0
+
+        if session.get_bind().dialect.name != "postgresql":
+            demand_keys = self._target_market_demand_keys_from_adam(
+                session,
+                target_location_ids=normalized_target_ids,
+                source_region_ids=normalized_region_ids,
+            )
+            return self.refresh_npc_keys_from_adam(
+                session,
+                demand_keys=demand_keys,
+                period_days=period_days,
+            )
+
+        result = session.execute(
+            self._TARGET_MARKET_REFRESH_SQL,
+            {
+                "target_location_ids": normalized_target_ids,
+                "source_region_ids": normalized_region_ids,
+                "period_days": period_days,
+                "lookback_days": max(period_days - 1, 0),
+                "npc_location_type": LocationType.NPC_STATION.value,
+                "demand_source": DemandSource.ADAM4EVE.value,
+            },
+        )
+        session.execute(
+            self._TARGET_MARKET_STALE_CLEANUP_SQL,
+            {
+                "target_location_ids": normalized_target_ids,
+                "source_region_ids": normalized_region_ids,
+                "period_days": period_days,
+                "npc_location_type": LocationType.NPC_STATION.value,
+                "demand_source": DemandSource.ADAM4EVE.value,
+            },
+        )
+        session.commit()
+        cursor_result = result if isinstance(result, CursorResult) else None
+        return max(cursor_result.rowcount or 0, 0) if cursor_result is not None else 0
+
+    def _target_market_demand_keys_from_adam(
+        self,
+        session: Session,
+        *,
+        target_location_ids: list[int],
+        source_region_ids: list[int],
+    ) -> list[tuple[int, int]]:
+        if not target_location_ids or not source_region_ids:
+            return []
+
+        rows = session.execute(
+            select(Location.id, Item.id)
+            .join(AdamMarketOrdersTradeRaw, Location.location_id == AdamMarketOrdersTradeRaw.c.location_id)
+            .join(Item, Item.type_id == AdamMarketOrdersTradeRaw.c.type_id)
+            .where(
+                Location.id.in_(target_location_ids),
+                Location.region_id.in_(source_region_ids),
+                Location.location_type == LocationType.NPC_STATION.value,
+            )
+            .distinct()
+            .order_by(Location.id.asc(), Item.id.asc())
+        ).all()
+        return [(int(location_id), int(type_id)) for location_id, type_id in rows]
 
     def upsert_for_location(
         self,
