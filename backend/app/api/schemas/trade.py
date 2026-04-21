@@ -52,6 +52,8 @@ class OpportunityItemRow(BaseModel):
     active_sell_orders_units_item: float
     source_station_sell_price: float
     target_station_sell_price: float
+    target_7d_price_delta: float | None = None
+    target_7d_vol_delta: float | None = None
     target_period_avg_price: float
     target_now_profit: float
     target_period_profit: float

@@ -47,6 +47,8 @@ export type OpportunityItem = {
   active_sell_orders_units_item: number;
   source_station_sell_price: number;
   target_station_sell_price: number;
+  target_7d_price_delta?: number | null;
+  target_7d_vol_delta?: number | null;
   target_period_avg_price: number;
   target_now_profit: number;
   target_period_profit: number;

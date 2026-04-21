@@ -15,6 +15,8 @@ export type GroupedSortKey =
   | "active_sell_orders_units"
   | "source_avg_price"
   | "target_now_price"
+  | "target_7d_price_delta"
+  | "target_7d_vol_delta"
   | "target_period_avg_price"
   | "target_now_profit"
   | "target_period_profit"
@@ -64,6 +66,8 @@ const SORTABLE_COLUMNS: Array<{ key: GroupedSortKey; label: string }> = [
   { key: "active_sell_orders_units", label: "Active Sell Orders" },
   { key: "source_avg_price", label: "Source Now Price" },
   { key: "target_now_price", label: "Target Now Price" },
+  { key: "target_7d_price_delta", label: "vs 7d Avg" },
+  { key: "target_7d_vol_delta", label: "vs 7d Vol" },
   { key: "target_period_avg_price", label: "Target Period Avg Price" },
   { key: "target_now_profit", label: "Target Now Profit" },
   { key: "target_period_profit", label: "Target Period Profit" },
@@ -98,6 +102,20 @@ function isNumericColumn(key: GroupedSortKey) {
   return key !== "name" && key !== "demand_source";
 }
 
+function headerColorClass(key: GroupedSortKey) {
+  switch (key) {
+    case "purchase_units":
+    case "source_avg_price":
+      return "metric-cell-source-price";
+    case "capital_required":
+      return "metric-cell-capital";
+    case "target_now_profit":
+      return "metric-cell-positive";
+    default:
+      return null;
+  }
+}
+
 function metricToneClass(value: number) {
   if (value > 0) {
     return "metric-cell-positive";
@@ -118,6 +136,7 @@ function formatWholePercent(value: number) {
 
 function summaryCellClass(row: SourceSummary, key: GroupedSortKey) {
   switch (key) {
+    case "purchase_units":
     case "source_avg_price":
       return "metric-cell-source-price";
     case "capital_required":
@@ -135,16 +154,25 @@ function summaryCellClass(row: SourceSummary, key: GroupedSortKey) {
   }
 }
 
+function itemQty(row: OpportunityItem) {
+  return Math.min(Math.ceil(row.target_demand_day), row.source_units_available);
+}
+
 function itemCellClass(row: OpportunityItem, key: GroupedSortKey) {
   switch (key) {
+    case "purchase_units":
     case "source_avg_price":
       return "metric-cell-source-price";
     case "capital_required":
       return "metric-cell-capital";
     case "target_now_profit":
-      return metricToneClass(row.target_now_profit);
+      return metricToneClass(row.target_now_profit * itemQty(row));
     case "target_period_profit":
-      return metricToneClass(row.target_period_profit);
+      return metricToneClass(row.target_period_profit * itemQty(row));
+    case "target_7d_price_delta":
+      return row.target_7d_price_delta != null ? metricToneClass(row.target_7d_price_delta) : null;
+    case "target_7d_vol_delta":
+      return row.target_7d_vol_delta != null ? metricToneClass(row.target_7d_vol_delta) : null;
     case "roi_now":
       return metricToneClass(row.roi_now);
     case "roi_period":
@@ -180,6 +208,10 @@ function summaryValue(row: SourceSummary, key: GroupedSortKey): number | string 
       return row.source_avg_price_weighted;
     case "target_now_price":
       return row.target_now_price_weighted;
+    case "target_7d_price_delta":
+      return 0;
+    case "target_7d_vol_delta":
+      return 0;
     case "target_period_avg_price":
       return row.target_period_avg_price_weighted;
     case "target_now_profit":
@@ -210,7 +242,7 @@ function itemValue(row: OpportunityItem, key: GroupedSortKey): number | string {
     case "source_security_status":
       return row.source_security_status;
     case "purchase_units":
-      return row.purchase_units;
+      return itemQty(row);
     case "source_units_available":
       return row.source_units_available;
     case "target_demand_day":
@@ -229,14 +261,18 @@ function itemValue(row: OpportunityItem, key: GroupedSortKey): number | string {
       return row.source_station_sell_price;
     case "target_now_price":
       return row.target_station_sell_price;
+    case "target_7d_price_delta":
+      return row.target_7d_price_delta ?? 0;
+    case "target_7d_vol_delta":
+      return row.target_7d_vol_delta ?? 0;
     case "target_period_avg_price":
       return row.target_period_avg_price;
     case "target_now_profit":
-      return row.target_now_profit;
+      return row.target_now_profit * itemQty(row);
     case "target_period_profit":
-      return row.target_period_profit;
+      return row.target_period_profit * itemQty(row);
     case "capital_required":
-      return row.capital_required;
+      return row.source_station_sell_price * itemQty(row);
     case "roi_now":
       return row.roi_now;
     case "roi_period":
@@ -288,6 +324,10 @@ function renderSummaryCell(row: SourceSummary, key: GroupedSortKey) {
       return formatWholeNumber(row.source_avg_price_weighted);
     case "target_now_price":
       return formatWholeNumber(row.target_now_price_weighted);
+    case "target_7d_price_delta":
+      return "-";
+    case "target_7d_vol_delta":
+      return "-";
     case "target_period_avg_price":
       return formatWholeNumber(row.target_period_avg_price_weighted);
     case "target_now_profit":
@@ -318,7 +358,7 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
     case "source_security_status":
       return row.source_security_status.toFixed(1);
     case "purchase_units":
-      return row.purchase_units;
+      return itemQty(row);
     case "source_units_available":
       return row.source_units_available;
     case "target_demand_day":
@@ -337,14 +377,22 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
       return formatWholeNumber(row.source_station_sell_price);
     case "target_now_price":
       return formatWholeNumber(row.target_station_sell_price);
+    case "target_7d_price_delta":
+      return row.target_7d_price_delta != null
+        ? `${row.target_7d_price_delta >= 0 ? "+" : ""}${(row.target_7d_price_delta * 100).toFixed(1)}%`
+        : "-";
+    case "target_7d_vol_delta":
+      return row.target_7d_vol_delta != null
+        ? `${row.target_7d_vol_delta >= 0 ? "+" : ""}${(row.target_7d_vol_delta * 100).toFixed(1)}%`
+        : "-";
     case "target_period_avg_price":
       return formatWholeNumber(row.target_period_avg_price);
     case "target_now_profit":
-      return formatWholeNumber(row.target_now_profit);
+      return formatWholeNumber(row.target_now_profit * itemQty(row));
     case "target_period_profit":
-      return formatWholeNumber(row.target_period_profit);
+      return formatWholeNumber(row.target_period_profit * itemQty(row));
     case "capital_required":
-      return formatWholeNumber(row.capital_required);
+      return formatWholeNumber(row.source_station_sell_price * itemQty(row));
     case "roi_now":
       return formatWholePercent(row.roi_now);
     case "roi_period":
@@ -386,6 +434,7 @@ export function SourceSummaryTable({
     y: number;
     itemName: string;
     url: string;
+    typeId: number;
   } | null>(null);
   const sortedRows = useMemo(() => sortSummaries(rows, sortKey, sortDirection), [rows, sortDirection, sortKey]);
   const sortedExpandedRows = useMemo(
@@ -450,6 +499,7 @@ export function SourceSummaryTable({
                   className={combineClasses(
                     column.key === "name" ? "source-market-item-col" : null,
                     isNumericColumn(column.key) ? "numeric-cell" : null,
+                    headerColorClass(column.key),
                   )}
                 >
                   <button
@@ -468,15 +518,15 @@ export function SourceSummaryTable({
           <tbody>
             {rows.length === 0 && isLoading ? (
               <tr>
-                <td colSpan={23}>Loading source markets for this target...</td>
+                <td colSpan={24}>Loading source markets for this target...</td>
               </tr>
             ) : rows.length === 0 && errorMessage ? (
               <tr>
-                <td colSpan={23}>{errorMessage}</td>
+                <td colSpan={24}>{errorMessage}</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={23}>No computed source markets available for this target yet.</td>
+                <td colSpan={24}>No computed source markets available for this target yet.</td>
               </tr>
             ) : (
               sortedRows.flatMap((row) => {
@@ -520,7 +570,7 @@ export function SourceSummaryTable({
                 if (isExpandedRowsLoading) {
                   renderedRows.push(
                     <tr key={`loading-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={23}>Loading item opportunities for this source...</td>
+                      <td colSpan={24}>Loading item opportunities for this source...</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -529,7 +579,7 @@ export function SourceSummaryTable({
                 if (expandedRowsErrorMessage) {
                   renderedRows.push(
                     <tr key={`error-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={23}>{expandedRowsErrorMessage}</td>
+                      <td colSpan={24}>{expandedRowsErrorMessage}</td>
                     </tr>,
                   );
                   return renderedRows;
@@ -538,11 +588,21 @@ export function SourceSummaryTable({
                 if (sortedExpandedRows.length === 0) {
                   renderedRows.push(
                     <tr key={`empty-${row.source_location_id}`} className="grouped-item-row">
-                      <td colSpan={23}>No item opportunities match the current filters for this source.</td>
+                      <td colSpan={24}>No item opportunities match the current filters for this source.</td>
                     </tr>,
                   );
                   return renderedRows;
                 }
+
+                renderedRows.push(
+                  <tr key={`summary-note-${row.source_location_id}`} className="grouped-item-row grouped-item-more-row">
+                    <td colSpan={24}>
+                      {visibleExpandedRows.length < sortedExpandedRows.length
+                        ? `Group totals reflect all ${sortedExpandedRows.length} filtered items for this source. Showing ${visibleExpandedRows.length} rows below.`
+                        : `Showing all ${sortedExpandedRows.length} filtered items for this source.`}
+                    </td>
+                  </tr>,
+                );
 
                 renderedRows.push(
                   ...visibleExpandedRows.map((item) => (
@@ -560,6 +620,7 @@ export function SourceSummaryTable({
                           y: event.clientY,
                           itemName: item.item_name,
                           url: item.market_browser_url,
+                          typeId: item.type_id,
                         });
                       }}
                     >
@@ -597,7 +658,7 @@ export function SourceSummaryTable({
                 if (visibleExpandedRows.length < sortedExpandedRows.length) {
                   renderedRows.push(
                     <tr key={`show-more-${row.source_location_id}`} className="grouped-item-row grouped-item-more-row">
-                      <td colSpan={23}>
+                      <td colSpan={24}>
                         <button
                           type="button"
                           className="inline-more-button"
@@ -633,6 +694,21 @@ export function SourceSummaryTable({
             }}
           >
             Open MarketBrowser
+          </button>
+          <button
+            type="button"
+            className="trade-context-menu__item"
+            role="menuitem"
+            onClick={() => {
+              window.open(
+                `https://dev.adam4eve.eu/price_history.php?typeID=${contextMenu.typeId}`,
+                "_blank",
+                "noopener,noreferrer",
+              );
+              setContextMenu(null);
+            }}
+          >
+            Open Adam4Eve
           </button>
         </div>
       ) : null}

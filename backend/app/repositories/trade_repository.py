@@ -1,9 +1,9 @@
 from datetime import UTC, datetime
 from typing import Any, Callable, cast
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.sql.elements import ColumnElement
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.api.schemas.trade import (
     InTransitAssetRecord,
@@ -394,12 +394,13 @@ class TradeRepository:
                 demand_source=demand_source,
                 min_esi_demand_day=min_esi_demand_day,
             )
+            item_qty = func.least(func.ceil(OpportunityItem.target_demand_day), OpportunityItem.source_units_available)
             rows = session.execute(
                 select(
                     OpportunityItem.source_location_id,
                     resolved_name,
                     (func.sum(OpportunityItem.source_security_status * weight) / total_weight),
-                    func.sum(OpportunityItem.purchase_units),
+                    func.sum(item_qty),
                     func.sum(OpportunityItem.source_units_available),
                     func.sum(OpportunityItem.target_demand_day),
                     func.sum(OpportunityItem.target_supply_units),
@@ -410,12 +411,12 @@ class TradeRepository:
                     (func.sum(OpportunityItem.source_station_sell_price * weight) / total_weight),
                     (func.sum(OpportunityItem.target_station_sell_price * weight) / total_weight),
                     (func.sum(OpportunityItem.target_period_avg_price * weight) / total_weight),
-                    func.sum(OpportunityItem.target_now_profit * OpportunityItem.purchase_units),
-                    func.sum(OpportunityItem.target_period_profit * OpportunityItem.purchase_units),
-                    func.sum(OpportunityItem.capital_required),
+                    func.sum(OpportunityItem.target_now_profit * item_qty),
+                    func.sum(OpportunityItem.target_period_profit * item_qty),
+                    func.sum(OpportunityItem.source_station_sell_price * item_qty),
                     (func.sum(OpportunityItem.roi_now * weight) / total_weight),
                     (func.sum(OpportunityItem.roi_period * weight) / total_weight),
-                    func.sum(OpportunityItem.item_volume_m3 * OpportunityItem.purchase_units),
+                    func.sum(OpportunityItem.item_volume_m3 * item_qty),
                     func.sum(OpportunityItem.shipping_cost),
                     demand_source_summary,
                     func.sum(OpportunityItem.esi_demand_day),
@@ -429,7 +430,7 @@ class TradeRepository:
                     *conditions,
                 )
                 .group_by(OpportunityItem.source_location_id, resolved_name)
-                .order_by(func.sum(OpportunityItem.target_now_profit * OpportunityItem.purchase_units).desc(), resolved_name.asc())
+                .order_by(func.sum(OpportunityItem.target_now_profit * item_qty).desc(), resolved_name.asc())
             ).all()
             if rows:
                 return [
@@ -556,11 +557,31 @@ class TradeRepository:
                 demand_source=demand_source,
                 min_esi_demand_day=min_esi_demand_day,
             )
+            from app.models.all_models import MarketPricePeriod, MarketVolumePeriod
+            mpp7 = aliased(MarketPricePeriod)
+            mvp7 = aliased(MarketVolumePeriod)
             rows = (
                 session.execute(
-                    select(OpportunityItem, Item.name, Item.type_id)
+                    select(
+                        OpportunityItem,
+                        Item.name,
+                        Item.type_id,
+                        mpp7.period_avg_price,
+                        mvp7.current_sell_volume,
+                        mvp7.period_avg_sell_volume,
+                    )
                     .join(Item, Item.id == OpportunityItem.type_id)
                     .join(Location, Location.id == OpportunityItem.source_location_id)
+                    .outerjoin(mpp7, and_(
+                        mpp7.location_id == OpportunityItem.target_location_id,
+                        mpp7.type_id == OpportunityItem.type_id,
+                        mpp7.period_days == 7,
+                    ))
+                    .outerjoin(mvp7, and_(
+                        mvp7.location_id == OpportunityItem.target_location_id,
+                        mvp7.type_id == OpportunityItem.type_id,
+                        mvp7.period_days == 7,
+                    ))
                     .where(
                         OpportunityItem.target_location_id == resolved_target_location_id,
                         OpportunityItem.source_location_id == resolved_source_location_id,
@@ -588,6 +609,18 @@ class TradeRepository:
                         active_sell_orders_units_item=item.active_sell_orders_units,
                         source_station_sell_price=item.source_station_sell_price,
                         target_station_sell_price=item.target_station_sell_price,
+                        target_7d_price_delta=(
+                            (item.target_station_sell_price - period_avg_7d) / period_avg_7d
+                            if period_avg_7d
+                            else None
+                        ),
+                        target_7d_vol_delta=(
+                            (current_sell_volume - period_avg_sell_volume) / period_avg_sell_volume
+                            if current_sell_volume is not None
+                            and period_avg_sell_volume is not None
+                            and period_avg_sell_volume > 0
+                            else None
+                        ),
                         target_period_avg_price=item.target_period_avg_price,
                         target_now_profit=item.target_now_profit,
                         target_period_profit=item.target_period_profit,
@@ -599,7 +632,14 @@ class TradeRepository:
                         demand_source=item.demand_source,
                         esi_demand_day=item.esi_demand_day,
                     )
-                    for item, item_name, external_type_id in rows
+                    for (
+                        item,
+                        item_name,
+                        external_type_id,
+                        period_avg_7d,
+                        current_sell_volume,
+                        period_avg_sell_volume,
+                    ) in rows
                 ]
             return []
         finally:
