@@ -1,6 +1,6 @@
 # Current task
 
-Switch `_generate_trade_period` (`prepare_trade_period`) in `service.py` to call `_refresh_market_demand_for_target_markets` instead of `_refresh_market_demand_for_keys` (the per-key Python loop). Before measurement complete: SQL path is ~590x faster (1.8s vs ~17min for 21,633 rows).
+Add stale row cleanup: after the INSERT...ON CONFLICT in `refresh_target_markets_from_adam`, DELETE `market_demand_resolved` rows for the same location_ids/period_days/demand_source that are no longer in Adam raw data.
 
 # End goal with specs
 
@@ -67,8 +67,8 @@ Run the same profiling script after changes. Save to `/tmp/demand_profile_after.
 
 # Backlog
 - [x] Write and run profiling script for BEFORE measurements (SQL: 1.8s/21633 rows; per-key: ~1046s; 590x speedup)
-- [ ] Switch _generate_trade_period to use _refresh_market_demand_for_target_markets <- current
-- [ ] Add stale row cleanup DELETE after INSERT...ON CONFLICT  
+- [x] Switch _generate_trade_period to use _refresh_market_demand_for_target_markets
+- [ ] Add stale row cleanup DELETE after INSERT...ON CONFLICT <- current
 - [ ] Run profiling script for AFTER measurements
 - [ ] Run full test suite and confirm 0 failures
 - [ ] Commit all changes with descriptive message
