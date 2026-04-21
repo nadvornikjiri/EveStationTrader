@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 ADAM4EVE_STATIC_BASE_URL = "https://static.adam4eve.eu"
 _MARKET_ORDERS_ROOT_PATH = "/MarketOrdersTrades/"
 _MARKET_PRICES_STATION_HISTORY_ROOT_PATH = "/MarketPricesStationHistory/"
+_VOLUME_STATION_HISTORY_ROOT_PATH = "/MarketVolumesStationHistory/"
 _YEAR_DIRECTORY_RE = re.compile(r"^(\d{4})/$")
 _WEEKLY_EXPORT_RE = re.compile(r"^marketOrderTrades_weekly_(\d{4})-(\d+)\.csv$")
 _WEEKLY_STATION_PRICE_EXPORT_RE = re.compile(r"^MarketPricesStationHistory_(hub|rest)_weekly_(\d{4})-(\d+)\.csv$")
+_WEEKLY_STATION_VOLUME_EXPORT_RE = re.compile(
+    r"^MarketVolumesStationHistory_(hub|rest)_weekly_(\d{4}-\d{2})\.csv$"
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,27 @@ class AdamStationPriceHistoryExport:
     path: str
     export_key: str
     covered_through_date: date
+
+
+@dataclass(frozen=True)
+class AdamStationVolumeHistoryExport:
+    file_name: str
+    hub_or_rest: str
+    week_str: str
+    url: str
+
+    @property
+    def path(self) -> str:
+        return self.url
+
+    @property
+    def export_key(self) -> str:
+        return f"{self.week_str}-{self.hub_or_rest}"
+
+    @property
+    def covered_through_date(self) -> date:
+        year_str, week_str = self.week_str.split("-", maxsplit=1)
+        return date.fromisocalendar(int(year_str), int(week_str), 7)
 
 
 class Adam4EveClient:
@@ -179,18 +204,59 @@ class Adam4EveClient:
                 for export in exports
             ]
 
+    def cache_station_volume_history_exports(
+        self,
+        *,
+        since_date: date | None,
+        session: Session | None = None,
+    ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]:
+        with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
+            exports = self._resolve_station_volume_history_exports(client, since_date=since_date)
+            return [
+                (
+                    export,
+                    self.import_service.cache_http_file(
+                        session,
+                        import_kind="adam_market_volume_history_daily",
+                        file_key=export.url,
+                        remote_path=export.url,
+                        client=client,
+                        covered_date=export.covered_through_date,
+                    ),
+                )
+                for export in exports
+            ]
+
     def _resolve_latest_market_orders_export(self, client: httpx.Client) -> AdamMarketOrdersExport:
         started_at = perf_counter()
-        exports = self._resolve_market_orders_exports(client, since_date=None)
-        if exports:
-            latest_export = exports[-1]
+        root_response = client.get(_MARKET_ORDERS_ROOT_PATH)
+        root_response.raise_for_status()
+        year_directories = self._extract_year_directories(root_response.text)
+        if not year_directories:
+            raise ValueError("Adam4EVE market orders CSV export could not be located.")
+
+        # Only check the latest year (and fall back to the previous year if empty)
+        for year in sorted(year_directories, reverse=True):
+            year_response = client.get(f"{_MARKET_ORDERS_ROOT_PATH}{year}/")
+            year_response.raise_for_status()
+            weekly_exports = self._extract_weekly_exports(year, year_response.text)
+            if not weekly_exports:
+                continue
+            latest_week, latest_name = max(weekly_exports)
+            export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{latest_name}"
+            covered_through_date = date.fromisocalendar(year, latest_week, 7)
+            latest_export = AdamMarketOrdersExport(
+                path=export_path,
+                export_key=f"{year}-{latest_week}",
+                covered_through_date=covered_through_date,
+            )
             logger.info(
-                "adam4eve profile phase=resolve_latest_market_orders_export elapsed_s=%.3f export_count=%s latest_export=%s",
+                "adam4eve profile phase=resolve_latest_market_orders_export elapsed_s=%.3f latest_export=%s",
                 perf_counter() - started_at,
-                len(exports),
                 latest_export.export_key,
             )
             return latest_export
+
         raise ValueError("Adam4EVE market orders CSV export could not be located.")
 
     def _resolve_market_orders_exports(
@@ -199,6 +265,12 @@ class Adam4EveClient:
         *,
         since_date: date | None,
     ) -> list[AdamMarketOrdersExport]:
+        """Resolve available market order exports using week numbers from filenames.
+
+        Uses ISO week end-date (Sunday) as covered_through_date instead of
+        downloading each CSV to parse scanDate — this avoids downloading
+        hundreds of multi-MB files just for date filtering.
+        """
         started_at = perf_counter()
         root_response = client.get(_MARKET_ORDERS_ROOT_PATH)
         root_response.raise_for_status()
@@ -214,23 +286,10 @@ class Adam4EveClient:
             year_response.raise_for_status()
             weekly_exports = self._extract_weekly_exports(year, year_response.text)
             for week, export_name in weekly_exports:
-                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
-                export_response = client.get(export_path)
-                export_response.raise_for_status()
-                scan_dates = []
-                for row in DictReader(StringIO(export_response.text), delimiter=";"):
-                    raw_scan_date = row.get("scanDate")
-                    if not raw_scan_date:
-                        continue
-                    try:
-                        scan_dates.append(date.fromisoformat(raw_scan_date))
-                    except ValueError:
-                        continue
-                if not scan_dates:
-                    continue
-                covered_through_date = max(scan_dates)
+                covered_through_date = date.fromisocalendar(year, week, 7)
                 if since_date is not None and covered_through_date <= since_date:
                     continue
+                export_path = f"{_MARKET_ORDERS_ROOT_PATH}{year}/{export_name}"
                 exports.append(
                     AdamMarketOrdersExport(
                         path=export_path,
@@ -308,6 +367,44 @@ class Adam4EveClient:
                 )
 
         return sorted(exports, key=lambda export: (export.covered_through_date, export.path))
+
+    def _resolve_station_volume_history_exports(
+        self,
+        client: httpx.Client,
+        *,
+        since_date: date | None,
+    ) -> list[AdamStationVolumeHistoryExport]:
+        root_response = client.get(_VOLUME_STATION_HISTORY_ROOT_PATH)
+        root_response.raise_for_status()
+        year_directories = self._extract_year_directories(root_response.text)
+        if not year_directories:
+            raise ValueError("Adam4EVE station volume history exports could not be located.")
+
+        exports: list[AdamStationVolumeHistoryExport] = []
+        minimum_year = since_date.year if since_date is not None else min(year_directories)
+        for year in sorted(year for year in year_directories if year >= minimum_year):
+            year_response = client.get(f"{_VOLUME_STATION_HISTORY_ROOT_PATH}{year}/")
+            year_response.raise_for_status()
+            for href in re.findall(r'href="([^"]+)"', year_response.text, flags=re.IGNORECASE):
+                match = _WEEKLY_STATION_VOLUME_EXPORT_RE.fullmatch(href)
+                if match is None:
+                    continue
+                week_str = match.group(2)
+                if int(week_str.split("-", maxsplit=1)[0]) != year:
+                    continue
+                covered_through_date = date.fromisocalendar(year, int(week_str.split("-", maxsplit=1)[1]), 7)
+                if since_date is not None and covered_through_date <= since_date:
+                    continue
+                exports.append(
+                    AdamStationVolumeHistoryExport(
+                        file_name=href,
+                        hub_or_rest=match.group(1),
+                        week_str=week_str,
+                        url=f"{_VOLUME_STATION_HISTORY_ROOT_PATH}{year}/{href}",
+                    )
+                )
+
+        return sorted(exports, key=lambda export: (export.covered_through_date, export.url))
 
     def _parse_station_price_history_csv(
         self,
