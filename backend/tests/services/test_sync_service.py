@@ -24,6 +24,7 @@ from app.models.all_models import (
     Location,
     MarketDemandResolved,
     MarketPricePeriod,
+    MarketVolumePeriod,
     NpcStationDemandPeriod,
     OpportunityItem,
     OpportunitySourceSummary,
@@ -43,7 +44,11 @@ from app.models.all_models import (
 )
 from app.repositories.seed_data import ItemSeed, RegionSeed, StaticFoundationSeedSource, StationSeed, SystemSeed
 from app.services.characters.service import CharacterService, DiscoveredStructureInput
-from app.services.adam4eve.client import AdamMarketOrdersExport, AdamStationPriceHistoryExport
+from app.services.adam4eve.client import (
+    AdamMarketOrdersExport,
+    AdamStationPriceHistoryExport,
+    AdamStationVolumeHistoryExport,
+)
 from app.services.adam4eve.history_ingestion import AdamStationPriceHistoryRecord
 from app.services.sync.bulk_imports import CachedImportFile
 from app.services.esi.client import EsiRegionalOrderRecord
@@ -514,11 +519,14 @@ class StubAdamClient:
         self,
         rows: list[AdamRawDemandRecord],
         history_rows_by_region: dict[int, list[AdamStationPriceHistoryRecord]] | None = None,
+        volume_history_rows_by_region: dict[int, list[dict[str, object]]] | None = None,
         cached_file_path: Path | None = None,
     ) -> None:
         self.rows = rows
         self.history_rows_by_region = history_rows_by_region or {}
+        self.volume_history_rows_by_region = volume_history_rows_by_region or {}
         self.history_calls: list[tuple[int, list[int], list[int], str | None]] = []
+        self.volume_history_calls: list[str | None] = []
         self.demand_calls: list[str | None] = []
         self.cached_file_path = cached_file_path
 
@@ -642,6 +650,49 @@ class StubAdamClient:
                         path=f"/MarketPricesStationHistory/{covered.year}/stub_{region_id}.csv",
                         export_key=f"{covered.year}-12-rest-{region_id}",
                         covered_through_date=covered,
+                    ),
+                    CachedImportFile(path=history_path, downloaded=False),
+                )
+            )
+        return cached_exports
+
+    def cache_station_volume_history_exports(
+        self,
+        *,
+        since_date: date | None,
+        session=None,
+    ):
+        del session
+        normalized_since = since_date.isoformat() if since_date is not None else None
+        self.volume_history_calls.append(normalized_since)
+        cached_exports: list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]] = []
+        for region_id, rows in self.volume_history_rows_by_region.items():
+            if not rows:
+                continue
+            covered = max(
+                row["date"] if isinstance(row["date"], date) else date.fromisoformat(cast(str, row["date"]))
+                for row in rows
+            )
+            history_path = Path(tempfile.gettempdir()) / f"stub_adam_volume_history_{region_id}.csv"
+            history_path.write_text(
+                "type_id;location_id;region_id;date;sell_volume_avg\n"
+                + "".join(
+                    (
+                        f"{row['type_id']};{row['location_id']};{row['region_id']};"
+                        f"{row['date'] if isinstance(row['date'], str) else cast(date, row['date']).isoformat()};"
+                        f"{row['sell_volume_avg'] if row['sell_volume_avg'] is not None else ''}\n"
+                    )
+                    for row in rows
+                ),
+                encoding="utf-8",
+            )
+            cached_exports.append(
+                (
+                    AdamStationVolumeHistoryExport(
+                        file_name=f"stub_{region_id}.csv",
+                        hub_or_rest="rest",
+                        week_str=f"{covered.isocalendar().year}-{covered.isocalendar().week:02d}",
+                        url=f"/MarketVolumesStationHistory/{covered.year}/stub_{region_id}.csv",
                     ),
                     CachedImportFile(path=history_path, downloaded=False),
                 )
@@ -1021,6 +1072,71 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
     assert result.status == "success"
     assert adam_client.history_calls != []
     assert any(row.period_days == 14 for row in price_rows)
+
+
+def test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_exports() -> None:
+    session = build_session()
+    region_id, target_location_id, _source_location_id, type_id = seed_raw_trade_inputs(session)
+    expected_since = datetime.now(UTC).date() - timedelta(days=14)
+    recent_date = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
+    target_internal_id = session.scalar(select(Location.id).where(Location.location_id == target_location_id))
+    item_internal_id = session.scalar(select(Item.id).where(Item.type_id == type_id))
+    region = session.scalar(select(Region).where(Region.region_id == region_id))
+    assert target_internal_id is not None
+    assert item_internal_id is not None
+    assert region is not None
+
+    adam_client = StubAdamClient(
+        [],
+        history_rows_by_region={
+            region_id: [
+                {
+                    "location_id": target_location_id,
+                    "region_id": region_id,
+                    "type_id": type_id,
+                    "date": recent_date,
+                    "buy_price_low": 110.0,
+                    "buy_price_avg": 115.0,
+                    "buy_price_high": 118.0,
+                    "sell_price_low": 110.0,
+                    "sell_price_avg": 120.0,
+                    "sell_price_high": 130.0,
+                }
+            ]
+        },
+        volume_history_rows_by_region={
+            region_id: [
+                {
+                    "location_id": target_location_id,
+                    "region_id": region_id,
+                    "type_id": type_id,
+                    "date": recent_date,
+                    "sell_volume_avg": 250,
+                }
+            ]
+        },
+    )
+    service = SyncService(session_factory=lambda: session, adam_client=adam_client)
+
+    service._sync_adam_regional_price_history(
+        session,
+        job_id=0,
+        regions=[region],
+        lookback_days=14,
+    )
+    volume_rows = session.scalars(
+        select(MarketVolumePeriod)
+        .where(
+            MarketVolumePeriod.location_id == target_internal_id,
+            MarketVolumePeriod.type_id == item_internal_id,
+        )
+        .order_by(MarketVolumePeriod.period_days.asc())
+    ).all()
+
+    assert adam_client.volume_history_calls == [expected_since.isoformat()]
+    assert [row.period_days for row in volume_rows] == [7, 14]
+    assert all(row.current_sell_volume == 250 for row in volume_rows)
+    assert all(row.period_avg_sell_volume == pytest.approx(250.0) for row in volume_rows)
 
 
 def test_trigger_job_foundation_import_sync_lists_newest_first() -> None:

@@ -1,5 +1,15 @@
 ## 2026-04-19
 
+- task id: `VOL-HISTORY-SYNC-PHASE-2026-04-19`
+- title: Wire Adam4EVE Volume History Into Regional History Sync
+- status: `PASS_WITH_ENV_GAPS`
+- summary: extended `_sync_adam_regional_price_history()` to run a follow-on Adam4EVE station volume export phase using the existing history workset, ingest volume CSVs through `AdamStationVolumeHistoryIngestionService`, and refresh touched `market_volume_period` rows for 7-day and 14-day windows. Added sync-test coverage with a volume-export stub to verify the new path creates the expected volume period rows.
+- validation:
+  - `cd backend && python3 -m py_compile app/services/sync/service.py tests/services/test_sync_service.py`
+  - note: `python`, `uv`, `pytest`, and `ruff` were not installed in the current shell environment, so the requested runtime validation commands could not be executed here
+
+## 2026-04-19
+
 - task id: `SETTINGS-SCOPED-STRUCTURE-ESI-SYNC-2026-04-19`
 - title: Restrict Structure ESI Sync To Selected Target Markets
 - status: `PASS_WITH_EXISTING_FAILURES`

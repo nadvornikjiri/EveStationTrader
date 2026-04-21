@@ -59,13 +59,19 @@ from app.models.all_models import (
     WorkerHeartbeat,
 )
 from app.repositories.seed_data import FoundationSeedSource, StationSeed
-from app.services.adam4eve.client import Adam4EveClient, AdamMarketOrdersExport, AdamStationPriceHistoryExport
+from app.services.adam4eve.client import (
+    Adam4EveClient,
+    AdamMarketOrdersExport,
+    AdamStationPriceHistoryExport,
+    AdamStationVolumeHistoryExport,
+)
 from app.services.adam4eve.history_ingestion import (
     AdamStationHistoryWorksetEntry,
     AdamStationPriceHistoryIngestionService,
     AdamStationPriceHistoryRecord,
 )
 from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
+from app.services.adam4eve.volume_ingestion import AdamStationVolumeHistoryIngestionService
 from app.services.demand.market_demand import MarketDemandResolutionService
 from app.services.everef.client import download_history_file, fetch_totals_json, get_available_dates
 from app.services.everef.history_ingestion import EveRefHistoryIngestionService
@@ -73,6 +79,7 @@ from app.services.esi.client import EsiClient, EsiRegionalOrderRecord
 from app.services.esi.orders_ingestion import EsiRegionOrderBatch, EsiRegionalOrderIngestionService
 from app.services.opportunities.generation import OpportunityGenerationService
 from app.services.pricing.market_price_periods import MarketPricePeriodService
+from app.services.pricing.market_volume_periods import MarketVolumePeriodService
 from app.services.settings_service import SettingsService
 from app.services.structures.demand_periods import StructureDemandPeriodService
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
@@ -139,6 +146,13 @@ class AdamDemandCapableClient(Protocol):
         since_date: date | None,
         session: Session | None = None,
     ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]: ...
+
+    def cache_station_volume_history_exports(
+        self,
+        *,
+        since_date: date | None,
+        session: Session | None = None,
+    ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]: ...
 
 
 @dataclass(frozen=True)
@@ -2968,6 +2982,12 @@ class SyncService:
         )
         if not cached_history_exports:
             self._record_history_check(session, synced_through_date=since_date)
+            self._sync_adam_regional_volume_history(
+                session,
+                job_id=job_id,
+                since_date=since_date,
+                workset_entries=workset_entries,
+            )
             return (0, 0, 0, 0)
 
         self._update_job_progress(
@@ -3053,7 +3073,69 @@ class SyncService:
                 default=since_date,
             ),
         )
+        self._sync_adam_regional_volume_history(
+            session,
+            job_id=job_id,
+            since_date=since_date,
+            workset_entries=workset_entries,
+        )
         return (total_history_processed, total_created, total_updated, total_price_rows)
+
+    def _sync_adam_regional_volume_history(
+        self,
+        session: Session,
+        *,
+        job_id: int,
+        since_date: date | None,
+        workset_entries: list[AdamStationHistoryWorksetEntry],
+    ) -> None:
+        cached_volume_exports = self.adam_client.cache_station_volume_history_exports(
+            since_date=since_date,
+            session=session,
+        )
+        logger.info(
+            "adam4eve volume sync starting file_count=%s since_date=%s",
+            len(cached_volume_exports),
+            since_date,
+        )
+
+        total_volume_processed = 0
+        total_volume_created = 0
+        total_volume_updated = 0
+        touched_volume_history_keys: list[tuple[int, int]] = []
+        for file_index, (export, cached_file) in enumerate(cached_volume_exports, start=1):
+            self._check_for_cancellation(session, job_id)
+            file_result = AdamStationVolumeHistoryIngestionService().ingest_region_history_file(
+                session,
+                csv_file_path=cached_file.path,
+                workset_entries=workset_entries,
+                since_date=since_date,
+            )
+            total_volume_processed += file_result.records_processed
+            total_volume_created += file_result.created
+            total_volume_updated += file_result.updated
+            touched_volume_history_keys.extend(file_result.touched_internal_keys)
+            logger.info(
+                "adam4eve volume sync ingested file=%s/%s export=%s rows=%s",
+                file_index,
+                len(cached_volume_exports),
+                export.export_key,
+                file_result.records_processed,
+            )
+
+        refreshed_volume_periods = MarketVolumePeriodService().refresh_touched_periods_from_history(
+            session,
+            location_type_keys=sorted(set(touched_volume_history_keys)),
+            period_days_list=[7, 14],
+        )
+        logger.info(
+            "adam4eve volume sync refreshed periods=%s touched_keys=%s processed=%s created=%s updated=%s",
+            refreshed_volume_periods,
+            len(set(touched_volume_history_keys)),
+            total_volume_processed,
+            total_volume_created,
+            total_volume_updated,
+        )
 
     def _history_sync_items(self, session: Session, *, region_ids: list[int]) -> list[Item]:
         if not region_ids:
