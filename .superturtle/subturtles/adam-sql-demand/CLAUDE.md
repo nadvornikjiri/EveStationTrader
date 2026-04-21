@@ -1,6 +1,6 @@
 # Current task
 
-Run profiling script for AFTER measurements to capture post-cleanup performance.
+All backlog items complete.
 
 # End goal with specs
 
@@ -69,6 +69,9 @@ Run the same profiling script after changes. Save to `/tmp/demand_profile_after.
 - [x] Write and run profiling script for BEFORE measurements (SQL: 1.8s/21633 rows; per-key: ~1046s; 590x speedup)
 - [x] Switch _generate_trade_period to use _refresh_market_demand_for_target_markets
 - [x] Add stale row cleanup DELETE after INSERT...ON CONFLICT
-- [ ] Run profiling script for AFTER measurements <- current
-- [ ] Run full test suite and confirm 0 failures
-- [ ] Commit all changes with descriptive message
+- [x] Run profiling script for AFTER measurements (SQL: 1.5s/21633 rows; 656x speedup vs per-key)
+- [x] Run full test suite and confirm 0 failures (36 passed)
+- [x] Commit all changes with descriptive message
+
+## Loop Control
+STOP
