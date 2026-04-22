@@ -288,6 +288,41 @@ AdamMarketOrdersTradeRaw = Table(
 )
 
 
+AdamPriceHistoryStage = Table(
+    "adam_price_history_stage",
+    Base.metadata,
+    Column("id", Integer, primary_key=True),
+    Column("location_id", BigInteger, nullable=False),
+    Column("region_id", Integer, nullable=False),
+    Column("type_id", Integer, nullable=False),
+    Column("date", Date, nullable=False),
+    Column("buy_price_low", Float, nullable=True),
+    Column("buy_price_avg", Float, nullable=True),
+    Column("buy_price_high", Float, nullable=True),
+    Column("sell_price_low", Float, nullable=True),
+    Column("sell_price_avg", Float, nullable=True),
+    Column("sell_price_high", Float, nullable=True),
+    Column("export_key", Text, nullable=False),
+    UniqueConstraint("location_id", "type_id", "date"),
+    Index("ix_adam_price_history_stage_export_key", "export_key"),
+)
+
+
+AdamVolumeHistoryStage = Table(
+    "adam_volume_history_stage",
+    Base.metadata,
+    Column("id", Integer, primary_key=True),
+    Column("location_id", BigInteger, nullable=False),
+    Column("region_id", Integer, nullable=False),
+    Column("type_id", Integer, nullable=False),
+    Column("date", Date, nullable=False),
+    Column("sell_volume_avg", BigInteger, nullable=True),
+    Column("export_key", Text, nullable=False),
+    UniqueConstraint("location_id", "type_id", "date"),
+    Index("ix_adam_volume_history_stage_export_key", "export_key"),
+)
+
+
 AdamMarketPriceHistoryRaw = Table(
     "adam_market_price_history_raw",
     Base.metadata,
