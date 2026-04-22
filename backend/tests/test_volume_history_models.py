@@ -1,23 +1,23 @@
 from typing import cast
 
-from sqlalchemy import BigInteger, Float, Index, Table, UniqueConstraint
+from sqlalchemy import BigInteger, Float, Index, Table, Text, UniqueConstraint
 
 from app.models.all_models import (
     AdamMarketVolumeHistoryDaily,
-    AdamMarketVolumeHistoryRaw,
+    AdamVolumeHistoryStage,
     MarketVolumePeriod,
 )
 
 
-def test_adam_market_volume_history_raw_metadata_matches_expected_schema() -> None:
-    assert AdamMarketVolumeHistoryRaw.name == "adam_market_volume_history_raw"
-    assert isinstance(AdamMarketVolumeHistoryRaw.c.location_id.type, BigInteger)
-    assert isinstance(AdamMarketVolumeHistoryRaw.c.region_id.type, BigInteger)
-    assert isinstance(AdamMarketVolumeHistoryRaw.c.sell_volume_avg.type, BigInteger)
+def test_adam_volume_history_stage_metadata_matches_expected_schema() -> None:
+    assert AdamVolumeHistoryStage.name == "adam_volume_history_stage"
+    assert isinstance(AdamVolumeHistoryStage.c.location_id.type, BigInteger)
+    assert isinstance(AdamVolumeHistoryStage.c.sell_volume_avg.type, BigInteger)
+    assert isinstance(AdamVolumeHistoryStage.c.export_key.type, Text)
 
     unique_constraints = [
         constraint
-        for constraint in AdamMarketVolumeHistoryRaw.constraints
+        for constraint in AdamVolumeHistoryStage.constraints
         if isinstance(constraint, UniqueConstraint)
     ]
     assert any(
@@ -25,8 +25,8 @@ def test_adam_market_volume_history_raw_metadata_matches_expected_schema() -> No
         for constraint in unique_constraints
     )
     assert any(
-        isinstance(index, Index) and tuple(index.columns.keys()) == ("location_id", "type_id")
-        for index in AdamMarketVolumeHistoryRaw.indexes
+        isinstance(index, Index) and "export_key" in index.columns
+        for index in AdamVolumeHistoryStage.indexes
     )
 
 

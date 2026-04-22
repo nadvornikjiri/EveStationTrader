@@ -324,19 +324,6 @@ AdamVolumeHistoryStage = Table(
 
 
 
-AdamMarketVolumeHistoryRaw = Table(
-    "adam_market_volume_history_raw",
-    Base.metadata,
-    Column("location_id", BigInteger, nullable=False),
-    Column("region_id", BigInteger, nullable=False),
-    Column("type_id", Integer, nullable=False),
-    Column("date", Date, nullable=False),
-    Column("sell_volume_avg", BigInteger, nullable=False),
-    UniqueConstraint("location_id", "type_id", "date"),
-    Index("ix_adam_market_volume_history_raw_location_id_type_id", "location_id", "type_id"),
-)
-
-
 class AdamMarketVolumeHistoryDaily(Base):
     __tablename__ = "adam_market_volume_history_daily"
     __table_args__ = (
