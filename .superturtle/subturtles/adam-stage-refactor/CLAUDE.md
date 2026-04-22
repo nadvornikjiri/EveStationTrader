@@ -62,8 +62,8 @@ Rewrite history_ingestion.py: load_csv_to_stage + populate_daily_from_stage + st
 # Backlog
 - [x] Create Alembic migration: add adam_price_history_stage + adam_volume_history_stage, drop raw tables
 - [x] Add new Table objects in all_models.py (AdamPriceHistoryStage + AdamVolumeHistoryStage added; Raw objects retained until ingestion rewrite removes them)
-- [ ] Rewrite history_ingestion.py: load_csv_to_stage + populate_daily_from_stage + stage_has_export_key; remove AdamMarketPriceHistoryRaw from all_models + __init__ <- current
-- [ ] Rewrite volume_ingestion.py: same pattern
+- [x] Rewrite history_ingestion.py: load_csv_to_stage + populate_daily_from_stage + stage_has_export_key; remove AdamMarketPriceHistoryRaw from all_models + __init__
+- [ ] Rewrite volume_ingestion.py: same pattern <- current
 - [ ] Update service.py: _sync_adam_regional_price_history loop → stage then populate, same for volume
 - [ ] Update _clear_adam4eve_data to clear stage tables
 - [ ] Update test_adam4eve_ingestion.py for new API

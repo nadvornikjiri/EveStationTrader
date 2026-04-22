@@ -323,21 +323,6 @@ AdamVolumeHistoryStage = Table(
 )
 
 
-AdamMarketPriceHistoryRaw = Table(
-    "adam_market_price_history_raw",
-    Base.metadata,
-    Column("location_id", BigInteger, nullable=False),
-    Column("region_id", Integer, nullable=False),
-    Column("type_id", Integer, nullable=False),
-    Column("date", Date, nullable=False),
-    Column("buy_price_low", Float, nullable=True),
-    Column("buy_price_avg", Float, nullable=True),
-    Column("buy_price_high", Float, nullable=True),
-    Column("sell_price_low", Float, nullable=True),
-    Column("sell_price_avg", Float, nullable=True),
-    Column("sell_price_high", Float, nullable=True),
-)
-
 
 AdamMarketVolumeHistoryRaw = Table(
     "adam_market_volume_history_raw",

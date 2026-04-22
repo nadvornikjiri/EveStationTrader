@@ -1,6 +1,5 @@
 from app.models.all_models import (
     AdamMarketPriceHistoryDaily,
-    AdamMarketPriceHistoryRaw,
     AdamPriceHistoryStage,
     AdamMarketVolumeHistoryDaily,
     AdamMarketVolumeHistoryRaw,
@@ -36,7 +35,6 @@ from app.models.all_models import (
 
 __all__ = [
     "AdamMarketPriceHistoryDaily",
-    "AdamMarketPriceHistoryRaw",
     "AdamPriceHistoryStage",
     "AdamMarketVolumeHistoryDaily",
     "AdamMarketVolumeHistoryRaw",
