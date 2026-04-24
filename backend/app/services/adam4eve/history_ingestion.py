@@ -2,14 +2,18 @@ from csv import DictReader
 from dataclasses import dataclass
 from datetime import date
 from io import StringIO
+import logging
 from pathlib import Path
+from time import perf_counter
 from typing import TypedDict
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.all_models import AdamMarketPriceHistoryDaily, Item, Location, Region
 from app.services.postgres_copy import copy_delimited_file
+
+logger = logging.getLogger(__name__)
 
 
 class AdamStationPriceHistoryRecord(TypedDict):
@@ -64,6 +68,62 @@ _COPYABLE_COLUMNS = {
     "sell_volume_high",
 }
 
+_CREATE_TEMP_TABLE_SQL = """
+    CREATE TEMP TABLE IF NOT EXISTS adam_price_history_file_stage (
+        type_id INTEGER NULL,
+        location_id BIGINT NULL,
+        region_id INTEGER NULL,
+        date DATE NULL,
+        price_date DATE NULL,
+        buy_price_low DOUBLE PRECISION NULL,
+        buy_price_avg DOUBLE PRECISION NULL,
+        buy_price_high DOUBLE PRECISION NULL,
+        sell_price_low DOUBLE PRECISION NULL,
+        sell_price_avg DOUBLE PRECISION NULL,
+        sell_price_high DOUBLE PRECISION NULL,
+        buy_volume_low DOUBLE PRECISION NULL,
+        buy_volume_avg DOUBLE PRECISION NULL,
+        buy_volume_high DOUBLE PRECISION NULL,
+        sell_volume_low DOUBLE PRECISION NULL,
+        sell_volume_avg DOUBLE PRECISION NULL,
+        sell_volume_high DOUBLE PRECISION NULL
+    )
+"""
+
+_INSERT_FROM_TEMP_SQL = """
+    INSERT INTO adam_market_price_history_daily (
+        location_id, type_id, date, average, highest, lowest, order_count, volume
+    )
+    SELECT
+        locations.id,
+        items.id,
+        COALESCE(t.date, t.price_date),
+        t.sell_price_avg,
+        t.sell_price_high,
+        t.sell_price_low,
+        0,
+        0
+    FROM adam_price_history_file_stage t
+    JOIN locations ON locations.location_id = t.location_id
+    JOIN items ON items.type_id = t.type_id
+    WHERE t.type_id IS NOT NULL
+      AND t.location_id IS NOT NULL
+      AND COALESCE(t.date, t.price_date) IS NOT NULL
+      AND t.sell_price_avg IS NOT NULL
+      AND t.sell_price_high IS NOT NULL
+      AND t.sell_price_low IS NOT NULL
+"""
+
+_TOUCHED_KEYS_SQL = """
+    SELECT DISTINCT locations.id, items.id
+    FROM adam_price_history_file_stage t
+    JOIN locations ON locations.location_id = t.location_id
+    JOIN items ON items.type_id = t.type_id
+    WHERE t.type_id IS NOT NULL
+      AND t.location_id IS NOT NULL
+    ORDER BY locations.id ASC, items.id ASC
+"""
+
 
 def _copy_columns_for_price_csv(csv_file_path: str | Path) -> tuple[str, ...]:
     with Path(csv_file_path).open("r", encoding="utf-8") as source:
@@ -80,6 +140,66 @@ def _copy_columns_for_price_csv(csv_file_path: str | Path) -> tuple[str, ...]:
         raise ValueError("Adam4EVE station price history export is missing required columns.")
     return normalized
 
+
+def truncate_price_history_daily(session: Session) -> None:
+    """Clear all rows from the daily table before a full reimport."""
+    session.execute(text("TRUNCATE TABLE adam_market_price_history_daily"))
+
+
+def import_price_csv_to_daily(session: Session, csv_file_path: str | Path) -> list[tuple[int, int]]:
+    """COPY a CSV into a temp table, then INSERT directly into the daily table with ID translation.
+
+    Returns the list of (location_id, type_id) internal key pairs touched.
+    """
+    csv_path = Path(csv_file_path)
+    if csv_path.stat().st_size == 0:
+        return []
+    file_size_bytes = csv_path.stat().st_size
+
+    stage_columns = _copy_columns_for_price_csv(csv_file_path)
+
+    session.execute(text(_CREATE_TEMP_TABLE_SQL))
+    session.execute(text("TRUNCATE TABLE adam_price_history_file_stage"))
+
+    copy_started_at = perf_counter()
+    copy_delimited_file(
+        session,
+        table_name="adam_price_history_file_stage",
+        file_path=csv_file_path,
+        columns=stage_columns,
+    )
+    logger.info(
+        "adam4eve profile phase=price_history_copy_to_temp elapsed_s=%.3f file=%s file_size_mb=%.2f column_count=%s",
+        perf_counter() - copy_started_at,
+        csv_path.name,
+        file_size_bytes / (1024 * 1024),
+        len(stage_columns),
+    )
+
+    insert_started_at = perf_counter()
+    session.execute(text(_INSERT_FROM_TEMP_SQL))
+    logger.info(
+        "adam4eve profile phase=price_history_insert_from_temp elapsed_s=%.3f file=%s",
+        perf_counter() - insert_started_at,
+        csv_path.name,
+    )
+
+    touched_started_at = perf_counter()
+    touched = session.execute(text(_TOUCHED_KEYS_SQL)).all()
+    touched_keys = [(int(loc_id), int(type_id)) for loc_id, type_id in touched]
+    logger.info(
+        "adam4eve profile phase=price_history_load_touched_keys elapsed_s=%.3f file=%s touched_keys=%s",
+        perf_counter() - touched_started_at,
+        csv_path.name,
+        len(touched_keys),
+    )
+    return touched_keys
+
+
+
+# ---------------------------------------------------------------------------
+# ORM-based helpers (used for non-PostgreSQL backends / tests)
+# ---------------------------------------------------------------------------
 
 def _records_from_price_csv(csv_file_path: str | Path) -> list[AdamStationPriceHistoryRecord]:
     csv_text = Path(csv_file_path).read_text(encoding="utf-8")
@@ -127,170 +247,6 @@ def _record_date(record: AdamStationPriceHistoryRecord) -> date:
     return date.fromisoformat(record["date"]) if isinstance(record["date"], str) else record["date"]
 
 
-def stage_has_export_key(session: Session, export_key: str) -> bool:
-    result = session.execute(
-        text("SELECT 1 FROM adam_price_history_stage WHERE export_key = :key LIMIT 1"),
-        {"key": export_key},
-    )
-    return result.first() is not None
-
-
-def load_csv_to_stage(session: Session, csv_file_path: str | Path, export_key: str) -> None:
-    csv_path = Path(csv_file_path)
-    if csv_path.stat().st_size == 0:
-        return
-
-    stage_columns = _copy_columns_for_price_csv(csv_file_path)
-
-    session.execute(
-        text(
-            """
-            CREATE TEMP TABLE IF NOT EXISTS adam_price_history_file_stage (
-                type_id TEXT NULL,
-                location_id TEXT NULL,
-                region_id TEXT NULL,
-                date TEXT NULL,
-                price_date TEXT NULL,
-                buy_price_low TEXT NULL,
-                buy_price_avg TEXT NULL,
-                buy_price_high TEXT NULL,
-                sell_price_low TEXT NULL,
-                sell_price_avg TEXT NULL,
-                sell_price_high TEXT NULL,
-                buy_volume_low TEXT NULL,
-                buy_volume_avg TEXT NULL,
-                buy_volume_high TEXT NULL,
-                sell_volume_low TEXT NULL,
-                sell_volume_avg TEXT NULL,
-                sell_volume_high TEXT NULL
-            )
-            """
-        )
-    )
-    session.execute(text("TRUNCATE TABLE adam_price_history_file_stage"))
-
-    copy_delimited_file(
-        session,
-        table_name="adam_price_history_file_stage",
-        file_path=csv_file_path,
-        columns=stage_columns,
-    )
-
-    session.execute(
-        text(
-            """
-            INSERT INTO adam_price_history_stage (
-                location_id, region_id, type_id, date,
-                buy_price_low, buy_price_avg, buy_price_high,
-                sell_price_low, sell_price_avg, sell_price_high,
-                export_key
-            )
-            SELECT
-                CAST(BTRIM(location_id) AS BIGINT),
-                CAST(BTRIM(region_id) AS INTEGER),
-                CAST(BTRIM(type_id) AS INTEGER),
-                CAST(COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) AS DATE),
-                CAST(NULLIF(BTRIM(buy_price_low), '') AS DOUBLE PRECISION),
-                CAST(NULLIF(BTRIM(buy_price_avg), '') AS DOUBLE PRECISION),
-                CAST(NULLIF(BTRIM(buy_price_high), '') AS DOUBLE PRECISION),
-                CAST(NULLIF(BTRIM(sell_price_low), '') AS DOUBLE PRECISION),
-                CAST(NULLIF(BTRIM(sell_price_avg), '') AS DOUBLE PRECISION),
-                CAST(NULLIF(BTRIM(sell_price_high), '') AS DOUBLE PRECISION),
-                :export_key
-            FROM adam_price_history_file_stage
-            WHERE type_id IS NOT NULL
-              AND BTRIM(type_id) <> '' AND BTRIM(type_id) <> 'type_id'
-              AND location_id IS NOT NULL
-              AND BTRIM(location_id) <> '' AND BTRIM(location_id) <> 'location_id'
-              AND region_id IS NOT NULL
-              AND BTRIM(region_id) <> '' AND BTRIM(region_id) <> 'region_id'
-              AND COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) IS NOT NULL
-              AND COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) NOT IN ('date', 'price_date')
-            ON CONFLICT (location_id, type_id, date)
-            DO UPDATE SET
-                region_id = EXCLUDED.region_id,
-                buy_price_low = EXCLUDED.buy_price_low,
-                buy_price_avg = EXCLUDED.buy_price_avg,
-                buy_price_high = EXCLUDED.buy_price_high,
-                sell_price_low = EXCLUDED.sell_price_low,
-                sell_price_avg = EXCLUDED.sell_price_avg,
-                sell_price_high = EXCLUDED.sell_price_high,
-                export_key = EXCLUDED.export_key
-            """
-        ),
-        {"export_key": export_key},
-    )
-
-
-def populate_daily_from_stage(
-    session: Session,
-    since_date: date | None,
-) -> list[tuple[int, int]]:
-    date_filter = "AND stage.date > :since_date" if since_date is not None else ""
-    params: dict[str, object] = {}
-    if since_date is not None:
-        params["since_date"] = since_date
-
-    session.execute(
-        text(
-            f"""
-            DELETE FROM adam_market_price_history_daily AS daily
-            USING adam_price_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            WHERE daily.location_id = locations.id
-              AND daily.type_id = items.id
-              AND daily.date = stage.date
-              {date_filter}
-            """
-        ),
-        params,
-    )
-
-    session.execute(
-        text(
-            f"""
-            INSERT INTO adam_market_price_history_daily (
-                location_id, type_id, date, average, highest, lowest, order_count, volume
-            )
-            SELECT
-                locations.id,
-                items.id,
-                stage.date,
-                stage.sell_price_avg,
-                stage.sell_price_high,
-                stage.sell_price_low,
-                0,
-                0
-            FROM adam_price_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            WHERE stage.sell_price_avg IS NOT NULL
-              AND stage.sell_price_high IS NOT NULL
-              AND stage.sell_price_low IS NOT NULL
-              {date_filter}
-            """
-        ),
-        params,
-    )
-
-    touched = session.execute(
-        text(
-            f"""
-            SELECT DISTINCT locations.id, items.id
-            FROM adam_price_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            {'WHERE stage.date > :since_date' if since_date is not None else ''}
-            ORDER BY locations.id ASC, items.id ASC
-            """
-        ),
-        params,
-    ).all()
-
-    return [(loc_id, type_id) for loc_id, type_id in touched]
-
-
 class AdamStationPriceHistoryIngestionService:
     def ingest_region_history_file(
         self,
@@ -319,9 +275,7 @@ class AdamStationPriceHistoryIngestionService:
                 region_id=0, records_processed=0, created=0, updated=0, touched_internal_keys=[],
             )
 
-        export_key = str(csv_file_path)
-        load_csv_to_stage(session, csv_file_path, export_key)
-        touched_internal_keys = populate_daily_from_stage(session, since_date)
+        touched_internal_keys = import_price_csv_to_daily(session, csv_file_path)
         session.commit()
         return AdamStationPriceHistoryIngestionResult(
             region_id=0,
@@ -413,6 +367,7 @@ class AdamStationPriceHistoryIngestionService:
         transformed_dates = sorted(
             {date.fromisoformat(r["date"]) if isinstance(r["date"], str) else r["date"] for r in known_records}
         )
+        from sqlalchemy import delete
         session.execute(
             delete(AdamMarketPriceHistoryDaily).where(
                 AdamMarketPriceHistoryDaily.location_id.in_(location_lookup.values()),

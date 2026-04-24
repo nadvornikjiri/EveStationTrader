@@ -1,10 +1,12 @@
 from csv import DictReader
 from datetime import date
 from io import StringIO
+import logging
 from pathlib import Path
+from time import perf_counter
 from typing import TypedDict
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.all_models import AdamMarketVolumeHistoryDaily, Item, Location, Region
@@ -13,6 +15,8 @@ from app.services.adam4eve.history_ingestion import (
     AdamStationPriceHistoryIngestionResult,
 )
 from app.services.postgres_copy import copy_delimited_file
+
+logger = logging.getLogger(__name__)
 
 
 class AdamStationVolumeHistoryRecord(TypedDict):
@@ -37,144 +41,49 @@ _COPYABLE_COLUMNS = {
     "sell_volume_high",
 }
 
-
-def volume_stage_has_export_key(session: Session, export_key: str) -> bool:
-    result = session.execute(
-        text("SELECT 1 FROM adam_volume_history_stage WHERE export_key = :key LIMIT 1"),
-        {"key": export_key},
+_CREATE_VOLUME_TEMP_TABLE_SQL = """
+    CREATE TEMP TABLE IF NOT EXISTS adam_volume_history_file_stage (
+        type_id INTEGER NULL,
+        location_id BIGINT NULL,
+        region_id INTEGER NULL,
+        date DATE NULL,
+        price_date DATE NULL,
+        buy_volume_low DOUBLE PRECISION NULL,
+        buy_volume_avg DOUBLE PRECISION NULL,
+        buy_volume_high DOUBLE PRECISION NULL,
+        sell_volume_low DOUBLE PRECISION NULL,
+        sell_volume_avg BIGINT NULL,
+        sell_volume_high DOUBLE PRECISION NULL
     )
-    return result.first() is not None
+"""
 
-
-def load_volume_to_stage(session: Session, csv_file_path: str | Path, export_key: str) -> None:
-    csv_path = Path(csv_file_path)
-    if csv_path.stat().st_size == 0:
-        return
-
-    stage_columns = _copy_columns_for_volume_csv(csv_file_path)
-
-    session.execute(
-        text(
-            """
-            CREATE TEMP TABLE IF NOT EXISTS adam_volume_history_file_stage (
-                type_id TEXT NULL,
-                location_id TEXT NULL,
-                region_id TEXT NULL,
-                date TEXT NULL,
-                price_date TEXT NULL,
-                buy_volume_low TEXT NULL,
-                buy_volume_avg TEXT NULL,
-                buy_volume_high TEXT NULL,
-                sell_volume_low TEXT NULL,
-                sell_volume_avg TEXT NULL,
-                sell_volume_high TEXT NULL
-            )
-            """
-        )
+_INSERT_VOLUME_FROM_TEMP_SQL = """
+    INSERT INTO adam_market_volume_history_daily (
+        location_id, type_id, date, sell_volume_avg
     )
-    session.execute(text("TRUNCATE TABLE adam_volume_history_file_stage"))
+    SELECT
+        locations.id,
+        items.id,
+        COALESCE(t.date, t.price_date),
+        t.sell_volume_avg
+    FROM adam_volume_history_file_stage t
+    JOIN locations ON locations.location_id = t.location_id
+    JOIN items ON items.type_id = t.type_id
+    WHERE t.type_id IS NOT NULL
+      AND t.location_id IS NOT NULL
+      AND COALESCE(t.date, t.price_date) IS NOT NULL
+      AND t.sell_volume_avg IS NOT NULL
+"""
 
-    copy_delimited_file(
-        session,
-        table_name="adam_volume_history_file_stage",
-        file_path=csv_file_path,
-        columns=stage_columns,
-    )
-
-    session.execute(
-        text(
-            """
-            INSERT INTO adam_volume_history_stage (
-                location_id, region_id, type_id, date, sell_volume_avg, export_key
-            )
-            SELECT
-                CAST(BTRIM(location_id) AS BIGINT),
-                CAST(BTRIM(region_id) AS INTEGER),
-                CAST(BTRIM(type_id) AS INTEGER),
-                CAST(COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) AS DATE),
-                CAST(NULLIF(BTRIM(sell_volume_avg), '') AS BIGINT),
-                :export_key
-            FROM adam_volume_history_file_stage
-            WHERE type_id IS NOT NULL
-              AND BTRIM(type_id) <> '' AND BTRIM(type_id) <> 'type_id'
-              AND location_id IS NOT NULL
-              AND BTRIM(location_id) <> '' AND BTRIM(location_id) <> 'location_id'
-              AND region_id IS NOT NULL
-              AND BTRIM(region_id) <> '' AND BTRIM(region_id) <> 'region_id'
-              AND COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) IS NOT NULL
-              AND COALESCE(NULLIF(BTRIM(date), ''), NULLIF(BTRIM(price_date), '')) NOT IN ('date', 'price_date')
-            ON CONFLICT (location_id, type_id, date)
-            DO UPDATE SET
-                region_id = EXCLUDED.region_id,
-                sell_volume_avg = EXCLUDED.sell_volume_avg,
-                export_key = EXCLUDED.export_key
-            """
-        ),
-        {"export_key": export_key},
-    )
-
-
-def populate_volume_daily_from_stage(
-    session: Session,
-    since_date: date | None,
-) -> list[tuple[int, int]]:
-    date_filter = "AND stage.date > :since_date" if since_date is not None else ""
-    params: dict[str, object] = {}
-    if since_date is not None:
-        params["since_date"] = since_date
-
-    session.execute(
-        text(
-            f"""
-            DELETE FROM adam_market_volume_history_daily AS daily
-            USING adam_volume_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            WHERE daily.location_id = locations.id
-              AND daily.type_id = items.id
-              AND daily.date = stage.date
-              {date_filter}
-            """
-        ),
-        params,
-    )
-
-    session.execute(
-        text(
-            f"""
-            INSERT INTO adam_market_volume_history_daily (
-                location_id, type_id, date, sell_volume_avg
-            )
-            SELECT
-                locations.id,
-                items.id,
-                stage.date,
-                stage.sell_volume_avg
-            FROM adam_volume_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            WHERE stage.sell_volume_avg IS NOT NULL
-              {date_filter}
-            """
-        ),
-        params,
-    )
-
-    touched = session.execute(
-        text(
-            f"""
-            SELECT DISTINCT locations.id, items.id
-            FROM adam_volume_history_stage AS stage
-            JOIN locations ON locations.location_id = stage.location_id
-            JOIN items ON items.type_id = stage.type_id
-            {'WHERE stage.date > :since_date' if since_date is not None else ''}
-            ORDER BY locations.id ASC, items.id ASC
-            """
-        ),
-        params,
-    ).all()
-
-    return [(loc_id, type_id) for loc_id, type_id in touched]
+_TOUCHED_VOLUME_KEYS_SQL = """
+    SELECT DISTINCT locations.id, items.id
+    FROM adam_volume_history_file_stage t
+    JOIN locations ON locations.location_id = t.location_id
+    JOIN items ON items.type_id = t.type_id
+    WHERE t.type_id IS NOT NULL
+      AND t.location_id IS NOT NULL
+    ORDER BY locations.id ASC, items.id ASC
+"""
 
 
 def _copy_columns_for_volume_csv(csv_file_path: str | Path) -> tuple[str, ...]:
@@ -192,6 +101,66 @@ def _copy_columns_for_volume_csv(csv_file_path: str | Path) -> tuple[str, ...]:
         raise ValueError("Adam4EVE station volume history export is missing required columns.")
     return normalized
 
+
+def truncate_volume_history_daily(session: Session) -> None:
+    """Clear all rows from the volume daily table before a full reimport."""
+    session.execute(text("TRUNCATE TABLE adam_market_volume_history_daily"))
+
+
+def import_volume_csv_to_daily(session: Session, csv_file_path: str | Path) -> list[tuple[int, int]]:
+    """COPY a CSV into a temp table, then INSERT directly into the volume daily table with ID translation.
+
+    Returns the list of (location_id, type_id) internal key pairs touched.
+    """
+    csv_path = Path(csv_file_path)
+    if csv_path.stat().st_size == 0:
+        return []
+    file_size_bytes = csv_path.stat().st_size
+
+    stage_columns = _copy_columns_for_volume_csv(csv_file_path)
+
+    session.execute(text(_CREATE_VOLUME_TEMP_TABLE_SQL))
+    session.execute(text("TRUNCATE TABLE adam_volume_history_file_stage"))
+
+    copy_started_at = perf_counter()
+    copy_delimited_file(
+        session,
+        table_name="adam_volume_history_file_stage",
+        file_path=csv_file_path,
+        columns=stage_columns,
+    )
+    logger.info(
+        "adam4eve profile phase=volume_history_copy_to_temp elapsed_s=%.3f file=%s file_size_mb=%.2f column_count=%s",
+        perf_counter() - copy_started_at,
+        csv_path.name,
+        file_size_bytes / (1024 * 1024),
+        len(stage_columns),
+    )
+
+    insert_started_at = perf_counter()
+    session.execute(text(_INSERT_VOLUME_FROM_TEMP_SQL))
+    logger.info(
+        "adam4eve profile phase=volume_history_insert_from_temp elapsed_s=%.3f file=%s",
+        perf_counter() - insert_started_at,
+        csv_path.name,
+    )
+
+    touched_started_at = perf_counter()
+    touched = session.execute(text(_TOUCHED_VOLUME_KEYS_SQL)).all()
+    touched_keys = [(int(loc_id), int(type_id)) for loc_id, type_id in touched]
+    logger.info(
+        "adam4eve profile phase=volume_history_load_touched_keys elapsed_s=%.3f file=%s touched_keys=%s",
+        perf_counter() - touched_started_at,
+        csv_path.name,
+        len(touched_keys),
+    )
+    return touched_keys
+
+
+
+# ---------------------------------------------------------------------------
+# ORM-based helpers (used for non-PostgreSQL backends / tests)
+# ---------------------------------------------------------------------------
 
 def _records_from_volume_csv(csv_file_path: str | Path) -> list[AdamStationVolumeHistoryRecord]:
     csv_text = Path(csv_file_path).read_text(encoding="utf-8")
@@ -266,9 +235,7 @@ class AdamStationVolumeHistoryIngestionService:
                 region_id=0, records_processed=0, created=0, updated=0, touched_internal_keys=[],
             )
 
-        export_key = str(csv_file_path)
-        load_volume_to_stage(session, csv_file_path, export_key)
-        touched_internal_keys = populate_volume_daily_from_stage(session, since_date)
+        touched_internal_keys = import_volume_csv_to_daily(session, csv_file_path)
         session.commit()
         return AdamStationPriceHistoryIngestionResult(
             region_id=0,
@@ -351,6 +318,7 @@ class AdamStationVolumeHistoryIngestionService:
         transformed_dates = sorted(
             {date.fromisoformat(r["date"]) if isinstance(r["date"], str) else r["date"] for r in known_records}
         )
+        from sqlalchemy import delete
         session.execute(
             delete(AdamMarketVolumeHistoryDaily).where(
                 AdamMarketVolumeHistoryDaily.location_id.in_(location_lookup.values()),
