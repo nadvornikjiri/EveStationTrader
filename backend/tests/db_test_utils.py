@@ -22,7 +22,12 @@ POSTGRES_UNAVAILABLE_MESSAGE = (
     "or run `docker compose up -d postgres` before running tests."
 )
 DOCKER_STARTUP_TIMEOUT_SECONDS = 60
-REPO_ROOT = Path(__file__).resolve().parents[2]
+_TESTS_DIR = Path(__file__).resolve().parent          # …/tests
+_BACKEND_DIR = _TESTS_DIR.parent                      # …/backend (or /app in Docker)
+# Repo root: two levels up on host, but irrelevant inside Docker.  We only
+# need it for ``docker compose up`` (host-only) so a wrong value is harmless
+# when running inside the container.
+REPO_ROOT = _BACKEND_DIR.parent
 COMPOSE_SERVICES = ("postgres",)
 _ACTIVE_TEST_SESSIONS: WeakSet[Session] = WeakSet()
 
@@ -194,7 +199,11 @@ def _rebuild_schema(engine: Engine) -> None:
                 raise
             engine.dispose()
             time.sleep(0.1)
-    alembic_cfg = AlembicConfig(REPO_ROOT / "backend" / "alembic.ini")
+    # Locate alembic.ini: prefer backend dir (works inside Docker /app and on host)
+    alembic_ini = _BACKEND_DIR / "alembic.ini"
+    if not alembic_ini.exists():
+        alembic_ini = REPO_ROOT / "backend" / "alembic.ini"
+    alembic_cfg = AlembicConfig(str(alembic_ini))
     alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
     alembic_command.stamp(alembic_cfg, "head")
 

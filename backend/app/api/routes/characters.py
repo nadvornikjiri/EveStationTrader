@@ -29,13 +29,15 @@ def get_character(character_id: int) -> CharacterDetail:
 
 @router.post("/{character_id}/sync", response_model=MessageResponse)
 def sync_character(character_id: int) -> MessageResponse:
+    service = CharacterService()
     try:
-        discovered_structures = CharacterService().sync_character(character_id)
+        service.sync_character(character_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    total_structures = service.count_accessible_structures(character_id)
     return MessageResponse(
-        message=f"Synced {len(discovered_structures)} accessible structures for character {character_id}."
+        message=f"Synced {total_structures} accessible structures for character {character_id}."
     )
 
 

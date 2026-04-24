@@ -28,6 +28,9 @@ from app.models.all_models import (
     AdamMarketPriceSyncState,
     AdamMarketOrdersTradeRaw,
     AdamNpcDemandSyncState,
+    AdamPriceHistoryStage,
+    AdamMarketVolumeHistoryDaily,
+    AdamVolumeHistoryStage,
     BulkImportCursor,
     BulkImportFile,
     CharacterAccessibleStructure,
@@ -67,11 +70,15 @@ from app.services.adam4eve.client import (
 )
 from app.services.adam4eve.history_ingestion import (
     AdamStationHistoryWorksetEntry,
-    AdamStationPriceHistoryIngestionService,
     AdamStationPriceHistoryRecord,
+    import_price_csv_to_daily,
+    truncate_price_history_daily,
 )
 from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
-from app.services.adam4eve.volume_ingestion import AdamStationVolumeHistoryIngestionService
+from app.services.adam4eve.volume_ingestion import (
+    import_volume_csv_to_daily,
+    truncate_volume_history_daily,
+)
 from app.services.demand.market_demand import MarketDemandResolutionService
 from app.services.everef.client import download_history_file, fetch_totals_json, get_available_dates
 from app.services.everef.history_ingestion import EveRefHistoryIngestionService
@@ -138,12 +145,14 @@ class AdamDemandCapableClient(Protocol):
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
     ) -> list[AdamStationPriceHistoryExport]: ...
 
     def cache_station_price_history_exports(
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
         session: Session | None = None,
     ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]: ...
 
@@ -151,6 +160,7 @@ class AdamDemandCapableClient(Protocol):
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
         session: Session | None = None,
     ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]: ...
 
@@ -963,8 +973,11 @@ class SyncService:
             session,
             delete(MarketPricePeriod).where(MarketPricePeriod.location_id.in_(npc_location_ids)),
         )
+        records_deleted += self._delete_rows(session, delete(AdamMarketVolumeHistoryDaily))
         records_deleted += self._delete_rows(session, delete(AdamMarketOrdersTradeRaw))
         records_deleted += self._delete_rows(session, delete(AdamNpcDemandSyncState))
+        records_deleted += self._delete_rows(session, AdamPriceHistoryStage.delete())
+        records_deleted += self._delete_rows(session, AdamVolumeHistoryStage.delete())
         records_deleted += self._delete_rows(session, delete(AdamMarketPriceHistoryDaily))
         records_deleted += self._delete_rows(session, delete(AdamMarketPriceSyncState))
         records_deleted += self._delete_rows(
@@ -976,7 +989,13 @@ class SyncService:
         records_deleted += self._delete_rows(
             session,
             delete(BulkImportFile).where(
-                BulkImportFile.import_kind.in_([self.IMPORT_KIND_ADAM_DEMAND, self.IMPORT_KIND_ADAM_PRICE_HISTORY])
+                BulkImportFile.import_kind.in_(
+                    [
+                        self.IMPORT_KIND_ADAM_DEMAND,
+                        self.IMPORT_KIND_ADAM_PRICE_HISTORY,
+                        "adam_market_volume_history_daily",
+                    ]
+                )
             ),
         )
         return records_deleted
@@ -3144,18 +3163,14 @@ class SyncService:
         regions: list[Region],
         lookback_days: int,
     ) -> tuple[int, int, int, int]:
-        workset_entries = self._history_sync_workset(
-            session,
-            region_ids=[region.id for region in regions],
-            lookback_days=lookback_days,
-        )
-        if not workset_entries:
+        region_ids = [region.id for region in regions]
+        if not region_ids:
             return (0, 0, 0, 0)
 
         current_period_days = min(max(lookback_days, 1), self.ADAM_HISTORY_MAX_LOOKBACK_DAYS)
         missing_price_period_keys = self._history_workset_missing_price_period_keys(
             session,
-            region_ids=[region.id for region in regions],
+            region_ids=region_ids,
             period_days=current_period_days,
         )
         if self._history_checked_today(session) and not missing_price_period_keys:
@@ -3187,16 +3202,10 @@ class SyncService:
                 session,
                 job_id=job_id,
                 since_date=since_date,
-                workset_entries=workset_entries,
             )
             return (0, 0, 0, total_price_rows)
 
-        any_needs_download = any(cached_file.downloaded for _, cached_file in cached_history_exports)
-        history_phase_label = (
-            "Downloading Adam4EVE station price history"
-            if any_needs_download
-            else "Loading Adam4EVE station price history from cache"
-        )
+        history_phase_label = "Importing Adam4EVE station price history"
         self._update_job_progress(
             session,
             job_id,
@@ -3211,11 +3220,11 @@ class SyncService:
         total_created = 0
         total_updated = 0
         total_price_rows = 0
-        touched_price_history_keys = list(missing_price_period_keys)
+        truncate_price_history_daily(session)
+        all_touched_keys: set[tuple[int, int]] = set()
         for file_index, (export, cached_file) in enumerate(cached_history_exports, start=1):
             self._check_for_cancellation(session, job_id)
             file_started_at = perf_counter()
-            file_source = "downloading" if cached_file.downloaded else "cached"
             self._update_job_progress(
                 session,
                 job_id,
@@ -3224,27 +3233,19 @@ class SyncService:
                 progress_total=len(cached_history_exports),
                 progress_unit="files",
                 message=(
-                    f"{history_phase_label}: {file_source} file {file_index} / "
+                    f"{history_phase_label}: file {file_index} / "
                     f"{len(cached_history_exports)}: {export.export_key}."
                 ),
             )
-            file_result = AdamStationPriceHistoryIngestionService().ingest_region_history_file(
-                session,
-                csv_file_path=cached_file.path,
-                workset_entries=workset_entries,
-                since_date=since_date,
-            )
-            total_history_processed += file_result.records_processed
-            total_created += file_result.created
-            total_updated += file_result.updated
-            touched_price_history_keys.extend(file_result.touched_internal_keys)
+            touched_keys = import_price_csv_to_daily(session, cached_file.path)
+            all_touched_keys.update(touched_keys)
             self._log_profile_checkpoint(
                 "ingest_history_file",
                 started_at=file_started_at,
                 file_index=file_index,
                 file_total=len(cached_history_exports),
                 export_key=export.export_key,
-                records_processed=file_result.records_processed,
+                records_processed=len(touched_keys),
             )
             self._update_job_progress(
                 session,
@@ -3258,6 +3259,11 @@ class SyncService:
                     f"{len(cached_history_exports)} files ({export.export_key})."
                 ),
             )
+
+        session.commit()
+        touched_price_history_keys = list(missing_price_period_keys) + sorted(all_touched_keys)
+        total_history_processed = len(all_touched_keys)
+        total_created = len(all_touched_keys)
 
         refresh_keys = sorted(set(touched_price_history_keys))
         if refresh_keys:
@@ -3284,7 +3290,6 @@ class SyncService:
             session,
             job_id=job_id,
             since_date=since_date,
-            workset_entries=workset_entries,
         )
         return (total_history_processed, total_created, total_updated, total_price_rows)
 
@@ -3294,7 +3299,6 @@ class SyncService:
         *,
         job_id: int,
         since_date: date | None,
-        workset_entries: list[AdamStationHistoryWorksetEntry],
     ) -> None:
         cached_volume_exports = self.adam_client.cache_station_volume_history_exports(
             since_date=since_date,
@@ -3309,31 +3313,29 @@ class SyncService:
         total_volume_processed = 0
         total_volume_created = 0
         total_volume_updated = 0
-        touched_volume_history_keys: list[tuple[int, int]] = []
+        all_touched_volume_keys: set[tuple[int, int]] = set()
+        if cached_volume_exports:
+            truncate_volume_history_daily(session)
         for file_index, (export, cached_file) in enumerate(cached_volume_exports, start=1):
             self._check_for_cancellation(session, job_id)
-            file_result = AdamStationVolumeHistoryIngestionService().ingest_region_history_file(
-                session,
-                csv_file_path=cached_file.path,
-                workset_entries=workset_entries,
-                since_date=since_date,
-            )
-            total_volume_processed += file_result.records_processed
-            total_volume_created += file_result.created
-            total_volume_updated += file_result.updated
-            touched_volume_history_keys.extend(file_result.touched_internal_keys)
+            touched_keys = import_volume_csv_to_daily(session, cached_file.path)
+            all_touched_volume_keys.update(touched_keys)
             logger.info(
-                "adam4eve volume sync ingested file=%s/%s export=%s rows=%s",
+                "adam4eve volume sync ingested file=%s/%s export=%s touched_keys=%s",
                 file_index,
                 len(cached_volume_exports),
                 export.export_key,
-                file_result.records_processed,
+                len(touched_keys),
             )
 
+        touched_volume_history_keys = sorted(all_touched_volume_keys)
+        if touched_volume_history_keys:
+            total_volume_processed = len(touched_volume_history_keys)
+            total_volume_created = len(touched_volume_history_keys)
+            session.commit()
+
         refreshed_volume_periods = MarketVolumePeriodService().refresh_touched_periods_from_history(
-            session,
-            location_type_keys=sorted(set(touched_volume_history_keys)),
-            period_days_list=[7, 14],
+            session, location_type_keys=touched_volume_history_keys, period_days_list=[7, 14]
         )
         logger.info(
             "adam4eve volume sync refreshed periods=%s touched_keys=%s processed=%s created=%s updated=%s",
@@ -3471,6 +3473,13 @@ class SyncService:
 
         if isolated:
             progress_session = self.session_factory()
+            if progress_session is session:
+                # Factory returned the same session (common in tests).
+                # Flush instead of commit to avoid releasing the DBAPI
+                # connection which would destroy any temp tables.
+                apply_progress()
+                session.flush()
+                return
             try:
                 session = progress_session
                 apply_progress()
@@ -3501,6 +3510,39 @@ class SyncService:
             error_details=job_run.error_details,
             stages=[self._stage_response(stage_run) for stage_run in self._job_stage_rows(session, job_run.id)],
         )
+
+    STALE_RUNNING_JOB_MINUTES = 30
+
+    def clear_stale_jobs(self) -> int:
+        """Force-finish any jobs stuck in 'running' or 'cancelling' for too long."""
+        session = self.session_factory()
+        try:
+            stale_before = datetime.now(UTC) - timedelta(minutes=self.STALE_RUNNING_JOB_MINUTES)
+            stale_jobs = list(
+                session.scalars(
+                    select(SyncJobRun)
+                    .where(
+                        SyncJobRun.status.in_(["running", "cancelling"]),
+                        SyncJobRun.finished_at.is_(None),
+                        SyncJobRun.started_at <= stale_before,
+                    )
+                    .order_by(SyncJobRun.started_at.asc(), SyncJobRun.id.asc())
+                ).all()
+            )
+            if not stale_jobs:
+                return 0
+
+            finished_at = datetime.now(UTC)
+            for job_run in stale_jobs:
+                job_run.status = "failed"
+                job_run.finished_at = finished_at
+                job_run.duration_ms = max(int((finished_at - self._ensure_utc(job_run.started_at)).total_seconds() * 1000), 0)
+                job_run.message = f"Force-cleared stale {job_run.job_type} job (was {job_run.status} for >{self.STALE_RUNNING_JOB_MINUTES}m)."
+
+            session.commit()
+            return len(stale_jobs)
+        finally:
+            session.close()
 
     def _finalize_stale_cancelling_jobs(self, session: Session) -> None:
         stale_before = datetime.now(UTC) - timedelta(minutes=self.STALE_CANCELLING_JOB_MINUTES)

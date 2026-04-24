@@ -43,6 +43,8 @@ class DiscoveredStructureInput:
 
 
 class CharacterSyncCapableEsiClient(Protocol):
+    def refresh_access_token(self, refresh_token: str) -> dict: ...
+
     def fetch_character_assets(self, access_token: str) -> list[EsiCharacterAssetRecord]: ...
 
     def fetch_character_orders(self, access_token: str) -> list[EsiCharacterOrderRecord]: ...
@@ -95,19 +97,36 @@ class CharacterService:
 
         # Refresh if token expires within 2 minutes
         if token.expires_at and token.expires_at < datetime.now(UTC) + timedelta(minutes=2):
-            from app.services.esi.client import EsiClient
-
-            esi = EsiClient()
             try:
-                refreshed = esi.refresh_access_token(token.refresh_token)
+                refreshed = self.esi_client.refresh_access_token(token.refresh_token)
                 token.access_token = refreshed["access_token"]
                 token.refresh_token = refreshed.get("refresh_token", token.refresh_token)
                 token.expires_at = datetime.fromisoformat(refreshed["expires_at"])
                 session.flush()
             except Exception:
-                raise LookupError(f"Token refresh failed for character {character.character_name}")
+                self._mark_character_reauth_required(session, character)
+                raise LookupError(
+                    f"Token refresh failed for character {character.character_name}. "
+                    "Reconnect the same character via EVE SSO."
+                )
 
         return token.access_token
+
+    def _mark_character_reauth_required(self, session: Session, character: EsiCharacter) -> None:
+        sync_state = session.scalar(
+            select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id)
+        )
+        if sync_state is None:
+            sync_state = EsiCharacterSyncState(character_id=character.id)
+            session.add(sync_state)
+
+        character.sync_enabled = False
+        sync_state.last_token_refresh = datetime.now(UTC)
+        sync_state.assets_sync_status = "reauth_required"
+        sync_state.orders_sync_status = "reauth_required"
+        sync_state.skills_sync_status = "reauth_required"
+        sync_state.structures_sync_status = "reauth_required"
+        session.commit()
 
     def sync_character(self, character_id: int) -> list[CharacterAccessibleStructure]:
         session = self.session_factory()
@@ -152,6 +171,24 @@ class CharacterService:
             session.commit()
             session.refresh(sync_state)
             return persisted_structures
+        finally:
+            session.close()
+
+    def count_accessible_structures(self, character_id: int) -> int:
+        """Return the total number of accessible structures for a character."""
+        session = self.session_factory()
+        try:
+            character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == character_id))
+            if character is None:
+                return 0
+            return int(
+                session.scalar(
+                    select(func.count()).select_from(CharacterAccessibleStructure).where(
+                        CharacterAccessibleStructure.character_id == character.id
+                    )
+                )
+                or 0
+            )
         finally:
             session.close()
 
