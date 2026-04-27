@@ -37,6 +37,12 @@ def cancel_job(job_id: int) -> SyncJobRunResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/clear-stale-jobs")
+def clear_stale_jobs() -> dict:
+    count = SyncService().clear_stale_jobs()
+    return {"cleared": count, "message": f"Cleared {count} stale job(s)." if count else "No stale jobs found."}
+
+
 @router.get("/fallback-status", response_model=list[FallbackDiagnostic])
 def get_fallback_status() -> list[FallbackDiagnostic]:
     return SyncService().get_fallback_status()

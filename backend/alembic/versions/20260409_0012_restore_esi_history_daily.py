@@ -6,6 +6,7 @@ Create Date: 2026-04-09 15:20:00.000000
 """
 
 from collections.abc import Sequence
+from typing import Any, cast
 
 import sqlalchemy as sa
 from alembic import op
@@ -41,8 +42,9 @@ def upgrade() -> None:
             sa.UniqueConstraint("region_id", "type_id", "date"),
         )
     else:
-        columns = {column["name"]: column for column in inspector.get_columns("esi_history_daily")}
-        volume_type = columns.get("volume", {}).get("type")
+        columns = {column["name"]: cast(dict[str, Any], column) for column in inspector.get_columns("esi_history_daily")}
+        volume_column = columns.get("volume")
+        volume_type = volume_column.get("type") if isinstance(volume_column, dict) else None
         if isinstance(volume_type, sa.Integer) and not isinstance(volume_type, sa.BigInteger):
             op.alter_column(
                 "esi_history_daily",

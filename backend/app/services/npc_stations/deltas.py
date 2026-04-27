@@ -210,7 +210,7 @@ class NpcStationDeltaService:
                 NpcStationOrderDelta.to_snapshot_time < cutoff,
             )
         )
-        deleted = result.rowcount  # type: ignore[union-attr]
+        deleted = getattr(result, "rowcount", 0) or 0
         if deleted:
             logger.info("Cleaned up %d old NPC station order deltas (>%d days)", deleted, retention_days)
         return deleted

@@ -13,6 +13,7 @@ class DemandSource(str, Enum):
     BLENDED = "blended"
     ESI_LIVE = "esi_live"
     NPC_STATION_PERIOD = "npc_station_period"
+    UNRESOLVED = "unresolved"
 
 
 class TrackingTier(str, Enum):

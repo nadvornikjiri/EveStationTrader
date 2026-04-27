@@ -32,6 +32,16 @@ def sync_everef_history_job() -> None:
     )
 
 
+def sync_adam4eve_job() -> None:
+    result = SyncService().trigger_job("adam4eve_sync")
+    logger.info(
+        "adam4eve sync completed: job_id=%s status=%s records=%s",
+        result.id,
+        result.status,
+        result.records_processed,
+    )
+
+
 def sync_characters_job() -> None:
     result = SyncService().trigger_job("character_sync")
     logger.info(
@@ -57,6 +67,14 @@ def register_jobs(scheduler: BaseScheduler) -> None:
         hour=8,
         minute=0,
         id="everef_history_sync",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        sync_adam4eve_job,
+        "cron",
+        hour=9,
+        minute=0,
+        id="adam4eve_sync",
         replace_existing=True,
     )
     scheduler.add_job(

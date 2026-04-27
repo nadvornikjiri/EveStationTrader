@@ -132,6 +132,7 @@ class Adam4EveClient:
         *,
         location_ids: Iterable[int] | None = None,
         since_date: date | None = None,
+        hub_only: bool = False,
         session: Session | None = None,
     ) -> list[AdamStationPriceHistoryRecord]:
         requested_type_ids = set(type_ids)
@@ -142,7 +143,7 @@ class Adam4EveClient:
             return []
 
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
-            exports = self.resolve_station_price_history_exports(client=client, since_date=since_date)
+            exports = self.resolve_station_price_history_exports(client=client, since_date=since_date, hub_only=hub_only)
             history: list[AdamStationPriceHistoryRecord] = []
             for export in exports:
                 if session is None:
@@ -174,21 +175,23 @@ class Adam4EveClient:
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
         client: httpx.Client | None = None,
     ) -> list[AdamStationPriceHistoryExport]:
         if client is not None:
-            return self._resolve_station_price_history_exports(client, since_date=since_date)
+            return self._resolve_station_price_history_exports(client, since_date=since_date, hub_only=hub_only)
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as http_client:
-            return self._resolve_station_price_history_exports(http_client, since_date=since_date)
+            return self._resolve_station_price_history_exports(http_client, since_date=since_date, hub_only=hub_only)
 
     def cache_station_price_history_exports(
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
         session: Session | None = None,
     ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]:
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
-            exports = self._resolve_station_price_history_exports(client, since_date=since_date)
+            exports = self._resolve_station_price_history_exports(client, since_date=since_date, hub_only=hub_only)
             return [
                 (
                     export,
@@ -208,10 +211,11 @@ class Adam4EveClient:
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
         session: Session | None = None,
     ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]:
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
-            exports = self._resolve_station_volume_history_exports(client, since_date=since_date)
+            exports = self._resolve_station_volume_history_exports(client, since_date=since_date, hub_only=hub_only)
             return [
                 (
                     export,
@@ -336,6 +340,7 @@ class Adam4EveClient:
         client: httpx.Client,
         *,
         since_date: date | None,
+        hub_only: bool = False,
     ) -> list[AdamStationPriceHistoryExport]:
         root_response = client.get(_MARKET_PRICES_STATION_HISTORY_ROOT_PATH)
         root_response.raise_for_status()
@@ -352,6 +357,9 @@ class Adam4EveClient:
                 match = _WEEKLY_STATION_PRICE_EXPORT_RE.fullmatch(href)
                 if match is None:
                     continue
+                hub_or_rest = match.group(1)
+                if hub_only and hub_or_rest != "hub":
+                    continue
                 if int(match.group(2)) != year:
                     continue
                 week = int(match.group(3))
@@ -361,7 +369,7 @@ class Adam4EveClient:
                 exports.append(
                     AdamStationPriceHistoryExport(
                         path=f"{_MARKET_PRICES_STATION_HISTORY_ROOT_PATH}{year}/{href}",
-                        export_key=f"{year}-{week}-{match.group(1)}",
+                        export_key=f"{year}-{week}-{hub_or_rest}",
                         covered_through_date=covered_through_date,
                     )
                 )
@@ -373,6 +381,7 @@ class Adam4EveClient:
         client: httpx.Client,
         *,
         since_date: date | None,
+        hub_only: bool = False,
     ) -> list[AdamStationVolumeHistoryExport]:
         root_response = client.get(_VOLUME_STATION_HISTORY_ROOT_PATH)
         root_response.raise_for_status()
@@ -389,6 +398,9 @@ class Adam4EveClient:
                 match = _WEEKLY_STATION_VOLUME_EXPORT_RE.fullmatch(href)
                 if match is None:
                     continue
+                hub_or_rest_value = match.group(1)
+                if hub_only and hub_or_rest_value != "hub":
+                    continue
                 week_str = match.group(2)
                 if int(week_str.split("-", maxsplit=1)[0]) != year:
                     continue
@@ -398,7 +410,7 @@ class Adam4EveClient:
                 exports.append(
                     AdamStationVolumeHistoryExport(
                         file_name=href,
-                        hub_or_rest=match.group(1),
+                        hub_or_rest=hub_or_rest_value,
                         week_str=week_str,
                         url=f"{_VOLUME_STATION_HISTORY_ROOT_PATH}{year}/{href}",
                     )

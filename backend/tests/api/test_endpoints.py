@@ -31,6 +31,49 @@ from app.main import build_cors_options
 pytestmark = pytest.mark.integration
 
 
+class EndpointCharacterSyncEsiClient:
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        return {
+            "access_token": "test-access-token",
+            "refresh_token": refresh_token,
+            "expires_at": datetime(2026, 4, 25, 0, 0, tzinfo=UTC).isoformat(),
+        }
+
+    def fetch_character_assets(self, access_token: str) -> list[dict[str, object]]:
+        assert access_token == "test-access-token"
+        return []
+
+    def fetch_character_orders(self, access_token: str) -> list[dict[str, object]]:
+        assert access_token == "test-access-token"
+        return []
+
+    def fetch_accessible_structures(self, access_token: str) -> list[dict[str, object]]:
+        assert access_token == "test-access-token"
+        return [
+            {
+                "structure_id": 1022734985680,
+                "structure_name": "Jita Freeport",
+                "system_name": "Jita",
+                "region_name": "The Forge",
+                "confidence_score": 0.42,
+                "polling_tier": "user",
+            },
+            {
+                "structure_id": 1022734985687,
+                "structure_name": "Jita Sync Relay",
+                "system_name": "Jita",
+                "region_name": "The Forge",
+                "confidence_score": 0.64,
+                "polling_tier": "user",
+            },
+        ]
+
+    def resolve_structure_info(self, access_token: str, structure_id: int) -> None:
+        assert access_token == "test-access-token"
+        del structure_id
+        return None
+
+
 def reset_character_tables() -> None:
     session = SessionLocal()
     try:
@@ -938,8 +981,11 @@ def test_track_character_structure_returns_404_for_missing_character_or_access(c
     assert response.status_code == 404
 
 
-def test_sync_character_triggers_structure_discovery_and_updates_sync_state(client) -> None:
+def test_sync_character_triggers_structure_discovery_and_updates_sync_state(client, monkeypatch: pytest.MonkeyPatch) -> None:
     reset_character_tables()
+    import app.api.routes.characters as characters_routes
+    from app.services.characters.service import CharacterService
+
     session = SessionLocal()
     try:
         user = User(primary_character_id=None)
@@ -956,6 +1002,14 @@ def test_sync_character_triggers_structure_discovery_and_updates_sync_state(clie
         session.add(character)
         session.flush()
         user.primary_character_id = character.id
+        session.add(
+            EsiCharacterToken(
+                character_id=character.id,
+                access_token="test-access-token",
+                refresh_token="refresh-token",
+                expires_at=datetime(2026, 4, 25, 0, 0, tzinfo=UTC),
+            )
+        )
         session.add(
             EsiCharacterSyncState(
                 character_id=character.id,
@@ -983,6 +1037,12 @@ def test_sync_character_triggers_structure_discovery_and_updates_sync_state(clie
         character_db_id = character.id
     finally:
         session.close()
+
+    monkeypatch.setattr(
+        characters_routes,
+        "CharacterService",
+        lambda: CharacterService(session_factory=SessionLocal, esi_client=EndpointCharacterSyncEsiClient()),
+    )
 
     response = client.post("/api/characters/90000042/sync")
     assert response.status_code == 200
@@ -1136,15 +1196,15 @@ def test_get_auth_login_generates_unique_state_per_request(client) -> None:
 
 
 def test_get_auth_callback_requires_state(client) -> None:
-    response = client.get("/api/auth/callback?code=somecode")
-    assert response.status_code == 400
-    assert "state" in response.json()["detail"].lower()
+    response = client.get("/api/auth/callback?code=somecode", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"].endswith("/characters?error=invalid_state")
 
 
 def test_get_auth_callback_rejects_tampered_state(client) -> None:
-    response = client.get("/api/auth/callback?code=somecode&state=tampered.invalidsig")
-    assert response.status_code == 400
-    assert "state" in response.json()["detail"].lower()
+    response = client.get("/api/auth/callback?code=somecode&state=tampered.invalidsig", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"].endswith("/characters?error=invalid_state")
 
 
 def test_get_character_connect_matches_auth_login_payload(client) -> None:

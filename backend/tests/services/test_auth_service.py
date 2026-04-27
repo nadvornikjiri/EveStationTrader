@@ -25,8 +25,9 @@ class MockEsiClient:
             "corporation_name": "Signal Cartel",
         }
 
-    def exchange_code(self, code: str) -> dict:
+    def exchange_code(self, code: str, *, code_verifier: str | None = None) -> dict:
         assert code
+        del code_verifier
         return self.token_payload
 
     def fetch_character_identity(self, access_token: str) -> dict:
@@ -121,6 +122,10 @@ def test_handle_callback_updates_existing_character_and_token_without_duplicates
         "character_name": "Audit Trader Updated",
         "corporation_name": "Brave Collective",
     }
+    pending_job = session.scalar(select(SyncJobRun).where(SyncJobRun.job_type == "character_sync"))
+    assert pending_job is not None
+    pending_job.status = "success"
+    session.commit()
 
     second = service.handle_callback("second-code")
 
@@ -157,8 +162,8 @@ def test_handle_callback_reconnect_reenables_character_sync() -> None:
     service.handle_callback("first-code")
 
     character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
-    sync_state = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
     assert character is not None
+    sync_state = session.scalar(select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id))
     assert sync_state is not None
 
     character.sync_enabled = False
@@ -175,6 +180,10 @@ def test_handle_callback_reconnect_reenables_character_sync() -> None:
         "expires_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
         "scopes": ["esi-assets.read_assets.v1", "esi-markets.structure_markets.v1"],
     }
+    pending_job = session.scalar(select(SyncJobRun).where(SyncJobRun.job_type == "character_sync"))
+    assert pending_job is not None
+    pending_job.status = "success"
+    session.commit()
 
     service.handle_callback("second-code")
 

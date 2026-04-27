@@ -31,15 +31,31 @@ def test_sync_esi_market_orders_job_delegates_to_sync_service(monkeypatch: pytes
     assert triggered_jobs == ["esi_market_orders_sync"]
 
 
+def test_sync_adam4eve_job_delegates_to_sync_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    triggered_jobs: list[str] = []
+
+    class FakeSyncService:
+        def trigger_job(self, job_type: str) -> SimpleNamespace:
+            triggered_jobs.append(job_type)
+            return SimpleNamespace(id=42, status="success", records_processed=9)
+
+    monkeypatch.setattr(sync_tasks, "SyncService", lambda: FakeSyncService())
+
+    sync_tasks.sync_adam4eve_job()
+
+    assert triggered_jobs == ["adam4eve_sync"]
+
+
 def test_register_jobs_keeps_heartbeat_and_sync_cadence() -> None:
     scheduler = DummyScheduler()
 
     sync_tasks.register_jobs(scheduler)
 
-    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "cron", "interval"]
+    assert [job[1] for job in scheduler.jobs] == ["interval", "interval", "cron", "cron", "interval"]
     heartbeat_job = next(job for job in scheduler.jobs if job[2]["id"] == "heartbeat")
     esi_job = next(job for job in scheduler.jobs if job[2]["id"] == "esi_market_orders_sync")
     everef_job = next(job for job in scheduler.jobs if job[2]["id"] == "everef_history_sync")
+    adam_job = next(job for job in scheduler.jobs if job[2]["id"] == "adam4eve_sync")
     character_job = next(job for job in scheduler.jobs if job[2]["id"] == "character_sync")
 
     assert heartbeat_job[0] is sync_tasks.heartbeat_job
@@ -52,6 +68,10 @@ def test_register_jobs_keeps_heartbeat_and_sync_cadence() -> None:
     assert everef_job[2]["hour"] == 8
     assert everef_job[2]["minute"] == 0
     assert everef_job[2]["replace_existing"] is True
+    assert adam_job[0] is sync_tasks.sync_adam4eve_job
+    assert adam_job[2]["hour"] == 9
+    assert adam_job[2]["minute"] == 0
+    assert adam_job[2]["replace_existing"] is True
     assert character_job[0] is sync_tasks.sync_characters_job
     assert character_job[2]["minutes"] == 15
     assert character_job[2]["replace_existing"] is True

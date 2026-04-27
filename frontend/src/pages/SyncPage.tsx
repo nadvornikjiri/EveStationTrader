@@ -6,6 +6,7 @@ import { ManualSyncActions } from "../components/sync/ManualSyncActions";
 import { StatusCards } from "../components/sync/StatusCards";
 import {
   useCancelSyncJob,
+  useClearStaleJobs,
   useClearSyncData,
   useFallbackDiagnostics,
   useRunSyncJob,
@@ -57,6 +58,7 @@ export function SyncPage() {
   const runJob = useRunSyncJob();
   const clearData = useClearSyncData();
   const cancelJob = useCancelSyncJob();
+  const clearStale = useClearStaleJobs();
   const pendingJobType = runJob.isPending ? runJob.variables : null;
   const clearingJobType = clearData.isPending ? clearData.variables : null;
   const activeJobTypes = Array.from(
@@ -119,11 +121,13 @@ export function SyncPage() {
       ) : null}
       <ManualSyncActions
         onClear={(jobType) => clearData.mutate(jobType)}
+        onClearStaleJobs={() => clearStale.mutate()}
         isPending={runJob.isPending}
         pendingJobType={pendingJobType}
         activeJobTypes={activeJobTypes}
         isClearing={clearData.isPending}
         clearingJobType={clearingJobType}
+        isClearingStale={clearStale.isPending}
         lastMessage={latestRunSummary}
         onRun={(jobType) => runJob.mutate(jobType)}
       />

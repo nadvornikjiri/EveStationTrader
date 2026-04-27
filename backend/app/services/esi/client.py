@@ -133,6 +133,14 @@ class EsiClient:
             "X-Compatibility-Date": self.settings.esi_compatibility_date,
         }
 
+    def _sso_basic_auth_headers(self) -> dict[str, str]:
+        credentials = f"{self.settings.esi_client_id}:{self.settings.esi_client_secret}".encode("utf-8")
+        encoded = base64.b64encode(credentials).decode("ascii")
+        return {
+            "Authorization": f"Basic {encoded}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
     def _request_with_rate_limit(
         self,
         client: httpx.Client,
@@ -245,16 +253,13 @@ class EsiClient:
 
     def refresh_access_token(self, refresh_token: str) -> dict:
         """Refresh an expired access token via EVE SSO."""
-        settings = get_settings()
         response = httpx.post(
             EVE_SSO_TOKEN_URL,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
-                "client_id": settings.esi_client_id,
-                "client_secret": settings.esi_client_secret,
             },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers=self._sso_basic_auth_headers(),
             timeout=30.0,
         )
         response.raise_for_status()

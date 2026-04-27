@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { formatIsk, formatVolume } from "../../format";
 import type { ShoppingListEntry } from "../../types/trade";
 
 type Props = {
@@ -11,29 +12,6 @@ type Props = {
   onExportMultibuy: () => Promise<boolean>;
   onMinimize: () => void;
 };
-
-function formatIsk(value: number): string {
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(2)}B ISK`;
-  }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M ISK`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(2)}K ISK`;
-  }
-  return `${value.toLocaleString()} ISK`;
-}
-
-function formatVolume(value: number): string {
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M m³`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(2)}K m³`;
-  }
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} m³`;
-}
 
 function metricToneClass(value: number): string | null {
   if (value > 0) {

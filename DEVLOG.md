@@ -1,3 +1,31 @@
+## 2026-04-21
+
+- task id: `ADAM-TARGET-DEMAND-SQL-2026-04-21`
+- title: Replace Adam4EVE Demand Refresh Loop With Target-Scoped SQL
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: replaced the Python per-key Adam demand refresh used by `adam4eve_sync` with a set-based PostgreSQL upsert that derives `(location_id, type_id)` work directly from raw Adam rows for the configured target NPC stations and scoped regions. The sync layer now passes target-station ids and region ids into the demand refresh instead of prebuilding Python key tuples, while the old per-key resolver remains as the fallback path for non-Postgres callers and targeted refreshes. Added regression coverage for the new target-scoped SQL path plus sync-level assertions that `adam4eve_sync` delegates using configured targets and regions rather than explicit key lists.
+- validation:
+  - `cd backend && ./.venv/bin/python - <<'PY' ... MarketDemandResolutionService().refresh_npc_keys_from_adam(...) on 240 keys ... PY`
+  - `cd backend && ./.venv/bin/python - <<'PY' ... MarketDemandResolutionService().refresh_target_markets_from_adam(...) on the same 240-key fixture ... PY`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_market_demand.py -q`
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/services/test_sync_service.py -k 'adam4eve_sync' -q`
+  - `cd backend && ./.venv/bin/ruff check . --fix`
+  - `cd backend && ./.venv/bin/pytest`
+  - benchmark: the 240-key synthetic Adam demand workload dropped from `16.222s` on the old `refresh_npc_keys_from_adam()` loop to `0.096s` on the new `refresh_target_markets_from_adam()` SQL path
+  - note: `mypy .` still reports unrelated pre-existing failures in `app/services/opportunities/generation.py`, `app/services/npc_stations/deltas.py`, multiple Alembic revisions, and older service tests such as `tests/services/test_auth_service.py` / `tests/services/test_adam4eve_ingestion.py`
+
+## 2026-04-21
+
+- task id: `ADAM4EVE-DAILY-SCHEDULE-2026-04-21`
+- title: Schedule Adam4EVE Sync Daily
+- status: `PASS_WITH_EXISTING_FAILURES`
+- summary: registered `adam4eve_sync` in the worker scheduler as a daily cron job and added worker-task regression coverage to verify both the sync-service delegation and the daily schedule metadata.
+- validation:
+  - `cd backend && ./.venv/bin/pytest -o addopts='' tests/workers/test_sync_tasks.py -q`
+  - `cd backend && ./.venv/bin/ruff check app/workers/tasks/sync_tasks.py tests/workers/test_sync_tasks.py --fix`
+  - `cd backend && ./.venv/bin/mypy app/workers/tasks/sync_tasks.py tests/workers/test_sync_tasks.py`
+  - note: repo-wide `mypy .` and `pytest` still have unrelated pre-existing failures elsewhere in the repository; this change was validated on the touched worker files/tests
+
 ## 2026-04-19
 
 - task id: `VOL-HISTORY-SYNC-PHASE-2026-04-19`
@@ -2830,3 +2858,22 @@ Imported baseline entries for work completed before `AGENTS.md` adoption. These 
   - `cd backend && .venv/bin/alembic upgrade head`
   - `cd backend && .venv/bin/python - <<'PY' ... inspector.get_table_names() ... PY`
   - note: `cd backend && .venv/bin/mypy .` is still blocked by pre-existing typing failures in `alembic/versions/20260409_0012_restore_esi_history_daily.py`, `alembic/versions/20260409_0013_widen_esi_history_volume.py`, and `alembic/versions/20260415_0019_drop_demand_yesterday_columns.py`
+
+## 2026-04-22 - ADAM-HISTORY-DIRECT-REIMPORT
+- Replaced the remaining Adam station-history hot path with full-table truncate plus per-file temp-table `COPY` into direct `INSERT ... SELECT` loads for both price and volume daily tables.
+- Removed the direct-path `ON CONFLICT` work from the price and volume inserts so the refresh no longer pays per-row upsert costs during a full rebuild.
+- Updated sync coverage to assert stale daily rows are removed on reimport while touched-key refresh still keeps cleanup keys for previously present history, and aligned the Adam test stubs with the current sync client protocol for `mypy`.
+- validation:
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy .`
+  - `cd backend && .venv/bin/pytest`
+  - `cd backend && .venv/bin/pytest -m integration tests/services/test_sync_service.py::test_adam4eve_sync_truncates_existing_history_daily_before_reimport tests/services/test_sync_service.py::test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_exports tests/services/test_adam4eve_ingestion.py::test_ingest_region_history_file_reports_touched_internal_keys_for_null_sell_rows`
+
+## 2026-04-22 - ADAM-HISTORY-SUBSTEP-TIMING
+- Added per-file timing logs inside the Adam price and volume direct import helpers so each run now reports separate `copy_to_temp`, `insert_from_temp`, and `load_touched_keys` durations instead of one combined file timing.
+- Included file name, file size, column count, and touched-key count in those substep logs so the next profiling pass can distinguish file throughput from SQL translation cost.
+- Kept behavior unchanged; this change is instrumentation-only to identify the next real bottleneck before optimizing further.
+- validation:
+  - `cd backend && .venv/bin/ruff check . --fix`
+  - `cd backend && .venv/bin/mypy app/services/adam4eve/history_ingestion.py app/services/adam4eve/volume_ingestion.py`
+  - `cd backend && .venv/bin/pytest -m integration tests/services/test_sync_service.py::test_adam4eve_sync_truncates_existing_history_daily_before_reimport tests/services/test_sync_service.py::test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_exports tests/services/test_adam4eve_ingestion.py::test_ingest_region_history_file_reports_touched_internal_keys_for_null_sell_rows`

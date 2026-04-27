@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { cancelSyncJob, clearSyncData, getFallbackDiagnostics, getSyncJobs, getSyncStatus, runSyncJob } from "../api/sync";
+import { cancelSyncJob, clearStaleJobs, clearSyncData, getFallbackDiagnostics, getSyncJobs, getSyncStatus, runSyncJob } from "../api/sync";
 
 export function useSyncStatus() {
   return useQuery({
@@ -46,6 +46,19 @@ export function useCancelSyncJob() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: cancelSyncJob,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["syncStatus"] }),
+        queryClient.invalidateQueries({ queryKey: ["syncJobs"] }),
+      ]);
+    },
+  });
+}
+
+export function useClearStaleJobs() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: clearStaleJobs,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["syncStatus"] }),

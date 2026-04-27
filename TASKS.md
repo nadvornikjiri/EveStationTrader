@@ -1396,3 +1396,46 @@ Priority rationale:
 - Mismatches:
   - current live state marks some regions with `export_key='2026-13'` even when `synced_through_date` is only `2026-03-24` or `NULL`
   - current demand refresh still loops across roughly `5,154 NPC locations x 17,136 items`, which is the dominant Adam4EVE sync bottleneck
+
+### T12C - Incremental Adam History Price Period Refresh
+
+- Status: `TODO`
+- Objective: make `adam4eve_sync` rebuild `market_price_period` rows only for `(location_id, type_id)` keys touched by newly imported Adam station history, and move the rebuild off the current Python-materialized global refresh path so the job does not run out of memory on large history datasets.
+- Dependencies:
+  - T12A bulk market-price-period rebuild path exists and is currently `PARTIAL`
+  - Adam station-history sync already stages filtered file rows into PostgreSQL temp tables
+  - current Postgres-backed `adam_market_price_history_daily`
+- Acceptance criteria:
+  - `adam4eve_sync` no longer widens the Adam history workset into separate `all_location_ids` and `all_type_ids` lists for `market_price_period` refresh
+  - refreshed price-period work is limited to touched internal `(location_id, type_id, period_days)` keys plus any explicitly required cleanup keys for rows whose Adam sell history disappeared in the refreshed lookback window
+  - the refreshed `market_price_period` rows remain identical in business meaning for `current_price`, `period_avg_price`, `price_min`, and `price_max` when compared with the existing single-key history semantics
+  - the hot refresh path does not materialize the full ranked history result set into Python memory before computing inserts
+  - same-day reruns still backfill missing `market_price_period` rows when history is already checked for the day
+  - deterministic backend tests cover first-build, incremental rerun, stale-row cleanup, and no-op rerun behavior
+  - benchmark evidence shows Adam history refresh time and peak RSS scale with touched keys rather than the full persisted history table
+- Likely files/modules:
+  - `backend/app/services/sync/service.py`
+  - `backend/app/services/pricing/market_price_periods.py`
+  - `backend/app/services/adam4eve/history_ingestion.py`
+  - `backend/tests/services/test_sync_service.py`
+  - `backend/tests/services/test_market_price_periods.py`
+  - `backend/tests/services/test_adam4eve_ingestion.py`
+- Out of scope:
+  - changing Adam4EVE demand sync semantics
+  - changing opportunity-generation formulas or consumers of `market_price_period`
+  - redesigning the Adam history import file-discovery flow
+  - refreshing unrelated regions, locations, or types that were not touched by the current Adam history import
+- Test hints:
+  - assert the sync refresh API receives exact touched `(location_id, type_id)` keys rather than a widened Cartesian product of all locations and all items in the workset
+  - seed overlapping 14-day history reimports and verify touched keys recompute while untouched keys keep their previous `computed_at` values
+  - seed existing `market_price_period` rows for a touched key, reimport history with null or missing sell-side values for the refreshed window, and assert stale derived rows are deleted
+  - preserve the current same-day missing-price-period recovery case and extend it to prove the incremental path still runs when the daily cursor says history was already checked
+  - capture before/after stage timings and RSS from the existing sync profiling logs during a reproducible Adam history benchmark
+- Implementation mapping:
+  - derive touched internal history keys from the staged filtered Adam history rows during each imported file, accumulate them across the run, and refresh price periods only for those keys
+  - change the market-price-period refresh contract to accept exact touched keys instead of separate `location_ids` and `type_ids` lists
+  - move the touched-key refresh into set-based SQL so ranking, aggregation, stale-row deletion, and insert/upsert work happen in PostgreSQL rather than in Python collections
+  - keep the same-day cursor short-circuit, but only skip when there are no missing price periods and no touched keys requiring refresh
+- Mismatches:
+  - the current implementation computes an exact Adam history workset first, then widens it into `all_location_ids x all_type_ids` before refresh, which overstates the rebuild scope
+  - the current refresh path loads the ranked history rows with `.all()`, builds another Python aggregation map, and then builds a large insert list, creating independent runtime and memory-pressure bottlenecks

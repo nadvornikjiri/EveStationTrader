@@ -87,6 +87,6 @@ test("connect button calls mutation", async () => {
   const user = userEvent.setup();
   renderPage();
 
-  await user.click(screen.getByText("Connect New Character"));
+  await user.click(screen.getByText("Connect or Reconnect Character"));
   expect(mockConnectMutate).toHaveBeenCalled();
 });

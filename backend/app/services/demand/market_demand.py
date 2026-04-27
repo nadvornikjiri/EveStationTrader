@@ -74,28 +74,15 @@ class MarketDemandResolutionService:
         bindparam("target_location_ids", expanding=True),
         bindparam("source_region_ids", expanding=True),
     )
-    _TARGET_MARKET_STALE_CLEANUP_SQL = text(
+    _TARGET_MARKET_ADAM_CLEAR_SQL = text(
         """
         DELETE FROM market_demand_resolved
         WHERE location_id IN :target_location_ids
           AND period_days = :period_days
           AND demand_source = :demand_source
-          AND NOT EXISTS (
-              SELECT 1
-              FROM adam_market_orders_trade_raw AS raw
-              JOIN locations
-                ON locations.location_id = raw.location_id
-              JOIN items
-                ON items.type_id = raw.type_id
-              WHERE locations.id = market_demand_resolved.location_id
-                AND items.id = market_demand_resolved.type_id
-                AND locations.region_id IN :source_region_ids
-                AND locations.location_type = :npc_location_type
-          )
         """
     ).bindparams(
         bindparam("target_location_ids", expanding=True),
-        bindparam("source_region_ids", expanding=True),
     )
     _TARGET_MARKET_REFRESH_SQL = text(
         """
@@ -338,6 +325,14 @@ class MarketDemandResolutionService:
                 period_days=period_days,
             )
 
+        session.execute(
+            self._TARGET_MARKET_ADAM_CLEAR_SQL,
+            {
+                "target_location_ids": normalized_target_ids,
+                "period_days": period_days,
+                "demand_source": DemandSource.ADAM4EVE.value,
+            },
+        )
         result = session.execute(
             self._TARGET_MARKET_REFRESH_SQL,
             {
@@ -345,16 +340,6 @@ class MarketDemandResolutionService:
                 "source_region_ids": normalized_region_ids,
                 "period_days": period_days,
                 "lookback_days": max(period_days - 1, 0),
-                "npc_location_type": LocationType.NPC_STATION.value,
-                "demand_source": DemandSource.ADAM4EVE.value,
-            },
-        )
-        session.execute(
-            self._TARGET_MARKET_STALE_CLEANUP_SQL,
-            {
-                "target_location_ids": normalized_target_ids,
-                "source_region_ids": normalized_region_ids,
-                "period_days": period_days,
                 "npc_location_type": LocationType.NPC_STATION.value,
                 "demand_source": DemandSource.ADAM4EVE.value,
             },

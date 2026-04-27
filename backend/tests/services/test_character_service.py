@@ -31,14 +31,22 @@ def build_session() -> Session:
 
 
 class MockCharacterSyncEsiClient:
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        assert refresh_token == "refresh-token"
+        return {
+            "access_token": "test-access-token-refreshed",
+            "refresh_token": "refresh-token-refreshed",
+            "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+        }
+
     def fetch_character_assets(self, access_token: str) -> list[EsiCharacterAssetRecord]:
-        assert access_token == "test-access-token"
+        assert access_token in {"test-access-token", "test-access-token-refreshed"}
         return [
             {"type_id": 34, "quantity": 11, "location_id": 60003760, "location_name": "Jita IV - Moon 4"},
         ]
 
     def fetch_character_orders(self, access_token: str) -> list[EsiCharacterOrderRecord]:
-        assert access_token == "test-access-token"
+        assert access_token in {"test-access-token", "test-access-token-refreshed"}
         return [
             {
                 "order_id": 7001,
@@ -53,7 +61,7 @@ class MockCharacterSyncEsiClient:
         ]
 
     def fetch_accessible_structures(self, access_token: str) -> list[EsiAccessibleStructureRecord]:
-        assert access_token == "test-access-token"
+        assert access_token in {"test-access-token", "test-access-token-refreshed"}
         return [
             {
                 "structure_id": 1022734985687,
@@ -66,8 +74,14 @@ class MockCharacterSyncEsiClient:
         ]
 
     def resolve_structure_info(self, access_token: str, structure_id: int) -> dict | None:
-        assert access_token == "test-access-token"
+        assert access_token in {"test-access-token", "test-access-token-refreshed"}
         return None
+
+
+class BrokenRefreshCharacterSyncEsiClient(MockCharacterSyncEsiClient):
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        assert refresh_token == "refresh-token"
+        raise RuntimeError("refresh rejected")
 
 
 def seed_character_data(session: Session) -> None:
@@ -585,3 +599,36 @@ def test_sync_character_is_idempotent_and_raises_for_missing_character() -> None
 
     with pytest.raises(LookupError, match="90000099"):
         service.sync_character(90000099)
+
+
+def test_sync_character_marks_character_for_reauth_when_token_refresh_fails() -> None:
+    session = build_session()
+    seed_character_data(session)
+    token = session.scalar(
+        select(EsiCharacterToken)
+        .join(EsiCharacter, EsiCharacter.id == EsiCharacterToken.character_id)
+        .where(EsiCharacter.character_id == 90000042)
+    )
+    assert token is not None
+    token.expires_at = datetime.now(UTC) - timedelta(minutes=5)
+    session.commit()
+
+    service = CharacterService(session_factory=lambda: session, esi_client=BrokenRefreshCharacterSyncEsiClient())
+
+    with pytest.raises(LookupError, match="Reconnect the same character via EVE SSO"):
+        service.sync_character(90000042)
+
+    session.expire_all()
+    character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    sync_state = session.scalar(
+        select(EsiCharacterSyncState)
+        .join(EsiCharacter, EsiCharacter.id == EsiCharacterSyncState.character_id)
+        .where(EsiCharacter.character_id == 90000042)
+    )
+    assert character is not None
+    assert sync_state is not None
+    assert character.sync_enabled is False
+    assert sync_state.assets_sync_status == "reauth_required"
+    assert sync_state.orders_sync_status == "reauth_required"
+    assert sync_state.skills_sync_status == "reauth_required"
+    assert sync_state.structures_sync_status == "reauth_required"

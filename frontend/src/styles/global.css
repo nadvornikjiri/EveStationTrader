@@ -531,7 +531,7 @@ button:disabled {
   transition: color 120ms ease;
 }
 
-.numeric-cell {
+.data-table .numeric-cell {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -802,17 +802,129 @@ button:disabled {
   background: linear-gradient(90deg, var(--accent-soft), var(--accent));
 }
 
+/* Rebuild Progress Modal */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 16, 0.72);
+  backdrop-filter: blur(6px);
+  animation: modal-fade-in 180ms ease-out;
+}
+
+.modal-panel {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  padding: 28px 28px 22px;
+  border: 1px solid var(--panel-border);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(16, 28, 48, 0.98), rgba(10, 18, 32, 0.99));
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  display: grid;
+  gap: 20px;
+  animation: modal-slide-up 220ms ease-out;
+}
+
+.modal-panel h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modal-close-btn {
+  justify-self: end;
+  padding: 8px 22px;
+  border-color: rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #eef5ff;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.modal-close-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rebuild-spinner {
+  color: var(--muted);
+  font-size: 0.95rem;
+  text-align: center;
+  padding: 12px 0;
+}
+
+.rebuild-spinner::before {
+  content: "";
+  display: block;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 10px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent-soft);
+  border-radius: 50%;
+  animation: modal-spin 0.8s linear infinite;
+}
+
+.rebuild-success-banner {
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(127, 224, 166, 0.35);
+  background: rgba(40, 120, 70, 0.22);
+  color: var(--metric-positive);
+  font-weight: 600;
+  text-align: center;
+}
+
+.rebuild-error-message {
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 126, 126, 0.4);
+  background: rgba(120, 26, 26, 0.24);
+  color: #ffd7d7;
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes modal-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Shopping List Overlay */
 
 .trade-bottom-tabs {
   position: fixed;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: 0;
-  transform: translateX(-50%);
   z-index: 102;
-  display: inline-flex;
-  align-items: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 12px;
+  padding: 6px 16px;
+  background: linear-gradient(180deg, rgba(13, 23, 40, 0.97), rgba(8, 16, 30, 0.99));
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Reserve space at the bottom of the page so the bar doesn't overlap content */
+.page-stack:has(~ .trade-bottom-tabs),
+.page-stack--has-bottom-bar {
+  padding-bottom: 52px;
 }
 
 .shopping-list-tab {
@@ -820,26 +932,23 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 20px;
-  border: 1px solid rgba(240, 180, 79, 0.35);
-  border-bottom: 0;
-  border-radius: 14px 14px 0 0;
-  background: linear-gradient(180deg, rgba(30, 45, 70, 0.98), rgba(13, 23, 40, 0.98));
-  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
+  padding: 8px 18px;
+  border: 1px solid rgba(240, 180, 79, 0.3);
+  border-radius: 8px;
+  background: rgba(30, 45, 70, 0.7);
   cursor: pointer;
   color: #eef5ff;
   user-select: none;
-  transition: background 150ms ease;
+  transition: background 150ms ease, border-color 150ms ease;
 }
 
 .shopping-list-tab:hover {
-  background: linear-gradient(180deg, rgba(40, 60, 90, 0.98), rgba(18, 30, 52, 0.98));
+  background: rgba(40, 60, 90, 0.85);
 }
 
 .shopping-list-tab--active {
   border-color: rgba(240, 180, 79, 0.55);
-  background: linear-gradient(180deg, rgba(56, 84, 122, 0.99), rgba(20, 35, 58, 0.99));
-  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
+  background: rgba(56, 84, 122, 0.85);
 }
 
 .shopping-list-tab__count {
@@ -1051,26 +1160,23 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 20px;
+  padding: 8px 18px;
   border: 1px solid rgba(102, 183, 255, 0.26);
-  border-bottom: 0;
-  border-radius: 14px 14px 0 0;
-  background: linear-gradient(180deg, rgba(24, 40, 66, 0.98), rgba(12, 22, 37, 0.98));
-  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  background: rgba(24, 40, 66, 0.7);
   cursor: pointer;
   color: #eef5ff;
   user-select: none;
-  transition: background 150ms ease;
+  transition: background 150ms ease, border-color 150ms ease;
 }
 
 .in-transit-tab:hover {
-  background: linear-gradient(180deg, rgba(34, 54, 84, 0.98), rgba(16, 28, 48, 0.98));
+  background: rgba(34, 54, 84, 0.85);
 }
 
 .in-transit-tab--active {
   border-color: rgba(102, 183, 255, 0.42);
-  background: linear-gradient(180deg, rgba(48, 74, 110, 0.99), rgba(18, 32, 54, 0.99));
-  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
+  background: rgba(48, 74, 110, 0.85);
 }
 
 .in-transit-tab__count {
@@ -1197,12 +1303,14 @@ button:disabled {
     width: 100%;
   }
 
-  .in-transit-overlay,
-  .trade-bottom-tabs {
+  .in-transit-overlay {
     left: 12px;
     right: 12px;
-    transform: none;
-    justify-content: center;
+  }
+
+  .trade-bottom-tabs {
+    gap: 8px;
+    padding: 6px 12px;
     flex-wrap: wrap;
   }
 

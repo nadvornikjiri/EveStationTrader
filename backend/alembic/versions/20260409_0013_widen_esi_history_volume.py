@@ -6,6 +6,7 @@ Create Date: 2026-04-09 18:05:00.000000
 """
 
 from collections.abc import Sequence
+from typing import Any, cast
 
 import sqlalchemy as sa
 from alembic import op
@@ -26,7 +27,8 @@ def upgrade() -> None:
         return
 
     columns = {column["name"]: column for column in inspector.get_columns("esi_history_daily")}
-    volume_type = columns.get("volume", {}).get("type")
+    volume_column = columns.get("volume")
+    volume_type = volume_column.get("type") if isinstance(volume_column, dict) else None
     if volume_type is None:
         return
     if str(volume_type).lower() == "integer":
@@ -46,8 +48,9 @@ def downgrade() -> None:
     if "esi_history_daily" not in table_names:
         return
 
-    columns = {column["name"]: column for column in inspector.get_columns("esi_history_daily")}
-    volume_type = columns.get("volume", {}).get("type")
+    columns = {column["name"]: cast(dict[str, Any], column) for column in inspector.get_columns("esi_history_daily")}
+    volume_column = columns.get("volume")
+    volume_type = volume_column.get("type") if isinstance(volume_column, dict) else None
     if volume_type is None:
         return
     if str(volume_type).lower() == "bigint":

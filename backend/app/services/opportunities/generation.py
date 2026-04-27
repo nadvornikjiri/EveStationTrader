@@ -8,8 +8,10 @@ from psycopg import sql
 from sqlalchemy import Float, bindparam, case, cast, delete, func, insert, select
 from sqlalchemy.orm import Session
 
+from app.domain.enums import DemandSource
 from app.domain.rules import (
     calculate_capital_required,
+    calculate_net_purchase_units,
     calculate_purchase_units,
     calculate_roi,
     calculate_target_dos,
@@ -159,6 +161,7 @@ class OpportunityGenerationService:
                 .where(
                     EsiCharacter.sync_enabled.is_(True),
                     CharacterAsset.type_id.in_(normalized_type_ids),
+                    CharacterAsset.resolved_location_id == target_location_id,
                 )
                 .group_by(CharacterAsset.type_id)
             ).all()
@@ -219,28 +222,33 @@ class OpportunityGenerationService:
 
         cutoff: date = computed_at.date() - timedelta(days=normalized_period_days)
         esi_history_avg_by_type: dict[int, float] = {}
+        esi_history_avg_price_by_type: dict[int, float] = {}
         for type_id_chunk in type_id_chunks:
-            esi_history_avg_by_type.update(
-                {
-                    type_id: float(avg_volume)
-                    for type_id, avg_volume in session.execute(
-                        select(
-                            EsiHistoryDaily.type_id,
-                            (
-                                cast(func.sum(EsiHistoryDaily.volume), Float)
-                                / normalized_period_days
-                            ).label("avg_volume"),
+            for type_id, avg_volume, avg_price in session.execute(
+                select(
+                    EsiHistoryDaily.type_id,
+                    (
+                        cast(func.sum(EsiHistoryDaily.volume), Float)
+                        / normalized_period_days
+                    ).label("avg_volume"),
+                    (
+                        func.sum(
+                            cast(EsiHistoryDaily.average, Float) * cast(EsiHistoryDaily.volume, Float)
                         )
-                        .where(
-                            EsiHistoryDaily.region_id == target_location.region_id,
-                            EsiHistoryDaily.type_id.in_(type_id_chunk),
-                            EsiHistoryDaily.date >= cutoff,
-                        )
-                        .group_by(EsiHistoryDaily.type_id)
-                    ).all()
-                    if avg_volume is not None
-                }
-            )
+                        / func.nullif(cast(func.sum(EsiHistoryDaily.volume), Float), 0.0)
+                    ).label("avg_price"),
+                )
+                .where(
+                    EsiHistoryDaily.region_id == target_location.region_id,
+                    EsiHistoryDaily.type_id.in_(type_id_chunk),
+                    EsiHistoryDaily.date >= cutoff,
+                )
+                .group_by(EsiHistoryDaily.type_id)
+            ).all():
+                if avg_volume is not None:
+                    esi_history_avg_by_type[type_id] = float(avg_volume)
+                if avg_price is not None:
+                    esi_history_avg_price_by_type[type_id] = float(avg_price)
 
         target_prices_by_type: dict[int, MarketPricePeriod] = {}
         for type_id_chunk in type_id_chunks:
@@ -292,6 +300,28 @@ class OpportunityGenerationService:
                             EsiMarketOrder.is_buy_order.is_(False),
                         )
                         .group_by(EsiMarketOrder.type_id)
+                    ).all()
+                    if min_price is not None
+                }
+            )
+
+        source_min_price_by_loc_type: dict[tuple[int, int], float] = {}
+        for type_id_chunk in type_id_chunks:
+            source_min_price_by_loc_type.update(
+                {
+                    (location_id, type_id): float(min_price)
+                    for location_id, type_id, min_price in session.execute(
+                        select(
+                            EsiMarketOrder.location_id,
+                            EsiMarketOrder.type_id,
+                            func.min(EsiMarketOrder.price),
+                        )
+                        .where(
+                            EsiMarketOrder.location_id.in_(normalized_source_ids),
+                            EsiMarketOrder.type_id.in_(type_id_chunk),
+                            EsiMarketOrder.is_buy_order.is_(False),
+                        )
+                        .group_by(EsiMarketOrder.location_id, EsiMarketOrder.type_id)
                     ).all()
                     if min_price is not None
                 }
@@ -403,7 +433,7 @@ class OpportunityGenerationService:
         }
 
         actual_source_ids_by_type: dict[int, list[int]] = {}
-        for location_id, type_id in source_effective_price_by_loc_type:
+        for location_id, type_id in source_min_price_by_loc_type:
             actual_source_ids_by_type.setdefault(type_id, []).append(location_id)
         for source_ids in actual_source_ids_by_type.values():
             source_ids.sort()
@@ -416,10 +446,7 @@ class OpportunityGenerationService:
             if item is None:
                 continue
             demand = demands_by_type.get(type_id)
-            if demand is None:
-                continue
-            if demand.buy_from_sell_period <= 0:
-                continue
+            buy_from_sell_period = demand.buy_from_sell_period if demand is not None else 0.0
             esi_demand_day = esi_history_avg_by_type.get(type_id, 0.0)
             target_price = target_prices_by_type.get(type_id)
             target_now_price = target_min_price_by_type.get(type_id)
@@ -431,6 +458,9 @@ class OpportunityGenerationService:
             elif target_price is not None and target_price.period_avg_price is not None:
                 target_now_price = target_price.period_avg_price
                 target_price_source = "period_avg"
+            elif type_id in esi_history_avg_price_by_type:
+                target_now_price = esi_history_avg_price_by_type[type_id]
+                target_price_source = "esi_region_avg"
             else:
                 continue
             actual_source_ids = actual_source_ids_by_type.get(type_id, [])
@@ -438,7 +468,11 @@ class OpportunityGenerationService:
                 continue
 
             for source_location_id in actual_source_ids:
-                source_now_price, _ = source_effective_price_by_loc_type[(source_location_id, type_id)]
+                source_price_metrics = source_effective_price_by_loc_type.get((source_location_id, type_id))
+                if source_price_metrics is not None and buy_from_sell_period > 0:
+                    source_now_price, _ = source_price_metrics
+                else:
+                    source_now_price = source_min_price_by_loc_type[(source_location_id, type_id)]
                 source_location = source_locations.get(source_location_id)
                 if source_location is None:
                     continue
@@ -446,24 +480,30 @@ class OpportunityGenerationService:
                 source_security_status = source_system.security_status if source_system is not None else 0.0
                 source_units_available = sell_volumes_by_loc_type.get((source_location_id, type_id), 0.0)
                 target_supply_units = sell_volumes_by_loc_type.get((target_location_id, type_id), 0.0)
-                purchase_units = calculate_purchase_units(
+                gross_purchase_units = calculate_purchase_units(
                     source_units_available,
-                    demand.buy_from_sell_period / normalized_period_days,
+                    buy_from_sell_period / normalized_period_days,
                 )
-                shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
                 target_period_avg_price = (
-                    target_price.period_avg_price if target_price is not None else float(target_now_price)
+                    target_price.period_avg_price
+                    if target_price is not None and target_price.period_avg_price is not None
+                    else float(target_now_price)
                 )
-                target_demand_day = demand.buy_from_sell_period / normalized_period_days
+                target_demand_day = buy_from_sell_period / normalized_period_days
                 target_now_profit = calculate_target_now_profit(float(target_now_price), source_now_price)
                 target_period_profit = calculate_target_period_profit(target_period_avg_price, source_now_price)
-                capital_required = calculate_capital_required(source_now_price, purchase_units)
                 roi_now = calculate_roi(target_now_profit, source_now_price)
                 roi_period = calculate_roi(target_period_profit, source_now_price)
                 target_dos = calculate_target_dos(target_supply_units, target_demand_day)
                 in_transit_units = in_transit_totals_by_pair.get((source_location_id, type_id), 0.0)
                 assets_units = asset_totals_by_type.get(type_id, 0.0)
                 active_sell_orders_units = target_order_totals_by_type.get(type_id, 0.0)
+                purchase_units = calculate_net_purchase_units(
+                    gross_purchase_units, assets_units, active_sell_orders_units, in_transit_units,
+                )
+                shipping_cost = item.volume_m3 * purchase_units * shipping_cost_per_m3
+                capital_required = calculate_capital_required(source_now_price, purchase_units)
+                demand_source = demand.demand_source if demand is not None else DemandSource.UNRESOLVED.value
 
                 item_rows.append(
                     {
@@ -490,7 +530,7 @@ class OpportunityGenerationService:
                         "source_security_status": source_security_status,
                         "item_volume_m3": item.volume_m3,
                         "shipping_cost": shipping_cost,
-                        "demand_source": demand.demand_source,
+                        "demand_source": demand_source,
                         "esi_demand_day": esi_demand_day,
                         "computed_at": computed_at,
                         "target_price_source": target_price_source,
@@ -546,11 +586,12 @@ class OpportunityGenerationService:
             return []
 
         weight = case((OpportunityItem.purchase_units > 1.0, OpportunityItem.purchase_units), else_=1.0)
+        item_qty = func.least(func.ceil(OpportunityItem.target_demand_day), OpportunityItem.source_units_available)
         summary_query = (
             select(
                 OpportunityItem.source_location_id,
                 (func.sum(OpportunityItem.source_security_status * weight) / func.sum(weight)).label("source_security_status"),
-                func.sum(OpportunityItem.purchase_units).label("purchase_units_total"),
+                func.sum(item_qty).label("purchase_units_total"),
                 func.sum(OpportunityItem.source_units_available).label("source_units_available_total"),
                 func.sum(OpportunityItem.target_demand_day).label("target_demand_day_total"),
                 func.sum(OpportunityItem.target_supply_units).label("target_supply_units_total"),
@@ -561,12 +602,12 @@ class OpportunityGenerationService:
                 (func.sum(OpportunityItem.source_station_sell_price * weight) / func.sum(weight)).label("source_avg_price_weighted"),
                 (func.sum(OpportunityItem.target_station_sell_price * weight) / func.sum(weight)).label("target_now_price_weighted"),
                 (func.sum(OpportunityItem.target_period_avg_price * weight) / func.sum(weight)).label("target_period_avg_price_weighted"),
-                func.sum(OpportunityItem.target_now_profit * OpportunityItem.purchase_units).label("target_now_profit_weighted"),
-                func.sum(OpportunityItem.target_period_profit * OpportunityItem.purchase_units).label("target_period_profit_weighted"),
-                func.sum(OpportunityItem.capital_required).label("capital_required_total"),
+                func.sum(OpportunityItem.target_now_profit * item_qty).label("target_now_profit_weighted"),
+                func.sum(OpportunityItem.target_period_profit * item_qty).label("target_period_profit_weighted"),
+                func.sum(OpportunityItem.source_station_sell_price * item_qty).label("capital_required_total"),
                 (func.sum(OpportunityItem.roi_now * weight) / func.sum(weight)).label("roi_now_weighted"),
                 (func.sum(OpportunityItem.roi_period * weight) / func.sum(weight)).label("roi_period_weighted"),
-                func.sum(OpportunityItem.item_volume_m3 * OpportunityItem.purchase_units).label("total_item_volume_m3"),
+                func.sum(OpportunityItem.item_volume_m3 * item_qty).label("total_item_volume_m3"),
                 func.sum(OpportunityItem.shipping_cost).label("shipping_cost_total"),
                 case(
                     (func.count(func.distinct(OpportunityItem.demand_source)) == 1, func.min(OpportunityItem.demand_source)),

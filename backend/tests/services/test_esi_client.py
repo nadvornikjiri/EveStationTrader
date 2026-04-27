@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import base64
 
 import httpx
 import pytest
@@ -238,12 +239,56 @@ def test_rate_limit_state_tracks_headers() -> None:
     assert state.error_limit_reset == 30
     assert state.total_requests == 1
     assert not state.should_backoff()
-
     state.update_from_headers(httpx.Headers({"X-ESI-Error-Limit-Remain": "10", "X-ESI-Error-Limit-Reset": "55"}))
     assert state.error_limit_remain == 10
     assert state.should_backoff()
     assert state.backoff_seconds() == 55.0
     assert state.total_requests == 2
+
+
+def test_refresh_access_token_uses_basic_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class PostResponse:
+        status_code = 200
+        request = httpx.Request("POST", "https://login.eveonline.com/v2/oauth/token")
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return {
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 1200,
+            }
+
+    def fake_post(url: str, *, data: Mapping[str, str], headers: Mapping[str, str], timeout: float) -> PostResponse:
+        captured["url"] = url
+        captured["data"] = dict(data)
+        captured["headers"] = dict(headers)
+        captured["timeout"] = timeout
+        return PostResponse()
+
+    monkeypatch.setattr(esi_client_module.httpx, "post", fake_post)
+
+    result = EsiClient().refresh_access_token("refresh-token-1")
+
+    expected_auth = "Basic " + base64.b64encode(
+        f"{EsiClient().settings.esi_client_id}:{EsiClient().settings.esi_client_secret}".encode("utf-8")
+    ).decode("ascii")
+    assert captured["url"] == esi_client_module.EVE_SSO_TOKEN_URL
+    assert captured["data"] == {
+        "grant_type": "refresh_token",
+        "refresh_token": "refresh-token-1",
+    }
+    assert captured["headers"] == {
+        "Authorization": expected_auth,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    assert captured["timeout"] == 30.0
+    assert result["access_token"] == "new-access"
+    assert result["refresh_token"] == "new-refresh"
 
 
 def test_esi_client_updates_rate_limit_state_on_requests(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -113,6 +113,16 @@ const hookState = vi.hoisted(() => ({
     },
     mutate: vi.fn(),
   },
+  clearStale: {
+    isPending: false,
+    isError: false,
+    error: null as Error | null,
+    data: null as null | {
+      cleared: number;
+      message: string;
+    },
+    mutate: vi.fn(),
+  },
 }));
 
 vi.mock("../hooks/useSyncData", () => ({
@@ -127,6 +137,7 @@ vi.mock("../hooks/useSyncData", () => ({
   }),
   useRunSyncJob: () => hookState.runJob,
   useClearSyncData: () => hookState.clearData,
+  useClearStaleJobs: () => hookState.clearStale,
   useCancelSyncJob: () => ({
     isPending: false,
     isError: false,
@@ -232,6 +243,11 @@ afterEach(() => {
   hookState.clearData.variables = null;
   hookState.clearData.data = null;
   hookState.clearData.mutate.mockReset();
+  hookState.clearStale.isPending = false;
+  hookState.clearStale.isError = false;
+  hookState.clearStale.error = null;
+  hookState.clearStale.data = null;
+  hookState.clearStale.mutate.mockReset();
 });
 
 test("renders sync dashboard data", () => {

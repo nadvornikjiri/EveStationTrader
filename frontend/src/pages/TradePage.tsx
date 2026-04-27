@@ -394,7 +394,7 @@ export function TradePage() {
   };
 
   return (
-    <div className="page-stack">
+    <div className={`page-stack${shoppingList.length > 0 || selectedTarget !== null ? " page-stack--has-bottom-bar" : ""}`}>
       <header className="page-header">
         <div>
           <span className="eyebrow">Trading Analysis</span>

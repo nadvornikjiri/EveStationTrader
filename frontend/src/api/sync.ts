@@ -24,3 +24,7 @@ export function clearSyncData(jobType: string) {
 export function cancelSyncJob(jobId: number) {
   return apiPost<SyncJobRun>(`/sync/cancel/${jobId}`);
 }
+
+export function clearStaleJobs() {
+  return apiPost<{ cleared: number; message: string }>("/sync/clear-stale-jobs");
+}

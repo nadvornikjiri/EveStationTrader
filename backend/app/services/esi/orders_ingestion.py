@@ -590,7 +590,7 @@ class EsiRegionalOrderIngestionService:
                     order_range TEXT NOT NULL,
                     issued TIMESTAMP WITH TIME ZONE NOT NULL,
                     duration INTEGER NOT NULL
-                ) ON COMMIT DROP
+                ) ON COMMIT PRESERVE ROWS
                 """
             )
         )
@@ -613,7 +613,7 @@ class EsiRegionalOrderIngestionService:
                     issued TIMESTAMP WITH TIME ZONE NOT NULL,
                     duration INTEGER NOT NULL,
                     updated_at TIMESTAMP WITH TIME ZONE NOT NULL
-                ) ON COMMIT DROP
+                ) ON COMMIT PRESERVE ROWS
                 """
             )
         )

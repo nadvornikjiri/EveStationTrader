@@ -31,3 +31,13 @@ def calculate_target_dos(target_supply_units: float, target_demand_day: float) -
 
 def calculate_purchase_units(source_units_available: float, target_demand_day: float) -> float:
     return min(source_units_available, target_demand_day)
+
+
+def calculate_net_purchase_units(
+    purchase_units: float,
+    assets_units: float,
+    active_sell_orders_units: float,
+    in_transit_units: float,
+) -> float:
+    """Reduce desired purchase volume by existing inventory at the target."""
+    return max(purchase_units - assets_units - active_sell_orders_units - in_transit_units, 0.0)

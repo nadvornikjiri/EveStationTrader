@@ -652,3 +652,131 @@ def test_refresh_npc_keys_from_adam_matches_manual_csv_rollup(tmp_path) -> None:
     assert row is not None
     assert row.buy_from_sell_period == expected_buy_period
     assert row.sell_to_buy_period == expected_sell_period
+
+
+def test_refresh_target_markets_from_adam_matches_manual_csv_rollup(tmp_path) -> None:
+    session = build_session()
+    npc_location_id, _structure_location_id, item_id = seed_locations_and_item(session)
+    region_id = session.scalar(select(Region.id).where(Region.region_id == 10000002))
+    assert region_id is not None
+    csv_path = tmp_path / "marketOrderTrades_weekly_2026-12.csv"
+    csv_path.write_text(
+        "location_id;region_id;type_id;is_buy_order;has_gone;scanDate;amount;high;low;avg;orderNum;iskValue\n"
+        "60003760;10000002;34;1;0;2026-03-10;999.0;5.0;5.0;5.0;1;4995.0\n"
+        "60003760;10000002;34;0;0;2026-03-12;12.0;5.0;5.0;5.0;1;60.0\n"
+        "60003760;10000002;34;1;0;2026-03-12;3.0;5.0;5.0;5.0;1;15.0\n"
+        "60003760;10000002;34;0;0;2026-03-20;18.0;5.0;5.0;5.0;1;90.0\n"
+        "60003760;10000002;34;1;0;2026-03-20;4.0;5.0;5.0;5.0;1;20.0\n"
+        "60003760;10000002;34;0;0;2026-03-25;5.0;5.0;5.0;5.0;1;25.0\n"
+        "60003760;10000002;34;1;0;2026-03-25;7.0;5.0;5.0;5.0;1;35.0\n",
+        encoding="utf-8",
+    )
+
+    AdamMarketOrdersIngestionService().ingest_market_orders_export(session, csv_file_path=csv_path)
+
+    refreshed = MarketDemandResolutionService().refresh_target_markets_from_adam(
+        session,
+        target_location_ids=[npc_location_id],
+        source_region_ids=[region_id],
+        period_days=14,
+    )
+    row = session.scalar(
+        select(MarketDemandResolved).where(
+            MarketDemandResolved.location_id == npc_location_id,
+            MarketDemandResolved.type_id == item_id,
+            MarketDemandResolved.period_days == 14,
+        )
+    )
+
+    assert refreshed == 1
+    assert row is not None
+    assert row.buy_from_sell_period == 35.0
+    assert row.sell_to_buy_period == 14.0
+
+
+def test_refresh_target_markets_from_adam_filters_to_selected_targets_and_regions() -> None:
+    session = build_session()
+    region_one = Region(region_id=10000002, name="The Forge")
+    region_two = Region(region_id=10000043, name="Domain")
+    session.add_all([region_one, region_two])
+    session.flush()
+
+    system_one = System(system_id=30000142, region_id=region_one.id, name="Jita", security_status=0.9)
+    system_two = System(system_id=30002187, region_id=region_two.id, name="Amarr", security_status=0.7)
+    session.add_all([system_one, system_two])
+    session.flush()
+
+    target_one = Location(
+        location_id=60003760,
+        location_type="npc_station",
+        system_id=system_one.id,
+        region_id=region_one.id,
+        name="Jita IV - Moon 4",
+    )
+    target_two = Location(
+        location_id=60008494,
+        location_type="npc_station",
+        system_id=system_two.id,
+        region_id=region_two.id,
+        name="Amarr VIII",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([target_one, target_two, item])
+    session.flush()
+
+    session.execute(
+        insert(AdamMarketOrdersTradeRaw),
+        [
+            {
+                "location_id": 60003760,
+                "region_id": 10000002,
+                "type_id": 34,
+                "is_buy_order": 0,
+                "has_gone": 0,
+                "scanDate": date(2026, 3, 20),
+                "amount": 12.0,
+                "high": 5.0,
+                "low": 5.0,
+                "avg": 5.0,
+                "orderNum": 1,
+                "iskValue": 60.0,
+            },
+            {
+                "location_id": 60008494,
+                "region_id": 10000043,
+                "type_id": 34,
+                "is_buy_order": 0,
+                "has_gone": 0,
+                "scanDate": date(2026, 3, 20),
+                "amount": 24.0,
+                "high": 5.0,
+                "low": 5.0,
+                "avg": 5.0,
+                "orderNum": 1,
+                "iskValue": 120.0,
+            },
+        ],
+    )
+    session.commit()
+
+    counted = MarketDemandResolutionService().count_target_markets_from_adam(
+        session,
+        target_location_ids=[target_one.id, target_two.id],
+        source_region_ids=[region_one.id],
+    )
+    refreshed = MarketDemandResolutionService().refresh_target_markets_from_adam(
+        session,
+        target_location_ids=[target_one.id, target_two.id],
+        source_region_ids=[region_one.id],
+        period_days=14,
+    )
+    rows = session.scalars(
+        select(MarketDemandResolved)
+        .where(MarketDemandResolved.period_days == 14)
+        .order_by(MarketDemandResolved.location_id.asc())
+    ).all()
+
+    assert counted == 1
+    assert refreshed == 1
+    assert [row.location_id for row in rows] == [target_one.id]
+    assert rows[0].buy_from_sell_period == 12.0

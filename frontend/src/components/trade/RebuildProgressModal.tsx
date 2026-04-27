@@ -13,13 +13,31 @@ type Props = {
 
 export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, error, onClose }: Props) {
   const [activeJob, setActiveJob] = useState<SyncJobRun | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
     if (isOpen) {
       setActiveJob(null);
+      setElapsedSeconds(0);
     }
   }, [isOpen]);
 
+  // Elapsed time counter
+  useEffect(() => {
+    if (!isOpen || isComplete || error !== null) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      if (rebuildStartedAt !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - rebuildStartedAt.getTime()) / 1000));
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isOpen, rebuildStartedAt, isComplete, error]);
+
+  // Poll for job progress
   useEffect(() => {
     if (!isOpen || isComplete || error !== null) {
       return;
@@ -44,7 +62,10 @@ export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, err
 
     const interval = setInterval(() => {
       void poll();
-    }, 1000);
+    }, 800);
+
+    // Fire immediately on open
+    void poll();
 
     return () => clearInterval(interval);
   }, [isOpen, rebuildStartedAt, isComplete, error]);
@@ -60,13 +81,24 @@ export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, err
       ? Math.max(0, Math.min(100, (activeJob.progress_current / activeJob.progress_total) * 100))
       : null;
 
+  const formatElapsed = (seconds: number): string => {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  };
+
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Rebuild progress">
       <div className="modal-panel">
         <h2>Rebuilding Target Opportunities</h2>
 
         {isComplete ? (
-          <div className="rebuild-success-banner">Rebuild complete!</div>
+          <>
+            <div className="rebuild-success-banner">
+              Rebuild complete in {formatElapsed(elapsedSeconds)}
+            </div>
+          </>
         ) : error !== null ? (
           <div className="rebuild-error-message">{error}</div>
         ) : activeJob !== null ? (
@@ -84,12 +116,14 @@ export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, err
                 <div className="sync-progress-fill" style={{ width: `${progressPercent}%` }} />
               </div>
             ) : null}
-            {activeJob.progress_current !== null && activeJob.progress_total !== null ? (
-              <p className="sync-progress-meta">
-                {activeJob.progress_current.toLocaleString()} / {activeJob.progress_total.toLocaleString()}{" "}
-                {activeJob.progress_unit ?? "records"}
-              </p>
-            ) : null}
+            <p className="sync-progress-meta">
+              {activeJob.progress_current != null && activeJob.progress_total != null
+                ? `Step ${activeJob.progress_current} of ${activeJob.progress_total}`
+                : activeJob.message ?? "Working..."
+              }
+              {" \u00b7 "}
+              {formatElapsed(elapsedSeconds)}
+            </p>
           </div>
         ) : (
           <div className="rebuild-spinner">Starting rebuild...</div>

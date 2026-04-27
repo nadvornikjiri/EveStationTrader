@@ -1,11 +1,13 @@
 type Props = {
   onRun: (jobType: string) => void;
   onClear: (jobType: string) => void;
+  onClearStaleJobs: () => void;
   isPending: boolean;
   pendingJobType?: string | null;
   activeJobTypes?: string[];
   isClearing: boolean;
   clearingJobType?: string | null;
+  isClearingStale?: boolean;
   lastMessage?: string | null;
 };
 
@@ -50,11 +52,13 @@ const actions = [
 export function ManualSyncActions({
   onRun,
   onClear,
+  onClearStaleJobs,
   isPending,
   pendingJobType,
   activeJobTypes = [],
   isClearing,
   clearingJobType,
+  isClearingStale = false,
   lastMessage,
 }: Props) {
   return (
@@ -62,6 +66,16 @@ export function ManualSyncActions({
       <div className="panel-header">
         <h2>Manual Sync Actions</h2>
         <span>{lastMessage ?? "Choose a job to enqueue or run."}</span>
+      </div>
+      <div style={{ marginBottom: "0.5rem" }}>
+        <button
+          className="refresh-button clear-button"
+          disabled={isClearingStale}
+          onClick={onClearStaleJobs}
+          type="button"
+        >
+          {isClearingStale ? "Clearing stale jobs..." : "Clear Stale Jobs"}
+        </button>
       </div>
       <div className="action-grid clear-action-grid">
         {actions.map((action) => (

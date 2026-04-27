@@ -1,3 +1,4 @@
+import { formatIsk, formatWholePercent } from "../../format";
 import type { ItemOrderRow, OpportunityItemDetail } from "../../types/trade";
 
 type Props = {
@@ -9,14 +10,6 @@ function formatNumber(value: number) {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function formatWholeNumber(value: number) {
-  return Math.round(value).toLocaleString();
-}
-
-function formatWholePercent(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
-
 function renderOrders(rows: ItemOrderRow[]) {
   if (rows.length === 0) {
     return <p className="detail-empty">No orders available.</p>;
@@ -26,9 +19,9 @@ function renderOrders(rows: ItemOrderRow[]) {
     <ul className="detail-list">
       {rows.map((row, index) => (
         <li key={`${row.price}-${row.volume}-${index}`}>
-          <strong>{formatWholeNumber(row.price)} ISK</strong>
+          <strong>{formatIsk(row.price)} ISK</strong>
           <span>{formatNumber(row.volume)} units</span>
-          <span>{formatNumber(row.order_value)} order value</span>
+          <span>{formatIsk(row.order_value)} ISK value</span>
           {row.cumulative_volume !== undefined && row.cumulative_volume !== null ? (
             <span>{formatNumber(row.cumulative_volume)} cumulative</span>
           ) : null}
@@ -93,7 +86,7 @@ export function ItemDetailPanel({ detail, isLoading = false }: Props) {
             </div>
             <div>
               <dt>Profit Now</dt>
-              <dd>{formatWholeNumber(detail.metrics.target_now_profit)} ISK</dd>
+              <dd>{formatIsk(detail.metrics.target_now_profit)} ISK</dd>
             </div>
             <div>
               <dt>DOS</dt>
@@ -101,7 +94,7 @@ export function ItemDetailPanel({ detail, isLoading = false }: Props) {
             </div>
             <div>
               <dt>Shipping</dt>
-              <dd>{formatWholeNumber(detail.metrics.shipping_cost)} ISK</dd>
+              <dd>{formatIsk(detail.metrics.shipping_cost)} ISK</dd>
             </div>
           </dl>
         </div>

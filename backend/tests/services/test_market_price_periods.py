@@ -297,3 +297,108 @@ def test_refresh_region_periods_from_history_writes_multiple_periods_in_one_pass
     seven_day_rows = [row for row in rows if row.period_days == 7]
     assert all(row.current_price == 100.0 for row in seven_day_rows)
     assert all(row.period_avg_price == 95.0 for row in seven_day_rows)
+
+
+def test_refresh_touched_periods_from_history_uses_exact_keys_only() -> None:
+    session = build_session()
+    first_location_id, first_item_id, region_id = seed_location_and_item(session)
+    second_location_id = seed_second_location(session, region_id=region_id)
+    second_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(second_item)
+    session.commit()
+
+    add_history(
+        session,
+        location_id=first_location_id,
+        type_id=first_item_id,
+        rows=[
+            ("2026-03-20", 100.0, 120.0, 90.0),
+            ("2026-03-19", 110.0, 130.0, 95.0),
+        ],
+    )
+    add_history(
+        session,
+        location_id=second_location_id,
+        type_id=second_item.id,
+        rows=[
+            ("2026-03-20", 200.0, 220.0, 180.0),
+            ("2026-03-19", 210.0, 230.0, 190.0),
+        ],
+    )
+    add_history(
+        session,
+        location_id=first_location_id,
+        type_id=second_item.id,
+        rows=[
+            ("2026-03-20", 300.0, 320.0, 280.0),
+            ("2026-03-19", 310.0, 330.0, 290.0),
+        ],
+    )
+
+    refreshed_count = MarketPricePeriodService().refresh_touched_periods_from_history(
+        session,
+        location_type_keys=[(first_location_id, first_item_id), (second_location_id, second_item.id)],
+        period_days_list=[3],
+    )
+    rows = session.scalars(
+        select(MarketPricePeriod).order_by(
+            MarketPricePeriod.location_id.asc(),
+            MarketPricePeriod.type_id.asc(),
+            MarketPricePeriod.period_days.asc(),
+        )
+    ).all()
+
+    assert refreshed_count == 2
+    assert [(row.location_id, row.type_id, row.current_price) for row in rows] == [
+        (first_location_id, first_item_id, 100.0),
+        (second_location_id, second_item.id, 200.0),
+    ]
+
+
+def test_refresh_touched_periods_from_history_deletes_stale_rows_without_touching_unrelated_rows() -> None:
+    session = build_session()
+    first_location_id, first_item_id, region_id = seed_location_and_item(session)
+    second_location_id = seed_second_location(session, region_id=region_id)
+    second_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(second_item)
+    session.flush()
+    session.add_all(
+        [
+            MarketPricePeriod(
+                location_id=first_location_id,
+                type_id=first_item_id,
+                period_days=14,
+                current_price=10.0,
+                period_avg_price=11.0,
+                price_min=9.0,
+                price_max=12.0,
+            ),
+            MarketPricePeriod(
+                location_id=second_location_id,
+                type_id=second_item.id,
+                period_days=14,
+                current_price=20.0,
+                period_avg_price=21.0,
+                price_min=19.0,
+                price_max=22.0,
+            ),
+        ]
+    )
+    session.commit()
+
+    refreshed_count = MarketPricePeriodService().refresh_touched_periods_from_history(
+        session,
+        location_type_keys=[(first_location_id, first_item_id)],
+        period_days_list=[14],
+    )
+    rows = session.scalars(
+        select(MarketPricePeriod).order_by(
+            MarketPricePeriod.location_id.asc(),
+            MarketPricePeriod.type_id.asc(),
+        )
+    ).all()
+
+    assert refreshed_count == 0
+    assert [(row.location_id, row.type_id, row.current_price) for row in rows] == [
+        (second_location_id, second_item.id, 20.0)
+    ]

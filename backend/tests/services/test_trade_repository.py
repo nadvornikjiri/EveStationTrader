@@ -1021,8 +1021,6 @@ def test_refresh_opportunities_uses_fast_rebuild_when_target_inputs_exist(monkey
             demand_source="adam4eve",
             buy_from_sell_period=14.0,
             sell_to_buy_period=7.0,
-            buy_from_sell_yesterday=1.0,
-            sell_to_buy_yesterday=0.5,
         )
     )
     session.commit()
@@ -1120,8 +1118,6 @@ def test_refresh_opportunities_fast_rebuild_discovers_new_items_from_current_inp
                 demand_source="adam4eve",
                 buy_from_sell_period=14.0,
                 sell_to_buy_period=7.0,
-                buy_from_sell_yesterday=1.0,
-                sell_to_buy_yesterday=0.5,
             ),
             MarketDemandResolved(
                 location_id=target_location_id,
@@ -1130,8 +1126,6 @@ def test_refresh_opportunities_fast_rebuild_discovers_new_items_from_current_inp
                 demand_source="adam4eve",
                 buy_from_sell_period=56.0,
                 sell_to_buy_period=14.0,
-                buy_from_sell_yesterday=4.0,
-                sell_to_buy_yesterday=1.0,
             ),
             EsiMarketOrder(
                 order_id=1,

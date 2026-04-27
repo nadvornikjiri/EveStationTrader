@@ -24,7 +24,7 @@ def _drop_if_exists(table_name: str, column_name: str) -> None:
         op.drop_column(table_name, column_name)
 
 
-def _add_if_missing(table_name: str, column: sa.Column[object]) -> None:
+def _add_if_missing(table_name: str, column: sa.Column) -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     columns = {existing["name"] for existing in inspector.get_columns(table_name)}

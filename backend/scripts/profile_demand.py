@@ -71,7 +71,7 @@ def _run_per_key_path(
     )
     limited_keys = demand_keys[:key_limit]
     t0 = perf_counter()
-    count = service.refresh_npc_keys_from_adam(
+    service.refresh_npc_keys_from_adam(
         session,
         demand_keys=limited_keys,
         period_days=period_days,

@@ -39,5 +39,26 @@ def copy_delimited_file(
     copy_sql = f"COPY {destination} FROM STDIN WITH ({csv_mode})"
     with raw_connection.cursor().copy(copy_sql) as copy:
         with Path(file_path).open("r", encoding="utf-8", newline="") as source:
-            while chunk := source.read(1024 * 1024):
-                copy.write(chunk)
+            if header:
+                # Read the header line so we can detect and strip duplicate
+                # headers embedded in concatenated CSV files (e.g. Adam4EVE
+                # exports that consist of multiple 350k-row chunks).
+                header_line = source.readline()
+                if header_line:
+                    copy.write(header_line)
+                buf: list[str] = []
+                buf_size = 0
+                for line in source:
+                    if line == header_line:
+                        continue
+                    buf.append(line)
+                    buf_size += len(line)
+                    if buf_size >= 1_048_576:  # flush every ~1 MB
+                        copy.write("".join(buf))
+                        buf.clear()
+                        buf_size = 0
+                if buf:
+                    copy.write("".join(buf))
+            else:
+                while chunk := source.read(1024 * 1024):
+                    copy.write(chunk)

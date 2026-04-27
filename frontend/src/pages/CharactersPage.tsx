@@ -18,7 +18,7 @@ export function CharactersPage() {
           onClick={() => connectMutation.mutate()}
           disabled={connectMutation.isPending}
         >
-          {connectMutation.isPending ? "Redirecting..." : "Connect New Character"}
+          {connectMutation.isPending ? "Redirecting..." : "Connect or Reconnect Character"}
         </button>
       </header>
       <section className="panel">
@@ -33,7 +33,7 @@ export function CharactersPage() {
         {isLoading ? (
           <p>Loading characters...</p>
         ) : characters.length === 0 ? (
-          <p>No characters connected yet. Click "Connect New Character" to add one via EVE SSO.</p>
+          <p>No characters connected yet. Click "Connect or Reconnect Character" to add one via EVE SSO.</p>
         ) : (
           <div className="table-scroll">
             <table className="data-table">

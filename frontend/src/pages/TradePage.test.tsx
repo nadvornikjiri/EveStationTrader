@@ -390,11 +390,11 @@ test("applies semantic metric colors to grouped and expanded trade cells", async
   expect(groupedRow).not.toBeNull();
   const groupedCells = groupedRow?.querySelectorAll("td") ?? [];
   expect(groupedCells[12]).toHaveClass("metric-cell-source-price");
-  expect(groupedCells[15]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[16]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[17]).toHaveClass("metric-cell-capital");
+  expect(groupedCells[17]).toHaveClass("metric-cell-positive");
   expect(groupedCells[18]).toHaveClass("metric-cell-positive");
-  expect(groupedCells[19]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[19]).toHaveClass("metric-cell-capital");
+  expect(groupedCells[20]).toHaveClass("metric-cell-positive");
+  expect(groupedCells[21]).toHaveClass("metric-cell-positive");
 
   await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
 
@@ -402,11 +402,11 @@ test("applies semantic metric colors to grouped and expanded trade cells", async
   expect(expandedRow).not.toBeNull();
   const expandedCells = expandedRow?.querySelectorAll("td") ?? [];
   expect(expandedCells[12]).toHaveClass("metric-cell-source-price");
-  expect(expandedCells[15]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[16]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[17]).toHaveClass("metric-cell-capital");
+  expect(expandedCells[17]).toHaveClass("metric-cell-positive");
   expect(expandedCells[18]).toHaveClass("metric-cell-positive");
-  expect(expandedCells[19]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[19]).toHaveClass("metric-cell-capital");
+  expect(expandedCells[20]).toHaveClass("metric-cell-positive");
+  expect(expandedCells[21]).toHaveClass("metric-cell-positive");
 });
 
 test("formats item volume cells as whole-number m3 values", async () => {
@@ -554,18 +554,18 @@ test("shopping list shows quantity-scaled target profits and total profit summar
   expect(screen.getByText("Total Price:")).toBeInTheDocument();
   expect(screen.getByText("Total Now Profit:")).toBeInTheDocument();
   expect(screen.getByText("Total Period Profit:")).toBeInTheDocument();
-  expect(screen.getAllByText("1.20K ISK")).toHaveLength(2);
-  expect(screen.getAllByText("144 ISK")).toHaveLength(2);
-  expect(screen.getAllByText("216 ISK")).toHaveLength(2);
+  expect(screen.getAllByText("1.20K")).toHaveLength(2);
+  expect(screen.getAllByText("144")).toHaveLength(2);
+  expect(screen.getAllByText("216")).toHaveLength(2);
 
   const quantityInput = screen.getByDisplayValue("12");
   fireEvent.change(quantityInput, { target: { value: "3" } });
 
   expect(screen.getByDisplayValue("3")).toBeInTheDocument();
 
-  expect(screen.getAllByText("300 ISK")).toHaveLength(2);
-  expect(screen.getAllByText("36 ISK")).toHaveLength(2);
-  expect(screen.getAllByText("54 ISK")).toHaveLength(2);
+  expect(screen.getAllByText("300")).toHaveLength(2);
+  expect(screen.getAllByText("36")).toHaveLength(2);
+  expect(screen.getAllByText("54")).toHaveLength(2);
 });
 
 test("opening one bottom overlay minimizes the other and keeps tabs aligned", async () => {
@@ -655,8 +655,9 @@ test("sorts grouped source rows and expanded item rows by shared table columns",
 
   await user.click(screen.getByRole("button", { name: "Expand Amarr" }));
   rows = within(groupedTable).getAllByRole("row");
-  expect(within(rows[2]).getByText("Pyerite")).toBeInTheDocument();
-  expect(within(rows[3]).getByText("Tritanium")).toBeInTheDocument();
+  // rows[2] is the summary note row ("Showing all 2 filtered items...")
+  expect(within(rows[3]).getByText("Pyerite")).toBeInTheDocument();
+  expect(within(rows[4]).getByText("Tritanium")).toBeInTheDocument();
 });
 
 test("changing target requeries grouped summaries using the settings analysis period", async () => {

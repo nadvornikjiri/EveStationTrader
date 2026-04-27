@@ -1,3 +1,4 @@
+import { formatIsk, formatVolume, formatWholePercent } from "../../format";
 import type { OpportunityItem } from "../../types/trade";
 
 type SortKey = "item_name" | "purchase_units" | "target_now_profit" | "roi_now";
@@ -49,14 +50,6 @@ function getSortIndicator(columnKey: SortKey, activeKey: SortKey, direction: Sor
   }
 
   return direction === "asc" ? " ↑" : " ↓";
-}
-
-function formatWholeNumber(value: number) {
-  return Math.round(value).toLocaleString();
-}
-
-function formatWholePercent(value: number) {
-  return `${Math.round(value * 100)}%`;
 }
 
 export function ItemOpportunityTable({
@@ -140,15 +133,15 @@ export function ItemOpportunityTable({
                   <td className="numeric-cell">{row.in_transit_units_item}</td>
                   <td className="numeric-cell">{row.assets_units_item}</td>
                   <td className="numeric-cell">{row.active_sell_orders_units_item}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.source_station_sell_price)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.target_station_sell_price)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.target_period_avg_price)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.target_now_profit)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.target_period_profit)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.capital_required)}</td>
+                  <td className="numeric-cell">{formatIsk(row.source_station_sell_price)}</td>
+                  <td className="numeric-cell">{formatIsk(row.target_station_sell_price)}</td>
+                  <td className="numeric-cell">{formatIsk(row.target_period_avg_price)}</td>
+                  <td className="numeric-cell">{formatIsk(row.target_now_profit)}</td>
+                  <td className="numeric-cell">{formatIsk(row.target_period_profit)}</td>
+                  <td className="numeric-cell">{formatIsk(row.capital_required)}</td>
                   <td className="numeric-cell">{formatWholePercent(row.roi_period)}</td>
-                  <td className="numeric-cell">{row.item_volume_m3.toFixed(2)}</td>
-                  <td className="numeric-cell">{formatWholeNumber(row.shipping_cost)}</td>
+                  <td className="numeric-cell">{formatVolume(row.item_volume_m3)}</td>
+                  <td className="numeric-cell">{formatIsk(row.shipping_cost)}</td>
                   <td>{row.demand_source}</td>
                 </tr>
               ))

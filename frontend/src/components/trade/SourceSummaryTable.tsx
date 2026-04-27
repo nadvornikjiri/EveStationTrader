@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { formatIsk, formatVolume, formatWholePercent, formatQuantity } from "../../format";
 import type { OpportunityItem, SourceSummary } from "../../types/trade";
 
 export type GroupedSortKey =
@@ -126,13 +127,6 @@ function metricToneClass(value: number) {
   return null;
 }
 
-function formatWholeNumber(value: number) {
-  return Math.round(value).toLocaleString();
-}
-
-function formatWholePercent(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
 
 function summaryCellClass(row: SourceSummary, key: GroupedSortKey) {
   switch (key) {
@@ -321,29 +315,29 @@ function renderSummaryCell(row: SourceSummary, key: GroupedSortKey) {
     case "active_sell_orders_units":
       return row.active_sell_orders_units;
     case "source_avg_price":
-      return formatWholeNumber(row.source_avg_price_weighted);
+      return formatIsk(row.source_avg_price_weighted);
     case "target_now_price":
-      return formatWholeNumber(row.target_now_price_weighted);
+      return formatIsk(row.target_now_price_weighted);
     case "target_7d_price_delta":
       return "-";
     case "target_7d_vol_delta":
       return "-";
     case "target_period_avg_price":
-      return formatWholeNumber(row.target_period_avg_price_weighted);
+      return formatIsk(row.target_period_avg_price_weighted);
     case "target_now_profit":
-      return formatWholeNumber(row.target_now_profit_weighted);
+      return formatIsk(row.target_now_profit_weighted);
     case "target_period_profit":
-      return formatWholeNumber(row.target_period_profit_weighted);
+      return formatIsk(row.target_period_profit_weighted);
     case "capital_required":
-      return formatWholeNumber(row.capital_required_total);
+      return formatIsk(row.capital_required_total);
     case "roi_now":
       return formatWholePercent(row.roi_now_weighted);
     case "roi_period":
       return formatWholePercent(row.roi_period_weighted);
     case "item_volume_m3":
-      return `${Math.round(row.total_item_volume_m3).toLocaleString()} m3`;
+      return formatVolume(row.total_item_volume_m3);
     case "shipping_cost":
-      return formatWholeNumber(row.shipping_cost_total);
+      return formatIsk(row.shipping_cost_total);
     case "demand_source":
       return row.demand_source_summary;
     case "esi_demand_day":
@@ -374,9 +368,9 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
     case "active_sell_orders_units":
       return row.active_sell_orders_units_item;
     case "source_avg_price":
-      return formatWholeNumber(row.source_station_sell_price);
+      return formatIsk(row.source_station_sell_price);
     case "target_now_price":
-      return formatWholeNumber(row.target_station_sell_price);
+      return formatIsk(row.target_station_sell_price);
     case "target_7d_price_delta":
       return row.target_7d_price_delta != null
         ? `${row.target_7d_price_delta >= 0 ? "+" : ""}${(row.target_7d_price_delta * 100).toFixed(1)}%`
@@ -386,21 +380,21 @@ function renderItemCell(row: OpportunityItem, key: GroupedSortKey) {
         ? `${row.target_7d_vol_delta >= 0 ? "+" : ""}${(row.target_7d_vol_delta * 100).toFixed(1)}%`
         : "-";
     case "target_period_avg_price":
-      return formatWholeNumber(row.target_period_avg_price);
+      return formatIsk(row.target_period_avg_price);
     case "target_now_profit":
-      return formatWholeNumber(row.target_now_profit * itemQty(row));
+      return formatIsk(row.target_now_profit * itemQty(row));
     case "target_period_profit":
-      return formatWholeNumber(row.target_period_profit * itemQty(row));
+      return formatIsk(row.target_period_profit * itemQty(row));
     case "capital_required":
-      return formatWholeNumber(row.source_station_sell_price * itemQty(row));
+      return formatIsk(row.source_station_sell_price * itemQty(row));
     case "roi_now":
       return formatWholePercent(row.roi_now);
     case "roi_period":
       return formatWholePercent(row.roi_period);
     case "item_volume_m3":
-      return `${Math.round(row.item_volume_m3).toLocaleString()} m3`;
+      return formatVolume(row.item_volume_m3);
     case "shipping_cost":
-      return formatWholeNumber(row.shipping_cost);
+      return formatIsk(row.shipping_cost);
     case "demand_source":
       return row.demand_source;
     case "esi_demand_day":
@@ -700,8 +694,10 @@ export function SourceSummaryTable({
             className="trade-context-menu__item"
             role="menuitem"
             onClick={() => {
+              const regionMatch = contextMenu.url.match(/\/region\/(\d+)\//);
+              const regionParam = regionMatch ? `&regionID=${regionMatch[1]}` : "";
               window.open(
-                `https://dev.adam4eve.eu/price_history.php?typeID=${contextMenu.typeId}`,
+                `https://dev.adam4eve.eu/price_history.php?typeID=${contextMenu.typeId}${regionParam}`,
                 "_blank",
                 "noopener,noreferrer",
               );

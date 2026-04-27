@@ -47,6 +47,7 @@ class TradeRepository:
         target_now_profit_column: Any,
         roi_now_column: Any,
         target_demand_day_column: Any,
+        source_units_available_column: Any,
         target_dos_column: Any,
         item_volume_m3_column: Any,
         demand_source_column: Any,
@@ -67,7 +68,8 @@ class TradeRepository:
         if search_value:
             conditions.append(item_name_column.ilike(f"%{search_value}%"))
         if min_profit > 0:
-            conditions.append(target_now_profit_column > min_profit)
+            item_qty = func.least(func.ceil(target_demand_day_column), source_units_available_column)
+            conditions.append(target_now_profit_column * item_qty > min_profit)
         if min_roi_now_pct > 0:
             conditions.append(roi_now_column > (min_roi_now_pct / 100.0))
         if min_demand_day > 0:
@@ -379,6 +381,7 @@ class TradeRepository:
                 target_now_profit_column=OpportunityItem.target_now_profit,
                 roi_now_column=OpportunityItem.roi_now,
                 target_demand_day_column=OpportunityItem.target_demand_day,
+                source_units_available_column=OpportunityItem.source_units_available,
                 target_dos_column=OpportunityItem.target_dos,
                 item_volume_m3_column=OpportunityItem.item_volume_m3,
                 demand_source_column=OpportunityItem.demand_source,
@@ -542,6 +545,7 @@ class TradeRepository:
                 target_now_profit_column=OpportunityItem.target_now_profit,
                 roi_now_column=OpportunityItem.roi_now,
                 target_demand_day_column=OpportunityItem.target_demand_day,
+                source_units_available_column=OpportunityItem.source_units_available,
                 target_dos_column=OpportunityItem.target_dos,
                 item_volume_m3_column=OpportunityItem.item_volume_m3,
                 demand_source_column=OpportunityItem.demand_source,
@@ -1086,7 +1090,15 @@ class TradeRepository:
         finally:
             job_session.close()
 
-    def _update_target_rebuild_job(self, job_id: int, *, progress_phase: str, message: str) -> None:
+    def _update_target_rebuild_job(
+        self,
+        job_id: int,
+        *,
+        progress_phase: str,
+        message: str,
+        progress_current: int | None = None,
+        progress_total: int | None = None,
+    ) -> None:
         from app.models.all_models import SyncJobRun
         job_session = self.session_factory()
         try:
@@ -1095,6 +1107,10 @@ class TradeRepository:
                 return
             job_run.progress_phase = progress_phase
             job_run.message = message
+            if progress_current is not None:
+                job_run.progress_current = progress_current
+            if progress_total is not None:
+                job_run.progress_total = progress_total
             job_session.commit()
         finally:
             job_session.close()
@@ -1137,7 +1153,14 @@ class TradeRepository:
         job_id = self._create_target_rebuild_job(target_location_id)
         session = self.session_factory()
         try:
-            self._update_target_rebuild_job(job_id, progress_phase="Resolving location", message="Resolving target location.")
+            # Step 1/5: Resolve location
+            self._update_target_rebuild_job(
+                job_id,
+                progress_phase="Resolving location",
+                message="Resolving target location.",
+                progress_current=0,
+                progress_total=5,
+            )
             resolved_target_location_id = self._resolve_location_id(session, target_location_id)
             if resolved_target_location_id is None:
                 raise LookupError(f"Target location {target_location_id} was not found.")
@@ -1148,6 +1171,14 @@ class TradeRepository:
                 if resolved_source_location_id is None:
                     raise LookupError(f"Source location {source_location_id} was not found.")
 
+            # Step 2/5: Check existing data
+            self._update_target_rebuild_job(
+                job_id,
+                progress_phase="Checking existing market data",
+                message="Checking for existing price and demand data.",
+                progress_current=1,
+                progress_total=5,
+            )
             has_target_price_period = session.scalar(
                 select(MarketPricePeriod.id).where(
                     MarketPricePeriod.location_id == resolved_target_location_id,
@@ -1165,7 +1196,14 @@ class TradeRepository:
                 has_target_price_period is not None
                 and has_target_demand is not None
             ):
-                self._update_target_rebuild_job(job_id, progress_phase="Rebuilding opportunities", message="Refreshing opportunities from existing market data.")
+                # Step 3/5: Fast-path rebuild from existing rows
+                self._update_target_rebuild_job(
+                    job_id,
+                    progress_phase="Rebuilding opportunities",
+                    message="Generating opportunities from existing market data.",
+                    progress_current=3,
+                    progress_total=5,
+                )
                 if sync_service.refresh_trade_scope_from_existing_rows(
                     session,
                     target_location_id=resolved_target_location_id,
@@ -1173,17 +1211,51 @@ class TradeRepository:
                     type_id=type_id,
                     period_days=period_days,
                 ):
+                    self._update_target_rebuild_job(
+                        job_id,
+                        progress_phase="Finalizing",
+                        message="Committing results.",
+                        progress_current=5,
+                        progress_total=5,
+                    )
                     self._finish_target_rebuild_job(job_id, started_at=started_at, error=None)
                     return
 
-            self._update_target_rebuild_job(job_id, progress_phase="Building trade period", message="Preparing trade period data.")
+            # Step 3/5: Refresh market inputs (slow path)
+            needs_refresh = has_target_price_period is None or has_target_demand is None
+            if needs_refresh:
+                self._update_target_rebuild_job(
+                    job_id,
+                    progress_phase="Refreshing market prices",
+                    message="Fetching latest price periods and demand data.",
+                    progress_current=2,
+                    progress_total=5,
+                )
+
+            # Step 4/5: Generate opportunities
+            self._update_target_rebuild_job(
+                job_id,
+                progress_phase="Generating opportunities",
+                message="Computing opportunity items and source summaries.",
+                progress_current=3,
+                progress_total=5,
+            )
             sync_service.prepare_trade_period(
                 session,
                 target_location_id=resolved_target_location_id,
                 source_location_id=resolved_source_location_id,
                 type_id=type_id,
                 period_days=period_days,
-                refresh_inputs=has_target_price_period is None or has_target_demand is None,
+                refresh_inputs=needs_refresh,
+            )
+
+            # Step 5/5: Done
+            self._update_target_rebuild_job(
+                job_id,
+                progress_phase="Finalizing",
+                message="Committing results.",
+                progress_current=5,
+                progress_total=5,
             )
             self._finish_target_rebuild_job(job_id, started_at=started_at, error=None)
         except Exception as exc:

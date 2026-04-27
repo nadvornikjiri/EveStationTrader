@@ -1,7 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.all_models import (
@@ -257,18 +257,57 @@ def test_generate_opportunities_persists_items_and_source_summary() -> None:
     assert second_item.target_period_profit == pytest.approx(-70.0)
 
     summary = summary_rows[0]
-    # purchase_units_total = (40 + 20) / 14
-    assert summary.purchase_units_total == pytest.approx(60.0 / 14.0)
-    assert summary.capital_required_total == pytest.approx((100.0 * 40.0 / 14.0) + (150.0 * 20.0 / 14.0))
+    first_item_qty = min(int(first_item.target_demand_day + 0.999999999), int(first_item.source_units_available))
+    second_item_qty = min(int(second_item.target_demand_day + 0.999999999), int(second_item.source_units_available))
+    assert summary.purchase_units_total == pytest.approx(first_item_qty + second_item_qty)
+    assert summary.capital_required_total == pytest.approx((100.0 * first_item_qty) + (150.0 * second_item_qty))
     assert summary.target_now_profit_weighted == pytest.approx(
-        first_item.target_now_profit * first_item.purchase_units + second_item.target_now_profit * second_item.purchase_units
+        first_item.target_now_profit * first_item_qty + second_item.target_now_profit * second_item_qty
     )
     assert summary.target_period_profit_weighted == pytest.approx(
-        first_item.target_period_profit * first_item.purchase_units
-        + second_item.target_period_profit * second_item.purchase_units
+        first_item.target_period_profit * first_item_qty
+        + second_item.target_period_profit * second_item_qty
     )
     assert summary.source_security_status == pytest.approx(0.7)
     assert summary.demand_source_summary == "adam4eve"
+
+
+def test_generate_opportunities_keeps_items_without_resolved_demand() -> None:
+    session = build_session()
+    ids = seed_trade_inputs(session)
+    session.execute(
+        delete(MarketDemandResolved).where(
+            MarketDemandResolved.location_id == ids["target_location_id"],
+            MarketDemandResolved.type_id == ids["pyerite_id"],
+            MarketDemandResolved.period_days == 14,
+        )
+    )
+    session.commit()
+
+    result = OpportunityGenerationService().generate_for_target(
+        session,
+        target_location_id=ids["target_location_id"],
+        source_location_ids=[ids["source_location_id"]],
+        type_ids=[ids["tritanium_id"], ids["pyerite_id"]],
+        period_days=14,
+    )
+
+    pyerite_row = session.scalar(
+        select(OpportunityItem).where(
+            OpportunityItem.target_location_id == ids["target_location_id"],
+            OpportunityItem.source_location_id == ids["source_location_id"],
+            OpportunityItem.type_id == ids["pyerite_id"],
+            OpportunityItem.period_days == 14,
+        )
+    )
+
+    assert result.item_count == 2
+    assert pyerite_row is not None
+    assert pyerite_row.demand_source == "unresolved"
+    assert pyerite_row.purchase_units == 0.0
+    assert pyerite_row.target_demand_day == 0.0
+    assert pyerite_row.source_station_sell_price == pytest.approx(150.0)
+    assert pyerite_row.target_station_sell_price == pytest.approx(200.0)
 
 
 def test_generate_opportunities_replaces_prior_rows_on_rerun() -> None:
@@ -337,7 +376,7 @@ def test_generate_opportunities_uses_regionwide_esi_history_volume() -> None:
             EsiHistoryDaily(
                 region_id=target_location.region_id,
                 type_id=ids["tritanium_id"],
-                date=datetime(2026, 4, 9, tzinfo=UTC).date(),
+                date=datetime.now(UTC).date() - timedelta(days=1),
                 average=97.0,
                 highest=103.0,
                 lowest=92.0,
@@ -347,7 +386,7 @@ def test_generate_opportunities_uses_regionwide_esi_history_volume() -> None:
             EsiHistoryDaily(
                 region_id=target_location.region_id,
                 type_id=ids["tritanium_id"],
-                date=datetime(2026, 4, 8, tzinfo=UTC).date(),
+                date=datetime.now(UTC).date() - timedelta(days=2),
                 average=99.0,
                 highest=104.0,
                 lowest=94.0,
@@ -434,15 +473,17 @@ def test_generate_opportunities_populates_assets_target_orders_and_in_transit_me
                 character_id=characters[0].id,
                 type_id=ids["tritanium_id"],
                 quantity=12,
-                external_location_id=7_000_000_001,
-                location_name="Asset Hangar",
+                external_location_id=60003760,
+                resolved_location_id=ids["target_location_id"],
+                location_name="Jita IV",
             ),
             CharacterAsset(
                 character_id=characters[1].id,
                 type_id=ids["tritanium_id"],
                 quantity=8,
-                external_location_id=7_000_000_002,
-                location_name="Freighter Hold",
+                external_location_id=60003760,
+                resolved_location_id=ids["target_location_id"],
+                location_name="Jita IV",
             ),
             CharacterOrder(
                 character_id=characters[0].id,
@@ -491,6 +532,11 @@ def test_generate_opportunities_populates_assets_target_orders_and_in_transit_me
     assert row.assets_units == pytest.approx(20.0)
     assert row.active_sell_orders_units == pytest.approx(21.0)
     assert row.in_transit_units == pytest.approx(6.0)
+    # purchase_units is net of inventory: gross - assets - sell_orders - in_transit
+    # gross = min(source_available, demand_day) ≈ 2.857; net = max(2.857 - 20 - 21 - 6, 0) = 0
+    assert row.purchase_units == pytest.approx(0.0)
+    assert row.capital_required == pytest.approx(0.0)
+    assert row.shipping_cost == pytest.approx(0.0)
     assert summary.assets_units == pytest.approx(20.0)
     assert summary.active_sell_orders_units == pytest.approx(21.0)
     assert summary.in_transit_units == pytest.approx(6.0)

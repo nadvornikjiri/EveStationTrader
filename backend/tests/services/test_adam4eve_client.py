@@ -75,12 +75,11 @@ def test_cache_market_orders_export_requests_latest_export_file(monkeypatch: pyt
     assert FakeHttpxClient.instances
     assert FakeHttpxClient.instances[0].base_url == ADAM4EVE_STATIC_BASE_URL
     assert FakeHttpxClient.instances[0].headers["User-Agent"] == Adam4EveClient().get_headers()["User-Agent"]
+    # After optimization: resolve_latest only lists directories (latest year first),
+    # no CSV downloads needed — covered_through_date is derived from the week number.
     assert FakeHttpxClient.instances[0].calls == [
         "/MarketOrdersTrades/",
-        "/MarketOrdersTrades/2025/",
         "/MarketOrdersTrades/2026/",
-        "/MarketOrdersTrades/2026/marketOrderTrades_weekly_2026-1.csv",
-        "/MarketOrdersTrades/2026/marketOrderTrades_weekly_2026-12.csv",
     ]
 
 
@@ -113,7 +112,8 @@ def test_resolve_latest_market_orders_export_returns_week_metadata(
 
     assert export.path == "/MarketOrdersTrades/2026/marketOrderTrades_weekly_2026-12.csv"
     assert export.export_key == "2026-12"
-    assert export.covered_through_date.isoformat() == "2026-03-21"
+    # covered_through_date is now derived from the ISO week number (Sunday of that week)
+    assert export.covered_through_date.isoformat() == "2026-03-22"
 
 
 def test_resolve_market_orders_exports_returns_all_exports_after_since_date(
@@ -150,9 +150,10 @@ def test_resolve_market_orders_exports_returns_all_exports_after_since_date(
         since_date=date(2026, 3, 14)
     )
 
+    # covered_through_date is derived from the ISO week number (Sunday)
     assert [(export.export_key, export.covered_through_date.isoformat()) for export in exports] == [
         ("2026-11", "2026-03-15"),
-        ("2026-12", "2026-03-21"),
+        ("2026-12", "2026-03-22"),
     ]
 
 

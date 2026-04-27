@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.all_models import (
     AdamMarketOrdersTradeRaw,
+    AdamMarketPriceHistoryDaily,
     AdamNpcDemandSyncState,
+    AdamPriceHistoryStage,
+    AdamMarketVolumeHistoryDaily,
+    AdamVolumeHistoryStage,
     BulkImportCursor,
     BulkImportFile,
     EsiCharacter,
@@ -127,8 +131,6 @@ def seed_opportunity_inputs(session: Session) -> tuple[int, int, int]:
                 demand_source="adam4eve",
                 buy_from_sell_period=40.0,
                 sell_to_buy_period=8.0,
-                buy_from_sell_yesterday=10.0,
-                sell_to_buy_yesterday=2.0,
             ),
             EsiHistoryDaily(
                 region_id=region.id,
@@ -226,7 +228,7 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
     )
     session.commit()
 
-    service = SyncService(session_factory=lambda: session, esi_client=StubUniverseClient())
+    service = SyncService(session_factory=lambda: session, esi_client=cast(Any, StubUniverseClient()))
 
     service.prepare_trade_period(
         session,
@@ -256,6 +258,130 @@ def test_prepare_trade_period_recalculates_single_item_esi_demand_day_from_impor
     assert refreshed_row is not None
     assert refreshed_row.esi_demand_day == pytest.approx(0.0)
     assert len(history_rows) == 0
+
+
+def test_prepare_trade_period_uses_configured_source_regions_and_keeps_unresolved_items() -> None:
+    session = build_session()
+    source_region = Region(region_id=10000043, name="Domain")
+    target_region = Region(region_id=10000032, name="Sinq Laison")
+    session.add_all([source_region, target_region])
+    session.flush()
+
+    source_system = System(system_id=30002187, region_id=source_region.id, name="Amarr", security_status=0.7)
+    target_system = System(system_id=30002659, region_id=target_region.id, name="Dodixie", security_status=0.9)
+    session.add_all([source_system, target_system])
+    session.flush()
+
+    source = Location(
+        location_id=60008494,
+        location_type="npc_station",
+        system_id=source_system.id,
+        region_id=source_region.id,
+        name="Amarr VIII",
+    )
+    target = Location(
+        location_id=60011866,
+        location_type="npc_station",
+        system_id=target_system.id,
+        region_id=target_region.id,
+        name="Dodixie IX",
+    )
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add_all([source, target, item])
+    session.flush()
+
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [target.location_id],
+                "source_region_ids": [source_region.region_id],
+                "default_filters": {
+                    "min_item_profit": 15_000_000,
+                    "roi_now": 0.20,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.add(
+        EsiMarketOrder(
+            order_id=88_001,
+            region_id=source_region.id,
+            location_id=source.id,
+            type_id=item.id,
+            system_id=source_system.id,
+            is_buy_order=False,
+            price=100.0,
+            volume_total=500,
+            volume_remain=500,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.add(
+        MarketPricePeriod(
+            location_id=target.id,
+            type_id=item.id,
+            period_days=14,
+            current_price=120.0,
+            period_avg_price=125.0,
+            price_min=118.0,
+            price_max=127.0,
+        )
+    )
+    session.add(
+        EsiMarketOrder(
+            order_id=88_002,
+            region_id=target_region.id,
+            location_id=target.id,
+            type_id=item.id,
+            system_id=target_system.id,
+            is_buy_order=False,
+            price=120.0,
+            volume_total=50,
+            volume_remain=50,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.commit()
+
+    service = SyncService(session_factory=lambda: session, esi_client=cast(Any, StubUniverseClient()))
+    service.prepare_trade_period(
+        session,
+        target_location_id=target.id,
+        period_days=14,
+        refresh_inputs=False,
+    )
+
+    row = session.scalar(
+        select(OpportunityItem).where(
+            OpportunityItem.target_location_id == target.id,
+            OpportunityItem.source_location_id == source.id,
+            OpportunityItem.type_id == item.id,
+            OpportunityItem.period_days == 14,
+        )
+    )
+
+    assert row is not None
+    assert row.demand_source == "unresolved"
+    assert row.purchase_units == 0.0
+    assert row.target_demand_day == 0.0
 
 
 def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
@@ -315,8 +441,6 @@ def seed_secondary_opportunity_target(session: Session) -> tuple[int, int, int]:
                 demand_source="adam4eve",
                 buy_from_sell_period=30.0,
                 sell_to_buy_period=6.0,
-                buy_from_sell_yesterday=8.0,
-                sell_to_buy_yesterday=1.0,
             ),
             EsiHistoryDaily(
                 region_id=region.id,
@@ -430,8 +554,6 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
                 period_days=14,
                 buy_from_sell_period=140.0,
                 sell_to_buy_period=28.0,
-                buy_from_sell_yesterday=10.0,
-                sell_to_buy_yesterday=2.0,
                 coverage_pct=0.82,
             ),
             StructureDemandPeriod(
@@ -440,8 +562,6 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
                 period_days=14,
                 buy_from_sell_period=0.0,
                 sell_to_buy_period=0.0,
-                buy_from_sell_yesterday=0.0,
-                sell_to_buy_yesterday=0.0,
                 coverage_pct=0.43,
             ),
             MarketDemandResolved(
@@ -451,8 +571,6 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
                 demand_source="local_structure",
                 buy_from_sell_period=140.0,
                 sell_to_buy_period=28.0,
-                buy_from_sell_yesterday=10.0,
-                sell_to_buy_yesterday=2.0,
             ),
             MarketDemandResolved(
                 location_id=fallback_location.id,
@@ -461,8 +579,6 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
                 demand_source="regional_fallback",
                 buy_from_sell_period=0.0,
                 sell_to_buy_period=0.0,
-                buy_from_sell_yesterday=0.0,
-                sell_to_buy_yesterday=0.0,
             ),
             MarketDemandResolved(
                 location_id=npc_location.id,
@@ -471,8 +587,6 @@ def seed_fallback_diagnostics(session: Session) -> tuple[int, int, int]:
                 demand_source="adam4eve",
                 buy_from_sell_period=210.0,
                 sell_to_buy_period=35.0,
-                buy_from_sell_yesterday=15.0,
-                sell_to_buy_yesterday=3.0,
             ),
         ]
     )
@@ -573,10 +687,11 @@ class StubAdamClient:
         type_ids: list[int],
         *,
         location_ids: list[int],
-        since_date=None,
-        session=None,
+        since_date: date | None = None,
+        hub_only: bool = False,
+        session: Session | None = None,
     ) -> list[AdamStationPriceHistoryRecord]:
-        del session
+        del hub_only, session
         normalized_since = since_date.isoformat() if since_date is not None else None
         self.history_calls.append((region_id, list(type_ids), list(location_ids), normalized_since))
         return [
@@ -589,8 +704,9 @@ class StubAdamClient:
         self,
         *,
         since_date: date | None,
+        hub_only: bool = False,
     ) -> list[AdamStationPriceHistoryExport]:
-        del since_date
+        del since_date, hub_only
         exports: list[AdamStationPriceHistoryExport] = []
         for region_id, rows in self.history_rows_by_region.items():
             if not rows:
@@ -612,9 +728,10 @@ class StubAdamClient:
         self,
         *,
         since_date: date | None,
-        session=None,
-    ):
-        del session
+        hub_only: bool = False,
+        session: Session | None = None,
+    ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]:
+        del hub_only, session
         cached_exports: list[tuple[AdamStationPriceHistoryExport, CachedImportFile]] = []
         for region_id, rows in self.history_rows_by_region.items():
             normalized_since = since_date.isoformat() if since_date is not None else None
@@ -660,9 +777,10 @@ class StubAdamClient:
         self,
         *,
         since_date: date | None,
-        session=None,
-    ):
-        del session
+        hub_only: bool = False,
+        session: Session | None = None,
+    ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]:
+        del hub_only, session
         normalized_since = since_date.isoformat() if since_date is not None else None
         self.volume_history_calls.append(normalized_since)
         cached_exports: list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]] = []
@@ -1074,6 +1192,287 @@ def test_history_sync_same_day_refreshes_missing_price_periods() -> None:
     assert any(row.period_days == 14 for row in price_rows)
 
 
+def test_adam4eve_sync_refreshes_only_touched_market_price_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = build_session()
+    region_id, target_location_id, source_location_id, type_id = seed_raw_trade_inputs(session)
+    recent_date = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
+    target_internal_id = session.scalar(select(Location.id).where(Location.location_id == target_location_id))
+    source_internal_id = session.scalar(select(Location.id).where(Location.location_id == source_location_id))
+    item_internal_id = session.scalar(select(Item.id).where(Item.type_id == type_id))
+    assert target_internal_id is not None
+    assert source_internal_id is not None
+    assert item_internal_id is not None
+
+    extra_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    session.add(extra_item)
+    session.flush()
+    extra_item_id = extra_item.id
+    target_system_id = session.scalar(select(Location.system_id).where(Location.id == target_internal_id))
+    assert target_system_id is not None
+    region_internal_id = session.scalar(select(Region.id).where(Region.region_id == region_id))
+    assert region_internal_id is not None
+    session.add(
+        EsiMarketOrder(
+            order_id=9_003,
+            region_id=region_internal_id,
+            location_id=source_internal_id,
+            type_id=extra_item_id,
+            system_id=target_system_id,
+            is_buy_order=False,
+            price=80.0,
+            volume_total=500,
+            volume_remain=250,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.add_all(
+        [
+            MarketPricePeriod(
+                location_id=target_internal_id,
+                type_id=item_internal_id,
+                period_days=14,
+                current_price=120.0,
+                period_avg_price=120.0,
+                price_min=110.0,
+                price_max=130.0,
+            ),
+            MarketPricePeriod(
+                location_id=source_internal_id,
+                type_id=item_internal_id,
+                period_days=14,
+                current_price=100.0,
+                period_avg_price=100.0,
+                price_min=95.0,
+                price_max=105.0,
+            ),
+            MarketPricePeriod(
+                location_id=source_internal_id,
+                type_id=extra_item_id,
+                period_days=14,
+                current_price=80.0,
+                period_avg_price=80.0,
+                price_min=75.0,
+                price_max=85.0,
+            ),
+        ]
+    )
+    session.commit()
+
+    touched_calls: list[object] = []
+
+    def capture_refresh(
+        self,
+        session: Session,
+        *,
+        location_type_keys: list[tuple[int, int]],
+        period_days_list: list[int],
+    ) -> int:
+        del self, session
+        touched_calls.append(tuple(sorted(location_type_keys)))
+        touched_calls.append(tuple(period_days_list))
+        return len(location_type_keys)
+
+    monkeypatch.setattr(
+        "app.services.pricing.market_price_periods.MarketPricePeriodService.refresh_touched_periods_from_history",
+        capture_refresh,
+    )
+
+    adam_client = StubAdamClient(
+        [
+            {
+                "location_id": target_location_id,
+                "type_id": type_id,
+                "demand_day": 12.0,
+                "date": recent_date,
+                "source": "adam4eve",
+            }
+        ],
+        history_rows_by_region={
+            region_id: [
+                {
+                    "location_id": target_location_id,
+                    "region_id": region_id,
+                    "type_id": type_id,
+                    "date": recent_date,
+                    "buy_price_low": 110.0,
+                    "buy_price_avg": 115.0,
+                    "buy_price_high": 118.0,
+                    "sell_price_low": 110.0,
+                    "sell_price_avg": 120.0,
+                    "sell_price_high": 130.0,
+                }
+            ]
+        },
+    )
+    service = SyncService(
+        session_factory=lambda: session,
+        adam_client=adam_client,
+    )
+
+    result = service.trigger_job("adam4eve_sync")
+
+    assert result.status == "success"
+    assert touched_calls == [((target_internal_id, item_internal_id),), (3, 7, 14, 30)]
+
+
+def test_adam4eve_sync_truncates_existing_history_daily_before_reimport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = build_session()
+    region = Region(region_id=10009992, name="History Test Region")
+    session.add(region)
+    session.flush()
+
+    target_system = System(system_id=30009142, region_id=region.id, name="History Target", security_status=0.9)
+    source_system = System(system_id=30009143, region_id=region.id, name="History Source", security_status=0.7)
+    session.add_all([target_system, source_system])
+    session.flush()
+
+    target = Location(
+        location_id=61003760,
+        location_type="npc_station",
+        system_id=target_system.id,
+        region_id=region.id,
+        name="History Target Station",
+    )
+    source = Location(
+        location_id=61008494,
+        location_type="npc_station",
+        system_id=source_system.id,
+        region_id=region.id,
+        name="History Source Station",
+    )
+    item = Item(
+        type_id=300034,
+        name="History Tritanium",
+        volume_m3=0.01,
+        group_name="Mineral",
+        category_name="Material",
+    )
+    session.add_all([target, source, item])
+    session.flush()
+    session.add(
+        EsiMarketOrder(
+            order_id=91_001,
+            region_id=region.id,
+            location_id=target.id,
+            type_id=item.id,
+            system_id=target_system.id,
+            is_buy_order=False,
+            price=120.0,
+            volume_total=1_000,
+            volume_remain=400,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.add(
+        EsiMarketOrder(
+            order_id=91_002,
+            region_id=region.id,
+            location_id=source.id,
+            type_id=item.id,
+            system_id=source_system.id,
+            is_buy_order=False,
+            price=100.0,
+            volume_total=1_000,
+            volume_remain=600,
+            min_volume=1,
+            order_range="region",
+            issued=datetime.now(UTC),
+            duration=90,
+        )
+    )
+    session.commit()
+
+    region_id = region.region_id
+    target_location_id = target.location_id
+    source_location_id = source.location_id
+    type_id = item.type_id
+    recent_date = datetime.now(UTC).date() - timedelta(days=2)
+    target_internal_id = session.scalar(select(Location.id).where(Location.location_id == target_location_id))
+    source_internal_id = session.scalar(select(Location.id).where(Location.location_id == source_location_id))
+    item_internal_id = session.scalar(select(Item.id).where(Item.type_id == type_id))
+    assert target_internal_id is not None
+    assert source_internal_id is not None
+    assert item_internal_id is not None
+
+    session.add(
+        AdamMarketPriceHistoryDaily(
+            location_id=source_internal_id,
+            type_id=item_internal_id,
+            date=recent_date,
+            average=100.0,
+            highest=105.0,
+            lowest=95.0,
+            order_count=0,
+            volume=0,
+        )
+    )
+    session.commit()
+
+    touched_calls: list[object] = []
+
+    def capture_refresh(
+        self,
+        session: Session,
+        *,
+        location_type_keys: list[tuple[int, int]],
+        period_days_list: list[int],
+    ) -> int:
+        del self, session
+        touched_calls.append(tuple(sorted(location_type_keys)))
+        touched_calls.append(tuple(period_days_list))
+        return len(location_type_keys)
+
+    monkeypatch.setattr(
+        "app.services.pricing.market_price_periods.MarketPricePeriodService.refresh_touched_periods_from_history",
+        capture_refresh,
+    )
+
+    service = SyncService(
+        session_factory=lambda: session,
+        adam_client=StubAdamClient(
+            rows=[],
+            history_rows_by_region={
+                region_id: [
+                    {
+                            "location_id": target_location_id,
+                            "region_id": region_id,
+                            "type_id": type_id,
+                            "date": recent_date.isoformat(),
+                            "buy_price_low": 110.0,
+                        "buy_price_avg": 115.0,
+                        "buy_price_high": 118.0,
+                        "sell_price_low": 110.0,
+                        "sell_price_avg": 120.0,
+                        "sell_price_high": 130.0,
+                    }
+                ]
+            },
+        ),
+    )
+
+    result = service.trigger_job("adam4eve_sync")
+    history_rows = session.scalars(select(AdamMarketPriceHistoryDaily)).all()
+
+    assert result.status == "success"
+    assert {(row.location_id, row.type_id) for row in history_rows} == {
+        (target_internal_id, item_internal_id)
+    }
+    assert touched_calls == [
+        tuple(sorted(((source_internal_id, item_internal_id), (target_internal_id, item_internal_id)))),
+        (3, 7, 14, 30),
+    ]
+
+
 def test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_exports() -> None:
     session = build_session()
     region_id, target_location_id, _source_location_id, type_id = seed_raw_trade_inputs(session)
@@ -1085,6 +1484,16 @@ def test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_e
     assert target_internal_id is not None
     assert item_internal_id is not None
     assert region is not None
+
+    session.add(
+        AdamMarketVolumeHistoryDaily(
+            location_id=target_internal_id,
+            type_id=item_internal_id,
+            date=expected_since,
+            sell_volume_avg=999,
+        )
+    )
+    session.commit()
 
     adam_client = StubAdamClient(
         [],
@@ -1132,8 +1541,17 @@ def test_sync_adam_regional_price_history_refreshes_volume_periods_from_volume_e
         )
         .order_by(MarketVolumePeriod.period_days.asc())
     ).all()
+    daily_rows = session.scalars(
+        select(AdamMarketVolumeHistoryDaily)
+        .where(
+            AdamMarketVolumeHistoryDaily.location_id == target_internal_id,
+            AdamMarketVolumeHistoryDaily.type_id == item_internal_id,
+        )
+        .order_by(AdamMarketVolumeHistoryDaily.date.asc())
+    ).all()
 
     assert adam_client.volume_history_calls == [expected_since.isoformat()]
+    assert [(row.date.isoformat(), row.sell_volume_avg) for row in daily_rows] == [(recent_date, 250)]
     assert [row.period_days for row in volume_rows] == [7, 14]
     assert all(row.current_sell_volume == 250 for row in volume_rows)
     assert all(row.period_avg_sell_volume == pytest.approx(250.0) for row in volume_rows)
@@ -1495,9 +1913,10 @@ def test_opportunity_rebuild_does_not_refresh_esi_orders_inline_when_last_sync_i
         job_id: int,
         period_days: int | None = None,
         cancellation_check: object = None,
+        progress_phase_label: str | None = None,
     ) -> tuple[int, int]:
         assert job_id > 0
-        del session, cancellation_check
+        del session, cancellation_check, progress_phase_label
         assert period_days == 14
         return (3, 2)
 
@@ -1539,9 +1958,10 @@ def test_opportunity_rebuild_skips_esi_orders_when_last_sync_is_fresh(
         job_id: int,
         period_days: int | None = None,
         cancellation_check: object = None,
+        progress_phase_label: str | None = None,
     ) -> tuple[int, int]:
         assert job_id > 0
-        del session, cancellation_check
+        del session, cancellation_check, progress_phase_label
         assert period_days == 14
         return (3, 2)
 
@@ -2129,8 +2549,9 @@ def test_opportunity_rebuild_cancels_after_runtime_limit_and_keeps_partial_stage
         job_id: int,
         period_days: int | None = None,
         cancellation_check: object = None,
+        progress_phase_label: str | None = None,
     ) -> tuple[int, int]:
-        del self, session, job_id, period_days
+        del self, session, job_id, period_days, progress_phase_label
         time.sleep(0.01)
         assert callable(cancellation_check)
         cancellation_check()
@@ -2148,7 +2569,6 @@ def test_opportunity_rebuild_cancels_after_runtime_limit_and_keeps_partial_stage
     assert result.status == "cancelled"
     assert result.message is not None
     assert "runtime limit" in result.message
-    assert any(stage.stage_key == "refresh_esi_market_orders" and stage.status == "skipped" for stage in stage_rows)
     assert any(stage.stage_key == "rebuild_scopes" and stage.status == "cancelled" for stage in stage_rows)
 
 
@@ -2272,7 +2692,7 @@ def test_sync_esi_market_orders_reports_mid_ingest_progress(monkeypatch: pytest.
             assert region_id == 10000002
             return [{"order_id": 1}, {"order_id": 2}]
 
-    service = SyncService(session_factory=lambda: session, esi_client=StubUniverseClient())
+    service = SyncService(session_factory=lambda: session, esi_client=cast(Any, StubUniverseClient()))
 
     progress_updates: list[tuple[int | None, int | None, str | None]] = []
     original_update_job_progress = SyncService._update_job_progress
@@ -2681,8 +3101,6 @@ def test_trigger_job_structure_snapshot_sync_persists_snapshot_delta_and_demand_
     assert demand_period is not None
     assert demand_period.buy_from_sell_period == pytest.approx(30)
     assert demand_period.sell_to_buy_period == pytest.approx(25)
-    assert demand_period.buy_from_sell_yesterday == pytest.approx(30)
-    assert demand_period.sell_to_buy_yesterday == pytest.approx(25)
 
     rerun = service.trigger_job("structure_snapshot_sync")
     rerun_snapshots = session.scalars(
@@ -2999,7 +3417,7 @@ def test_trigger_job_structure_snapshot_sync_ignores_unselected_tracked_structur
     ) is None
 
 
-def test_trigger_job_character_sync_processes_all_enabled_characters() -> None:
+def test_trigger_job_character_sync_processes_all_enabled_characters(monkeypatch: pytest.MonkeyPatch) -> None:
     session = build_session()
     region = Region(region_id=10000002, name="The Forge")
     session.add(region)
@@ -3038,6 +3456,10 @@ def test_trigger_job_character_sync_processes_all_enabled_characters() -> None:
     )
     session.commit()
 
+    monkeypatch.setattr(
+        "app.services.characters.service.CharacterService.sync_character",
+        lambda self, character_id: [object(), object(), object()],
+    )
     service = SyncService(session_factory=lambda: session)
 
     result = service.trigger_job("character_sync")
@@ -3268,6 +3690,127 @@ def test_adam4eve_sync_skips_demand_download_when_generic_cursor_is_complete() -
     assert adam_client.demand_calls == []
 
 
+def test_adam4eve_sync_backfills_selected_target_adam_rows_even_when_download_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = build_session()
+    _region_id, target_location_id, _source_location_id, type_id = seed_raw_trade_inputs(session)
+    session.execute(
+        AdamMarketOrdersTradeRaw.insert().values(
+            location_id=target_location_id,
+            region_id=10000002,
+            type_id=type_id,
+            is_buy_order=0,
+            has_gone=0,
+            scanDate=date(2026, 3, 20),
+            amount=12.0,
+            high=5.0,
+            low=5.0,
+            avg=5.0,
+            orderNum=1,
+            iskValue=25.0,
+        )
+    )
+    session.add(
+        BulkImportCursor(
+            import_kind="adam4eve_npc_demand",
+            scope_key="region:1",
+            synced_through_date=datetime.now(UTC).date(),
+            last_completed_key="2026-12",
+            last_checked_at=datetime.now(UTC),
+        )
+    )
+    target_internal_id = session.scalar(select(Location.id).where(Location.location_id == target_location_id))
+    item_internal_id = session.scalar(select(Item.id).where(Item.type_id == type_id))
+    internal_region_id = session.scalar(select(Region.id).where(Region.region_id == 10000002))
+    assert target_internal_id is not None
+    assert item_internal_id is not None
+    assert internal_region_id is not None
+    session.add(
+        MarketDemandResolved(
+            location_id=target_internal_id,
+            type_id=item_internal_id,
+            period_days=14,
+            demand_source="esi_live",
+            buy_from_sell_period=3.0,
+            sell_to_buy_period=1.0,
+            esi_live_valid_days=1,
+            esi_live_buy_from_sell_ratio_period=1.0,
+            esi_live_buy_from_sell_ratio_yesterday=1.0,
+            esi_live_fallback_reason="seeded_for_test",
+        )
+    )
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [target_location_id],
+                "source_region_ids": [10000002],
+                "default_filters": {
+                    "min_item_profit": 15_000_000,
+                    "roi_now": 0.20,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
+    session.commit()
+
+    scoped_calls: list[tuple[int, ...]] = []
+
+    def capture_target_refresh(
+        self,
+        session: Session,
+        *,
+        target_location_ids: list[int],
+        source_region_ids: list[int],
+        period_days: int,
+    ) -> int:
+        del self, session
+        scoped_calls.append(tuple(target_location_ids))
+        scoped_calls.append(tuple(source_region_ids))
+        scoped_calls.append((period_days,))
+        return len(target_location_ids)
+
+    monkeypatch.setattr(
+        "app.services.demand.market_demand.MarketDemandResolutionService.refresh_target_markets_from_adam",
+        capture_target_refresh,
+    )
+
+    adam_client = StubAdamClient(
+        [
+            {
+                "location_id": target_location_id,
+                "type_id": type_id,
+                "demand_day": 12.0,
+                "date": "2026-03-20",
+                "source": "adam4eve",
+            }
+        ],
+        history_rows_by_region={10000002: []},
+    )
+    service = SyncService(
+        session_factory=lambda: session,
+        adam_client=adam_client,
+    )
+
+    result = service.trigger_job("adam4eve_sync")
+
+    assert result.status == "success"
+    assert adam_client.demand_calls == []
+    assert scoped_calls == [(target_internal_id,), (internal_region_id,), (14,)]
+
+
 def test_adam4eve_sync_refreshes_demand_download_when_latest_export_is_synced_but_raw_window_is_too_shallow() -> None:
     session = build_session()
     region_id, target_location_id, _source_location_id, type_id = seed_raw_trade_inputs(session)
@@ -3369,42 +3912,64 @@ def test_adam4eve_sync_passes_external_region_ids_for_demand_watermarks() -> Non
     assert state.synced_through_date == date(2026, 3, 22)
 
 
-def test_adam4eve_sync_refreshes_only_touched_market_demand_keys(
+def test_adam4eve_sync_refreshes_market_demand_for_configured_targets_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = build_session()
     region_id, target_location_id, source_location_id, type_id = seed_raw_trade_inputs(session)
     del region_id
 
-    extra_item = Item(type_id=35, name="Pyerite", volume_m3=0.01, group_name="Mineral", category_name="Material")
-    session.add(extra_item)
-    session.flush()
-    extra_item_id = extra_item.id
     target_internal_id = session.scalar(select(Location.id).where(Location.location_id == target_location_id))
     source_internal_id = session.scalar(select(Location.id).where(Location.location_id == source_location_id))
-    item_internal_id = session.scalar(select(Item.id).where(Item.type_id == type_id))
+    internal_region_id = session.scalar(select(Region.id).where(Region.region_id == 10000002))
     assert target_internal_id is not None
     assert source_internal_id is not None
-    assert item_internal_id is not None
+    assert internal_region_id is not None
+    session.add(
+        UserSetting(
+            user_id=None,
+            key="defaults",
+            value={
+                "default_analysis_period_days": 14,
+                "trade_groups_page_size": 20,
+                "debug_enabled": False,
+                "sales_tax_rate": 0.036,
+                "broker_fee_rate": 0.03,
+                "default_user_structure_poll_interval_minutes": 30,
+                "snapshot_retention_days": 30,
+                "fallback_policy": "regional_fallback",
+                "shipping_cost_per_m3": 350.0,
+                "target_market_location_ids": [target_location_id],
+                "source_region_ids": [10000002],
+                "default_filters": {
+                    "min_item_profit": 15_000_000,
+                    "roi_now": 0.20,
+                    "target_demand_day": 1,
+                },
+            },
+        )
+    )
     session.commit()
 
-    touched_calls: list[tuple[tuple[int, int], ...] | tuple[int]] = []
+    scoped_calls: list[tuple[int, ...]] = []
 
-    def capture_bulk_refresh(
+    def capture_target_refresh(
         self,
         session: Session,
         *,
-        demand_keys: list[tuple[int, int]],
+        target_location_ids: list[int],
+        source_region_ids: list[int],
         period_days: int,
     ) -> int:
         del self, session
-        touched_calls.append(tuple(demand_keys))
-        touched_calls.append((period_days,))
-        return len(demand_keys)
+        scoped_calls.append(tuple(target_location_ids))
+        scoped_calls.append(tuple(source_region_ids))
+        scoped_calls.append((period_days,))
+        return len(target_location_ids)
 
     monkeypatch.setattr(
-        "app.services.demand.market_demand.MarketDemandResolutionService.refresh_npc_keys_from_adam",
-        capture_bulk_refresh,
+        "app.services.demand.market_demand.MarketDemandResolutionService.refresh_target_markets_from_adam",
+        capture_target_refresh,
     )
 
     service = SyncService(
@@ -3433,9 +3998,8 @@ def test_adam4eve_sync_refreshes_only_touched_market_demand_keys(
     result = service.trigger_job("adam4eve_sync")
 
     assert result.status == "success"
-    assert touched_calls == [((target_internal_id, item_internal_id),), (14,)]
-    assert ((source_internal_id, item_internal_id),) not in touched_calls
-    assert ((target_internal_id, extra_item_id),) not in touched_calls
+    assert scoped_calls == [(target_internal_id,), (internal_region_id,), (14,)]
+    assert (source_internal_id,) not in scoped_calls
 
 
 
@@ -3464,6 +4028,31 @@ def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None
         )
     )
     session.add(AdamNpcDemandSyncState(region_id=1, export_key="2026-12", synced_through_date=date(2026, 3, 20)))
+    session.execute(
+        AdamPriceHistoryStage.insert().values(
+            location_id=target_location_id,
+            region_id=10000002,
+            type_id=type_id,
+            date=date(2026, 3, 20),
+            buy_price_low=90.0,
+            buy_price_avg=95.0,
+            buy_price_high=100.0,
+            sell_price_low=110.0,
+            sell_price_avg=120.0,
+            sell_price_high=130.0,
+            export_key="2026-12-rest-10000002",
+        )
+    )
+    session.execute(
+        AdamVolumeHistoryStage.insert().values(
+            location_id=target_location_id,
+            region_id=10000002,
+            type_id=type_id,
+            date=date(2026, 3, 20),
+            sell_volume_avg=500,
+            export_key="2026-12-rest",
+        )
+    )
     session.add(
         BulkImportCursor(
             import_kind="adam4eve_npc_demand",
@@ -3482,6 +4071,15 @@ def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None
         )
     )
     session.add(
+        BulkImportFile(
+            import_kind="adam_market_volume_history_daily",
+            file_key="volume.csv",
+            remote_path="/volume.csv",
+            local_path="C:/tmp/volume.csv",
+            covered_date=date(2026, 3, 20),
+        )
+    )
+    session.add(
         MarketDemandResolved(
             location_id=target_internal_id,
             type_id=item_internal_id,
@@ -3489,8 +4087,6 @@ def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None
             demand_source="adam4eve",
             buy_from_sell_period=24.0,
             sell_to_buy_period=4.0,
-            buy_from_sell_yesterday=12.0,
-            sell_to_buy_yesterday=2.0,
         )
     )
     session.add(
@@ -3502,6 +4098,26 @@ def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None
             period_avg_price=100.0,
             price_min=90.0,
             price_max=110.0,
+        )
+    )
+    session.add(
+        AdamMarketPriceHistoryDaily(
+            location_id=target_internal_id,
+            type_id=item_internal_id,
+            date=date(2026, 3, 20),
+            average=120.0,
+            highest=130.0,
+            lowest=110.0,
+            order_count=0,
+            volume=0,
+        )
+    )
+    session.add(
+        AdamMarketVolumeHistoryDaily(
+            location_id=target_internal_id,
+            type_id=item_internal_id,
+            date=date(2026, 3, 20),
+            sell_volume_avg=500,
         )
     )
     session.add(
@@ -3569,8 +4185,16 @@ def test_clear_job_data_for_adam4eve_sync_removes_raw_and_derived_rows() -> None
     assert response.records_deleted > 0
     assert session.execute(select(AdamMarketOrdersTradeRaw)).all() == []
     assert session.scalars(select(AdamNpcDemandSyncState)).all() == []
+    assert session.execute(select(AdamPriceHistoryStage)).all() == []
+    assert session.execute(select(AdamVolumeHistoryStage)).all() == []
+    assert session.scalars(select(AdamMarketPriceHistoryDaily)).all() == []
+    assert session.scalars(select(AdamMarketVolumeHistoryDaily)).all() == []
     assert session.scalars(select(BulkImportCursor).where(BulkImportCursor.import_kind == "adam4eve_npc_demand")).all() == []
     assert session.scalars(select(BulkImportFile).where(BulkImportFile.import_kind == "adam4eve_npc_demand")).all() == []
+    assert (
+        session.scalars(select(BulkImportFile).where(BulkImportFile.import_kind == "adam_market_volume_history_daily")).all()
+        == []
+    )
     assert session.scalars(select(MarketDemandResolved)).all() == []
     assert session.scalars(select(MarketPricePeriod)).all() == []
     assert session.scalars(select(OpportunityItem)).all() == []
@@ -3637,8 +4261,6 @@ def test_clear_job_data_for_structure_snapshot_sync_removes_snapshot_outputs() -
             period_days=14,
             buy_from_sell_period=21.0,
             sell_to_buy_period=7.0,
-            buy_from_sell_yesterday=1.5,
-            sell_to_buy_yesterday=0.5,
             coverage_pct=0.8,
         )
     )
@@ -3650,8 +4272,6 @@ def test_clear_job_data_for_structure_snapshot_sync_removes_snapshot_outputs() -
             demand_source="local_structure",
             buy_from_sell_period=21.0,
             sell_to_buy_period=7.0,
-            buy_from_sell_yesterday=1.5,
-            sell_to_buy_yesterday=0.5,
         )
     )
     session.commit()
