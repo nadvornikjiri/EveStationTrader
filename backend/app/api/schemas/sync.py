@@ -7,6 +7,7 @@ class SyncStatusCard(BaseModel):
     key: str
     label: str
     status: str
+    health_color: str | None = None
     last_successful_sync: datetime | None = None
     next_scheduled_sync: datetime | None = None
     recent_error_count: int = 0
@@ -47,6 +48,11 @@ class SyncJobRunResponse(BaseModel):
     stages: list[SyncJobStageRunResponse] = Field(default_factory=list)
 
 
+class PaginatedSyncJobsResponse(BaseModel):
+    jobs: list[SyncJobRunResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 class FallbackDiagnostic(BaseModel):
     structure_name: str
     structure_id: int
@@ -58,3 +64,21 @@ class ClearSyncDataResponse(BaseModel):
     job_type: str
     records_deleted: int
     message: str
+
+
+class JobScheduleConfigResponse(BaseModel):
+    job_type: str
+    label: str
+    trigger_type: str
+    interval_minutes: int | None = None
+    cron_hour: int | None = None
+    cron_minute: int | None = None
+    enabled: bool = True
+
+
+class JobScheduleConfigUpdate(BaseModel):
+    trigger_type: str | None = None
+    interval_minutes: int | None = None
+    cron_hour: int | None = None
+    cron_minute: int | None = None
+    enabled: bool | None = None

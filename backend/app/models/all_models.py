@@ -274,7 +274,7 @@ AdamMarketOrdersTradeRaw = Table(
     "adam_market_orders_trade_raw",
     Base.metadata,
     Column("location_id", BigInteger, nullable=False),
-    Column("region_id", Integer, nullable=False),
+    Column("region_id", Integer, nullable=True),
     Column("type_id", Integer, nullable=False),
     Column("is_buy_order", Integer, nullable=False),
     Column("has_gone", Integer, nullable=False),
@@ -632,3 +632,33 @@ class UserSetting(Base):
     key: Mapped[str] = mapped_column(String(128))
     value: Mapped[dict] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class JobScheduleConfig(Base):
+    """Per-job schedule configuration.
+
+    ``trigger_type`` is ``'interval'`` or ``'cron'``.
+    For *interval* jobs, ``interval_minutes`` is the repeat cadence.
+    For *cron* jobs, ``cron_hour`` / ``cron_minute`` set the daily fire time (UTC).
+    """
+
+    __tablename__ = "job_schedule_config"
+
+    job_type: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(128))
+    trigger_type: Mapped[str] = mapped_column(String(16), default="interval")
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cron_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cron_minute: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AppLogEntry(Base):
+    __tablename__ = "app_log_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    log_level: Mapped[str] = mapped_column(String(16), default="DEBUG")
+    source: Mapped[str] = mapped_column(String(128))
+    message: Mapped[str] = mapped_column(Text)

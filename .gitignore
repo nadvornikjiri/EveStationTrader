@@ -26,3 +26,7 @@ backend/*.log
 
 # superturtle
 .superturtle/
+
+# agent tool config (local symlinks/config, not project code)
+.codex/
+.claude/skills

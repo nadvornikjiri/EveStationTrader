@@ -90,7 +90,15 @@ class CharacterService:
             session.close()
 
     def _ensure_valid_token(self, session: Session, character: EsiCharacter) -> str:
-        """Refresh the access token if expired, return a valid access token."""
+        """Refresh the access token if expired, return a valid access token.
+
+        Only marks the character for re-authentication when CCP explicitly
+        rejects the refresh token (``EsiTokenRevokedError``).  Transient
+        failures (network, 5xx) are propagated so the sync job can retry
+        later without permanently disabling the character.
+        """
+        from app.services.esi.client import EsiTokenRevokedError, EsiTokenRefreshError
+
         token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
         if token is None:
             raise LookupError(f"No token found for character {character.character_name}")
@@ -103,11 +111,17 @@ class CharacterService:
                 token.refresh_token = refreshed.get("refresh_token", token.refresh_token)
                 token.expires_at = datetime.fromisoformat(refreshed["expires_at"])
                 session.flush()
-            except Exception:
+            except EsiTokenRevokedError:
                 self._mark_character_reauth_required(session, character)
                 raise LookupError(
-                    f"Token refresh failed for character {character.character_name}. "
+                    f"Token permanently revoked for character {character.character_name}. "
                     "Reconnect the same character via EVE SSO."
+                )
+            except EsiTokenRefreshError as exc:
+                # Transient — don't disable the character, just skip this sync cycle
+                raise LookupError(
+                    f"Temporary token refresh failure for {character.character_name}: {exc}. "
+                    "Will retry on next sync cycle."
                 )
 
         return token.access_token

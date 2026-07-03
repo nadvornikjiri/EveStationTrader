@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import base64
 
 import httpx
 import pytest
@@ -246,7 +245,7 @@ def test_rate_limit_state_tracks_headers() -> None:
     assert state.total_requests == 2
 
 
-def test_refresh_access_token_uses_basic_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refresh_access_token_uses_pkce_refresh_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class PostResponse:
@@ -274,16 +273,14 @@ def test_refresh_access_token_uses_basic_auth_header(monkeypatch: pytest.MonkeyP
 
     result = EsiClient().refresh_access_token("refresh-token-1")
 
-    expected_auth = "Basic " + base64.b64encode(
-        f"{EsiClient().settings.esi_client_id}:{EsiClient().settings.esi_client_secret}".encode("utf-8")
-    ).decode("ascii")
+    client_id = EsiClient().settings.esi_client_id
     assert captured["url"] == esi_client_module.EVE_SSO_TOKEN_URL
     assert captured["data"] == {
         "grant_type": "refresh_token",
         "refresh_token": "refresh-token-1",
+        "client_id": client_id,
     }
     assert captured["headers"] == {
-        "Authorization": expected_auth,
         "Content-Type": "application/x-www-form-urlencoded",
     }
     assert captured["timeout"] == 30.0

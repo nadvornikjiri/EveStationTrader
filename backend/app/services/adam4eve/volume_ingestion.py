@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from csv import DictReader
 from datetime import date
 from io import StringIO
@@ -42,7 +43,8 @@ _COPYABLE_COLUMNS = {
 }
 
 _CREATE_VOLUME_TEMP_TABLE_SQL = """
-    CREATE TEMP TABLE IF NOT EXISTS adam_volume_history_file_stage (
+    DROP TABLE IF EXISTS adam_volume_history_file_stage;
+    CREATE TEMP TABLE adam_volume_history_file_stage (
         type_id INTEGER NULL,
         location_id BIGINT NULL,
         region_id INTEGER NULL,
@@ -54,7 +56,7 @@ _CREATE_VOLUME_TEMP_TABLE_SQL = """
         sell_volume_low DOUBLE PRECISION NULL,
         sell_volume_avg BIGINT NULL,
         sell_volume_high DOUBLE PRECISION NULL
-    )
+    ) ON COMMIT DROP
 """
 
 _INSERT_VOLUME_FROM_TEMP_SQL = """
@@ -75,14 +77,10 @@ _INSERT_VOLUME_FROM_TEMP_SQL = """
       AND t.sell_volume_avg IS NOT NULL
 """
 
-_TOUCHED_VOLUME_KEYS_SQL = """
-    SELECT DISTINCT locations.id, items.id
-    FROM adam_volume_history_file_stage t
-    JOIN locations ON locations.location_id = t.location_id
-    JOIN items ON items.type_id = t.type_id
-    WHERE t.type_id IS NOT NULL
-      AND t.location_id IS NOT NULL
-    ORDER BY locations.id ASC, items.id ASC
+_TOUCHED_VOLUME_KEYS_FROM_DAILY_SQL = """
+    SELECT DISTINCT location_id, type_id
+    FROM adam_market_volume_history_daily
+    ORDER BY location_id ASC, type_id ASC
 """
 
 
@@ -107,21 +105,33 @@ def truncate_volume_history_daily(session: Session) -> None:
     session.execute(text("TRUNCATE TABLE adam_market_volume_history_daily"))
 
 
-def import_volume_csv_to_daily(session: Session, csv_file_path: str | Path) -> list[tuple[int, int]]:
-    """COPY a CSV into a temp table, then INSERT directly into the volume daily table with ID translation.
+def import_volume_csv_to_daily(
+    session: Session,
+    csv_file_path: str | Path,
+    *,
+    progress_callback: Callable[[str, float], None] | None = None,
+    db_logging: bool = True,
+) -> None:
+    """COPY a CSV into a temp table, INSERT into the volume daily table, and commit.
 
-    Returns the list of (location_id, type_id) internal key pairs touched.
+    The temp table uses ``ON COMMIT DROP`` so it is cleaned up automatically.
+    *progress_callback*, when provided, is called with ``(phase_label, fraction)``
+    where *fraction* ranges from 0.0 to 1.0 (COPY 0→0.3, INSERT 0.3→1.0).
     """
     csv_path = Path(csv_file_path)
     if csv_path.stat().st_size == 0:
-        return []
+        return
     file_size_bytes = csv_path.stat().st_size
+
+    def _report(label: str, fraction: float) -> None:
+        if progress_callback is not None:
+            progress_callback(label, fraction)
 
     stage_columns = _copy_columns_for_volume_csv(csv_file_path)
 
     session.execute(text(_CREATE_VOLUME_TEMP_TABLE_SQL))
-    session.execute(text("TRUNCATE TABLE adam_volume_history_file_stage"))
 
+    _report("Loading CSV into staging", 0.0)
     copy_started_at = perf_counter()
     copy_delimited_file(
         session,
@@ -129,32 +139,84 @@ def import_volume_csv_to_daily(session: Session, csv_file_path: str | Path) -> l
         file_path=csv_file_path,
         columns=stage_columns,
     )
+    copy_elapsed = perf_counter() - copy_started_at
     logger.info(
         "adam4eve profile phase=volume_history_copy_to_temp elapsed_s=%.3f file=%s file_size_mb=%.2f column_count=%s",
-        perf_counter() - copy_started_at,
+        copy_elapsed,
         csv_path.name,
         file_size_bytes / (1024 * 1024),
         len(stage_columns),
     )
+    if db_logging:
+        from app.services.app_logging import write_timing_log
 
+        write_timing_log(
+            session,
+            source="adam4eve.volume_history",
+            started_at=copy_started_at,
+            phase="copy_to_staging",
+            file=csv_path.name,
+            file_size_mb=round(file_size_bytes / (1024 * 1024), 2),
+        )
+
+    _report("Inserting into daily table", 0.3)
     insert_started_at = perf_counter()
-    session.execute(text(_INSERT_VOLUME_FROM_TEMP_SQL))
+    # Disable FK trigger validation during bulk INSERT — the JOIN already
+    # guarantees referential integrity (only rows matching known locations
+    # and items are selected).  This avoids 2× per-row FK lookups that
+    # dominate runtime on multi-million-row files.
+    session.execute(text(
+        "ALTER TABLE adam_market_volume_history_daily DISABLE TRIGGER ALL"
+    ))
+    try:
+        session.execute(text(_INSERT_VOLUME_FROM_TEMP_SQL))
+    finally:
+        session.execute(text(
+            "ALTER TABLE adam_market_volume_history_daily ENABLE TRIGGER ALL"
+        ))
+    insert_elapsed = perf_counter() - insert_started_at
     logger.info(
         "adam4eve profile phase=volume_history_insert_from_temp elapsed_s=%.3f file=%s",
-        perf_counter() - insert_started_at,
+        insert_elapsed,
         csv_path.name,
     )
+    if db_logging:
+        from app.services.app_logging import write_timing_log
 
-    touched_started_at = perf_counter()
-    touched = session.execute(text(_TOUCHED_VOLUME_KEYS_SQL)).all()
-    touched_keys = [(int(loc_id), int(type_id)) for loc_id, type_id in touched]
+        write_timing_log(
+            session,
+            source="adam4eve.volume_history",
+            started_at=insert_started_at,
+            phase="insert_to_daily",
+            file=csv_path.name,
+        )
+
+    # Commit drops the temp table (ON COMMIT DROP) and finalises the INSERT.
+    session.commit()
+    _report("Done", 1.0)
+
+
+def query_touched_volume_keys(session: Session, *, db_logging: bool = True) -> list[tuple[int, int]]:
+    """Return distinct (location_id, type_id) pairs from the daily volume table."""
+    started_at = perf_counter()
+    rows = session.execute(text(_TOUCHED_VOLUME_KEYS_FROM_DAILY_SQL)).all()
+    keys = [(int(loc_id), int(type_id)) for loc_id, type_id in rows]
     logger.info(
-        "adam4eve profile phase=volume_history_load_touched_keys elapsed_s=%.3f file=%s touched_keys=%s",
-        perf_counter() - touched_started_at,
-        csv_path.name,
-        len(touched_keys),
+        "adam4eve profile phase=volume_history_touched_keys elapsed_s=%.3f count=%s",
+        perf_counter() - started_at,
+        len(keys),
     )
-    return touched_keys
+    if db_logging:
+        from app.services.app_logging import write_timing_log
+
+        write_timing_log(
+            session,
+            source="adam4eve.volume_history",
+            started_at=started_at,
+            phase="distinct_key_query",
+            key_count=len(keys),
+        )
+    return keys
 
 
 
@@ -235,8 +297,8 @@ class AdamStationVolumeHistoryIngestionService:
                 region_id=0, records_processed=0, created=0, updated=0, touched_internal_keys=[],
             )
 
-        touched_internal_keys = import_volume_csv_to_daily(session, csv_file_path)
-        session.commit()
+        import_volume_csv_to_daily(session, csv_file_path)
+        touched_internal_keys = query_touched_volume_keys(session)
         return AdamStationPriceHistoryIngestionResult(
             region_id=0,
             records_processed=len(touched_internal_keys),

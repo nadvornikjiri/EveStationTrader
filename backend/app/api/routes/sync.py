@@ -1,6 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
-from app.api.schemas.sync import ClearSyncDataResponse, FallbackDiagnostic, SyncJobRunResponse, SyncStatusCard
+from app.api.schemas.sync import (
+    ClearSyncDataResponse,
+    FallbackDiagnostic,
+    JobScheduleConfigResponse,
+    JobScheduleConfigUpdate,
+    PaginatedSyncJobsResponse,
+    SyncJobRunResponse,
+    SyncStatusCard,
+)
 from app.services.sync.service import SyncService
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -11,9 +19,13 @@ def get_sync_status() -> list[SyncStatusCard]:
     return SyncService().get_status()
 
 
-@router.get("/jobs", response_model=list[SyncJobRunResponse])
-def get_sync_jobs() -> list[SyncJobRunResponse]:
-    return SyncService().list_jobs()
+@router.get("/jobs", response_model=PaginatedSyncJobsResponse)
+def get_sync_jobs(
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> PaginatedSyncJobsResponse:
+    jobs, total = SyncService().list_jobs(limit=limit, offset=offset)
+    return PaginatedSyncJobsResponse(jobs=jobs, total=total)
 
 
 @router.post("/run/{job_type}", response_model=SyncJobRunResponse)
@@ -46,3 +58,16 @@ def clear_stale_jobs() -> dict:
 @router.get("/fallback-status", response_model=list[FallbackDiagnostic])
 def get_fallback_status() -> list[FallbackDiagnostic]:
     return SyncService().get_fallback_status()
+
+
+@router.get("/schedules", response_model=list[JobScheduleConfigResponse])
+def get_schedules() -> list[JobScheduleConfigResponse]:
+    return SyncService().get_schedule_configs()
+
+
+@router.put("/schedules/{job_type}", response_model=JobScheduleConfigResponse)
+def update_schedule(job_type: str, body: JobScheduleConfigUpdate) -> JobScheduleConfigResponse:
+    try:
+        return SyncService().update_schedule_config(job_type, body)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

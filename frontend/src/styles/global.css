@@ -91,6 +91,18 @@ select {
   align-items: center;
 }
 
+.trade-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trade-rebuild-age {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -105,6 +117,15 @@ select {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
+}
+
+.schedule-select {
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: inherit;
+  font-size: 0.85rem;
 }
 
 .trade-controls-grid {
@@ -768,6 +789,57 @@ button:disabled {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.status-card-green {
+  border-color: rgba(56, 189, 130, 0.65);
+}
+
+.status-card-yellow {
+  border-color: rgba(245, 158, 11, 0.75);
+}
+
+.status-card-red {
+  border-color: rgba(248, 113, 113, 0.8);
+}
+
+.sync-health-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sync-health-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-card-green .sync-health-dot {
+  color: #38bd82;
+}
+
+.status-card-green .eyebrow {
+  color: #38bd82;
+}
+
+.status-card-yellow .sync-health-dot {
+  color: #f59e0b;
+}
+
+.status-card-yellow .eyebrow {
+  color: #f59e0b;
+}
+
+.status-card-red .sync-health-dot {
+  color: #f87171;
+}
+
+.status-card-red .eyebrow {
+  color: #f87171;
+}
+
 .sync-progress-block {
   display: grid;
   gap: 6px;
@@ -977,10 +1049,10 @@ button:disabled {
 
 .shopping-list-overlay {
   position: fixed;
-  bottom: 0;
+  bottom: 44px;
   left: 0;
   right: 0;
-  z-index: 99;
+  z-index: 103;
   height: 20vh;
   min-height: 220px;
   max-height: 20vh;
@@ -1329,4 +1401,90 @@ button:disabled {
   .in-transit-form {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Character cards ─────────────────────────────────── */
+
+.characters-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.character-card {
+  padding: 16px 20px;
+}
+
+.character-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.character-card-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.character-card-name:hover {
+  text-decoration: underline;
+}
+
+.character-card-corp {
+  color: rgba(231, 238, 248, 0.55);
+  font-size: 0.9rem;
+}
+
+.character-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 24px;
+  margin-bottom: 12px;
+}
+
+.character-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.character-card-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(231, 238, 248, 0.45);
+}
+
+.character-card-sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.character-card-scopes {
+  font-size: 0.82rem;
+  color: rgba(231, 238, 248, 0.5);
+}
+
+.character-card-scopes summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.character-card-scopes ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+  columns: 2;
+  column-gap: 24px;
+}
+
+.character-card-scopes li {
+  padding: 1px 0;
+  word-break: break-all;
 }

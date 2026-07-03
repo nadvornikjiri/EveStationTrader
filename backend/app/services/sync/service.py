@@ -9,8 +9,9 @@ import tempfile
 
 import httpx
 from threading import Event, Lock, Thread, current_thread, main_thread
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable, Protocol, Sequence, TypeVar, cast
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from sqlalchemy import and_, delete, distinct, func, select
 from sqlalchemy.orm import Session
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session
 from app.api.schemas.sync import (
     ClearSyncDataResponse,
     FallbackDiagnostic,
+    JobScheduleConfigResponse,
+    JobScheduleConfigUpdate,
     SyncJobRunResponse,
     SyncJobStageRunResponse,
     SyncStatusCard,
@@ -55,6 +58,7 @@ from app.models.all_models import (
     StructureOrderDelta,
     StructureSnapshotOrder,
     StructureSnapshot,
+    JobScheduleConfig,
     SyncJobStageRun,
     SyncJobRun,
     System,
@@ -72,17 +76,19 @@ from app.services.adam4eve.history_ingestion import (
     AdamStationHistoryWorksetEntry,
     AdamStationPriceHistoryRecord,
     import_price_csv_to_daily,
+    query_touched_price_keys,
     truncate_price_history_daily,
 )
 from app.services.adam4eve.ingestion import AdamMarketOrdersIngestionService
 from app.services.adam4eve.volume_ingestion import (
     import_volume_csv_to_daily,
+    query_touched_volume_keys,
     truncate_volume_history_daily,
 )
 from app.services.demand.market_demand import MarketDemandResolutionService
 from app.services.everef.client import download_history_file, fetch_totals_json, get_available_dates
 from app.services.everef.history_ingestion import EveRefHistoryIngestionService
-from app.services.esi.client import EsiClient, EsiRegionalOrderRecord
+from app.services.esi.client import EsiClient, EsiRegionalOrderRecord, EsiTokenRefreshError, EsiTokenRevokedError
 from app.services.esi.orders_ingestion import EsiRegionOrderBatch, EsiRegionalOrderIngestionService
 from app.services.opportunities.generation import OpportunityGenerationService
 from app.services.pricing.market_price_periods import MarketPricePeriodService
@@ -90,7 +96,7 @@ from app.services.pricing.market_volume_periods import MarketVolumePeriodService
 from app.services.settings_service import SettingsService
 from app.services.structures.demand_periods import StructureDemandPeriodService
 from app.services.structures.snapshots import StructureOrderInput, StructureSnapshotService
-from app.services.sync.bulk_imports import BulkImportService, CachedImportFile
+from app.services.sync.bulk_imports import BulkImportService, CachedImportFile, DownloadProgress
 from app.services.sync.foundation_import import CcpSdeClient, FoundationImportService
 
 logger = logging.getLogger(__name__)
@@ -202,7 +208,17 @@ class SettingsScopedStructureSnapshotClient:
             fetched_at = datetime.now(UTC)
 
             for accessible_structure, character in candidate_characters:
-                access_token = self._ensure_valid_token(session, character)
+                try:
+                    access_token = self._ensure_valid_token(session, character)
+                except EsiTokenRevokedError:
+                    self._mark_character_reauth_required(session, character)
+                    session.commit()
+                    continue
+                except EsiTokenRefreshError as exc:
+                    raise LookupError(
+                        f"Temporary token refresh failure for {character.character_name}: {exc}. "
+                        "Will retry on next sync cycle."
+                    ) from exc
                 order_rows = self.esi_client.fetch_structure_orders(access_token, structure_id)
                 if order_rows is None:
                     continue
@@ -220,6 +236,9 @@ class SettingsScopedStructureSnapshotClient:
                             is_buy_order=row["is_buy_order"],
                             price=row["price"],
                             volume_remain=row["volume_remain"],
+                            volume_total=row.get("volume_total", row["volume_remain"]),
+                            min_volume=row.get("min_volume", 1),
+                            order_range=row.get("range", "station"),
                             issued=issued_at,
                             duration=row["duration"],
                         )
@@ -281,6 +300,21 @@ class SettingsScopedStructureSnapshotClient:
     def _character_has_scope(character: EsiCharacter, scope: str) -> bool:
         return scope in (character.granted_scopes or "").split()
 
+    def _mark_character_reauth_required(self, session: Session, character: EsiCharacter) -> None:
+        sync_state = session.scalar(
+            select(EsiCharacterSyncState).where(EsiCharacterSyncState.character_id == character.id)
+        )
+        if sync_state is None:
+            sync_state = EsiCharacterSyncState(character_id=character.id)
+            session.add(sync_state)
+
+        character.sync_enabled = False
+        sync_state.last_token_refresh = datetime.now(UTC)
+        sync_state.assets_sync_status = "reauth_required"
+        sync_state.orders_sync_status = "reauth_required"
+        sync_state.skills_sync_status = "reauth_required"
+        sync_state.structures_sync_status = "reauth_required"
+
     def _ensure_valid_token(self, session: Session, character: EsiCharacter) -> str:
         token = session.scalar(select(EsiCharacterToken).where(EsiCharacterToken.character_id == character.id))
         if token is None:
@@ -330,7 +364,16 @@ def register_cancellation_signal_handlers() -> None:
 
 
 class SyncService:
+    FRESH_TRADE_DATA_JOB = "fresh_trade_data_sync"
+    FRESH_TRADE_RAW_JOBS: tuple[str, ...] = (
+        "adam4eve_sync",
+        "everef_history_sync",
+        "esi_market_orders_sync",
+        "character_sync",
+    )
     STALE_CANCELLING_JOB_MINUTES = 2
+    FRESH_CHILD_JOB_TIMEOUT_SECONDS = 7200  # 2 hours max per child job
+    FRESH_PARALLEL_TIMEOUT_SECONDS = 10800  # 3 hours max for all parallel jobs
     STATUS_CARD_DEFINITIONS: tuple[tuple[str, str], ...] = (
         ("foundation_import_sync", "Foundation universe sync"),
         ("adam4eve_sync", "Adam4EVE sync"),
@@ -340,6 +383,20 @@ class SyncService:
         ("character_sync", "Character sync"),
         ("opportunity_rebuild", "Opportunity rebuild"),
     )
+    MANUAL_HEALTH_JOBS: frozenset[str] = frozenset(
+        {
+            "foundation_import_sync",
+            "structure_snapshot_sync",
+        }
+    )
+    DAILY_HEALTH_INTERVAL_MINUTES = 24 * 60
+    HEALTH_FALLBACK_INTERVALS_MINUTES: dict[str, int] = {
+        "esi_market_orders_sync": 10,
+        "everef_history_sync": DAILY_HEALTH_INTERVAL_MINUTES,
+        "adam4eve_sync": DAILY_HEALTH_INTERVAL_MINUTES,
+        "character_sync": 15,
+        "opportunity_rebuild": 60,
+    }
     WORKER_HEARTBEAT_STALE_MINUTES = 15
     DEBUG_REGION_LIMIT = 1
     MARKET_PRICE_PERIODS: tuple[int, ...] = (3, 7, 14, 30)
@@ -350,6 +407,18 @@ class SyncService:
     PRE_REBUILD_ESI_MARKET_ORDER_MAX_AGE_MINUTES = 10
     OPPORTUNITY_REBUILD_MAX_RUNTIME = timedelta(minutes=30)
     PROGRESS_RATE_UPDATE_INTERVAL_SECONDS = 1.0
+
+    @staticmethod
+    def _count_csv_rows(path: Path) -> int:
+        """Fast line count minus header. Returns 0 for empty/missing files."""
+        if not path.exists() or path.stat().st_size == 0:
+            return 0
+        with path.open("r", encoding="utf-8", newline="") as f:
+            return max(sum(1 for _ in f) - 1, 0)
+
+    @staticmethod
+    def _format_mb(byte_count: int) -> str:
+        return f"{byte_count / 1_048_576:.1f}"
 
     @staticmethod
     def _current_rss_mb() -> float | None:
@@ -376,7 +445,15 @@ class SyncService:
         return peak_kb / 1024.0
 
     @classmethod
-    def _log_profile_checkpoint(cls, label: str, *, started_at: float, **metrics: object) -> None:
+    def _log_profile_checkpoint(
+        cls,
+        label: str,
+        *,
+        started_at: float,
+        session: Session | None = None,
+        source: str = "sync.adam4eve",
+        **metrics: object,
+    ) -> None:
         current_rss_mb = cls._current_rss_mb()
         peak_rss_mb = cls._peak_rss_mb()
         extra_metrics = " ".join(f"{key}={value}" for key, value in metrics.items())
@@ -388,6 +465,21 @@ class SyncService:
             f"{peak_rss_mb:.1f}" if peak_rss_mb is not None else "-",
             f" {extra_metrics}" if extra_metrics else "",
         )
+        if session is not None:
+            from app.services.app_logging import write_timing_log
+
+            db_context: dict[str, object] = {"phase": label}
+            if current_rss_mb is not None:
+                db_context["current_rss_mb"] = round(current_rss_mb, 1)
+            if peak_rss_mb is not None:
+                db_context["peak_rss_mb"] = round(peak_rss_mb, 1)
+            db_context.update(metrics)
+            write_timing_log(
+                session,
+                source=source,
+                started_at=started_at,
+                **db_context,
+            )
 
     @classmethod
     def _log_job_stage_checkpoint(
@@ -620,6 +712,10 @@ class SyncService:
             try:
                 self._finalize_stale_cancelling_jobs(session)
                 cards: list[SyncStatusCard] = []
+                schedule_configs = {
+                    config.job_type: config
+                    for config in session.scalars(select(JobScheduleConfig)).all()
+                }
                 for job_type, label in self.STATUS_CARD_DEFINITIONS:
                     job_rows = session.scalars(
                         select(SyncJobRun)
@@ -634,17 +730,18 @@ class SyncService:
                         if successful_rows and successful_rows[0].finished_at is not None
                         else None
                     )
-                    status = "idle"
-                    if active_rows:
-                        status = "running"
-                    elif job_rows:
-                        status = "degraded" if failed_rows else "healthy"
-
+                    health_color = self._resolve_job_health_color(
+                        job_type=job_type,
+                        last_successful_sync=last_successful_sync,
+                        schedule_config=schedule_configs.get(job_type),
+                    )
+                    status = self._status_from_health_color(health_color)
                     cards.append(
                         SyncStatusCard(
                             key=job_type,
                             label=label,
                             status=status,
+                            health_color=health_color,
                             last_successful_sync=last_successful_sync,
                             next_scheduled_sync=None,
                             recent_error_count=len(failed_rows),
@@ -666,6 +763,47 @@ class SyncService:
                 session.close()
 
         return load_status()
+
+    @staticmethod
+    def _status_from_health_color(health_color: str | None) -> str:
+        return "healthy" if health_color == "green" else "degraded"
+
+    def _resolve_job_health_color(
+        self,
+        *,
+        job_type: str,
+        last_successful_sync: datetime | None,
+        schedule_config: JobScheduleConfig | None,
+    ) -> str:
+        if last_successful_sync is None:
+            return "red"
+        if job_type in self.MANUAL_HEALTH_JOBS:
+            return "green"
+
+        interval_minutes = self._health_interval_minutes(job_type, schedule_config)
+        if interval_minutes is None:
+            return "green"
+
+        age_seconds = (datetime.now(UTC) - last_successful_sync).total_seconds()
+        interval_seconds = interval_minutes * 60
+        if age_seconds <= interval_seconds:
+            return "green"
+        if age_seconds <= interval_seconds * 2:
+            return "yellow"
+        return "red"
+
+    def _health_interval_minutes(
+        self,
+        job_type: str,
+        schedule_config: JobScheduleConfig | None,
+    ) -> int | None:
+        if schedule_config is not None:
+            if schedule_config.trigger_type == "interval" and schedule_config.interval_minutes:
+                return schedule_config.interval_minutes
+            if schedule_config.trigger_type == "cron":
+                return self.DAILY_HEALTH_INTERVAL_MINUTES
+
+        return self.HEALTH_FALLBACK_INTERVALS_MINUTES.get(job_type)
 
     @staticmethod
     def _build_esi_rate_limit_card() -> SyncStatusCard:
@@ -727,19 +865,22 @@ class SyncService:
             progress_unit=None,
         )
 
-    def list_jobs(self) -> list[SyncJobRunResponse]:
-        def load_jobs() -> list[SyncJobRunResponse]:
-            session = self.session_factory()
-            try:
-                self._finalize_stale_cancelling_jobs(session)
-                rows = session.scalars(
-                    select(SyncJobRun).order_by(SyncJobRun.started_at.desc(), SyncJobRun.id.desc())
-                ).all()
-                return [self._to_job_response(session, row) for row in rows]
-            finally:
-                session.close()
-
-        return load_jobs()
+    def list_jobs(self, *, limit: int = 25, offset: int = 0) -> tuple[list[SyncJobRunResponse], int]:
+        """Return paginated job history and total count."""
+        session = self.session_factory()
+        try:
+            self._finalize_stale_cancelling_jobs(session)
+            total = session.scalar(select(func.count()).select_from(SyncJobRun)) or 0
+            rows = session.scalars(
+                select(SyncJobRun)
+                .order_by(SyncJobRun.started_at.desc(), SyncJobRun.id.desc())
+                .limit(limit)
+                .offset(offset)
+            ).all()
+            jobs = [self._to_job_response(session, row) for row in rows]
+            return jobs, int(total)
+        finally:
+            session.close()
 
     def clear_job_data(self, job_type: str) -> ClearSyncDataResponse:
         session = self.session_factory()
@@ -1042,6 +1183,127 @@ class SyncService:
         records_deleted += self._delete_rows(session, delete(OpportunitySourceSummary))
         return records_deleted
 
+    def _run_fresh_trade_data_sync(self, session: Session, *, job_id: int) -> tuple[int, str, str | None, str]:
+        completed: list[SyncJobRunResponse] = []
+        total_steps = 1 + len(self.FRESH_TRADE_RAW_JOBS) + 1
+
+        def update_progress(phase: str, current: int, message: str) -> None:
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase=phase,
+                progress_current=current,
+                progress_total=total_steps,
+                progress_unit="jobs",
+                message=message,
+            )
+
+        update_progress(
+            "Refreshing foundation data",
+            0,
+            "Starting full trade data refresh: foundation data first.",
+        )
+        foundation = self._run_fresh_child_job("foundation_import_sync")
+        self._raise_if_fresh_child_failed(foundation)
+        completed.append(foundation)
+        update_progress(
+            "Refreshing raw data in parallel",
+            1,
+            "Foundation data refreshed. Starting raw imports in parallel.",
+        )
+
+        with ThreadPoolExecutor(max_workers=len(self.FRESH_TRADE_RAW_JOBS)) as executor:
+            future_to_job = {
+                executor.submit(self._run_fresh_child_job, child_job): child_job
+                for child_job in self.FRESH_TRADE_RAW_JOBS
+            }
+            try:
+                for future in as_completed(future_to_job, timeout=self.FRESH_PARALLEL_TIMEOUT_SECONDS):
+                    job_name = future_to_job[future]
+                    try:
+                        child_result = future.result()
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Child job '{job_name}' raised an exception: {exc}"
+                        ) from exc
+                    self._raise_if_fresh_child_failed(child_result)
+                    completed.append(child_result)
+                    update_progress(
+                        "Refreshing raw data in parallel",
+                        len(completed),
+                        (
+                            f"Completed {len(completed) - 1} / {len(self.FRESH_TRADE_RAW_JOBS)} "
+                            "parallel raw refresh jobs."
+                        ),
+                    )
+            except FuturesTimeoutError:
+                pending = [future_to_job[f] for f in future_to_job if not f.done()]
+                raise RuntimeError(
+                    f"Parallel raw refresh timed out after {self.FRESH_PARALLEL_TIMEOUT_SECONDS}s. "
+                    f"Still pending: {pending}"
+                )
+
+        update_progress(
+            "Refreshing tracked structures",
+            len(completed),
+            "Raw imports complete. Refreshing tracked structure market snapshots.",
+        )
+        structure = self._run_fresh_child_job("structure_snapshot_sync")
+        self._raise_if_fresh_child_failed(structure)
+        completed.append(structure)
+
+        records_processed = sum(child.records_processed for child in completed)
+        message = (
+            "Refreshed all trade data "
+            f"({len(completed)} child jobs completed; {records_processed} total records processed)."
+        )
+        return records_processed, "sync_jobs", str(len(completed)), message
+
+    def _run_fresh_child_job(self, job_type: str) -> SyncJobRunResponse:
+        logger = logging.getLogger(__name__)
+        logger.info("fresh_trade_data_sync: starting child job '%s'", job_type)
+        try:
+            child_service = SyncService(session_factory=self.session_factory)
+            child_result = child_service.trigger_job(job_type)
+        except Exception:
+            logger.exception("fresh_trade_data_sync: failed to trigger child job '%s'", job_type)
+            raise
+        if child_result.finished_at is None and child_result.status in {"running", "cancelling"}:
+            child_result = self._wait_for_fresh_child_job(child_result.id, job_type)
+        logger.info(
+            "fresh_trade_data_sync: child job '%s' (id=%s) finished with status '%s'",
+            job_type, child_result.id, child_result.status,
+        )
+        return child_result
+
+    def _wait_for_fresh_child_job(self, job_id: int, job_type: str = "unknown") -> SyncJobRunResponse:
+        logger = logging.getLogger(__name__)
+        deadline = perf_counter() + self.FRESH_CHILD_JOB_TIMEOUT_SECONDS
+        while True:
+            if perf_counter() > deadline:
+                raise RuntimeError(
+                    f"Child job '{job_type}' (id={job_id}) timed out after "
+                    f"{self.FRESH_CHILD_JOB_TIMEOUT_SECONDS}s waiting for completion."
+                )
+            session = self.session_factory()
+            try:
+                job = session.get(SyncJobRun, job_id)
+                if job is None:
+                    raise LookupError(f"Sync job {job_id} was not found.")
+                response = self._to_job_response(session, job)
+                if response.finished_at is not None or response.status in {"success", "failed", "cancelled"}:
+                    return response
+            finally:
+                session.close()
+            sleep(2.0)
+
+    @staticmethod
+    def _raise_if_fresh_child_failed(child_result: SyncJobRunResponse) -> None:
+        if child_result.status == "success":
+            return
+        detail = child_result.error_details or child_result.message or f"{child_result.job_type} did not succeed."
+        raise RuntimeError(f"{child_result.job_type} finished with status {child_result.status}: {detail}")
+
     def _run_job(self, session: Session, *, job_type: str, job_id: int) -> tuple[int, str, str | None, str]:
         records_processed = 0
         target_type = "manual"
@@ -1051,6 +1313,8 @@ class SyncService:
         debug_enabled = settings.debug_enabled
         analysis_period_days = max(settings.default_analysis_period_days, 1)
 
+        if job_type == self.FRESH_TRADE_DATA_JOB:
+            return self._run_fresh_trade_data_sync(session, job_id=job_id)
         if job_type == "foundation_import_sync":
             foundation_import = FoundationImportService().import_from_seed_source(
                 session,
@@ -1118,10 +1382,26 @@ class SyncService:
                     region_count=len(demand_regions),
                     since_date=demand_since_date.isoformat() if demand_since_date is not None else "-",
                 )
+                def _demand_download_progress(dp: DownloadProgress) -> None:
+                    total_mb = self._format_mb(dp.total_bytes) if dp.total_bytes else "?"
+                    self._update_job_progress(
+                        session,
+                        job_id,
+                        progress_phase="Downloading Adam4EVE demand exports",
+                        progress_current=dp.downloaded_bytes,
+                        progress_total=dp.total_bytes,
+                        progress_unit="bytes",
+                        message=(
+                            f"Downloading file {dp.file_index} / {dp.file_total}: "
+                            f"{dp.file_name} ({self._format_mb(dp.downloaded_bytes)} / {total_mb} MB)"
+                        ),
+                        isolated=True,
+                    )
+
                 self._update_job_progress(
                     session,
                     job_id,
-                    progress_phase="Fetching Adam4EVE demand exports",
+                    progress_phase="Downloading Adam4EVE demand exports",
                     progress_current=None,
                     progress_total=None,
                     progress_unit=None,
@@ -1136,6 +1416,7 @@ class SyncService:
                     self.adam_client.cache_market_orders_exports(
                         since_date=demand_since_date,
                         session=session,
+                        progress_callback=_demand_download_progress,
                     )
                     if demand_regions
                     else []
@@ -1148,15 +1429,18 @@ class SyncService:
                 )
                 demand_downloaded = sum(1 for _, f in cached_demand_exports if f.downloaded)
                 demand_from_cache = len(cached_demand_exports) - demand_downloaded
+                demand_total_records = sum(
+                    self._count_csv_rows(cached_file.path) for _, cached_file in cached_demand_exports
+                )
                 self._update_job_progress(
                     session,
                     job_id,
                     progress_phase="Ingesting Adam4EVE market orders",
-                    progress_current=None,
-                    progress_total=None,
-                    progress_unit=None,
+                    progress_current=0,
+                    progress_total=demand_total_records,
+                    progress_unit="records",
                     message=(
-                        f"Ingesting {len(cached_demand_exports)} Adam4EVE demand export file(s) "
+                        f"Ingesting {demand_total_records:,} records from {len(cached_demand_exports)} demand file(s) "
                         f"({demand_downloaded} downloaded, {demand_from_cache} from cache)."
                     ),
                 )
@@ -1210,8 +1494,8 @@ class SyncService:
                     progress_phase="Refreshing market demand",
                     progress_current=0,
                     progress_total=demand_key_total,
-                    progress_unit="items",
-                    message=f"Refreshing market demand for 0 / {demand_key_total} items.",
+                    progress_unit="records",
+                    message=f"Refreshing market demand for {demand_key_total:,} item/location pairs.",
                 )
                 phase_started_at = perf_counter()
                 derived_count = self._refresh_market_demand_for_target_markets(
@@ -1225,13 +1509,10 @@ class SyncService:
                     session,
                     job_id,
                     progress_phase="Refreshing market demand",
-                    progress_current=demand_key_total,
-                    progress_total=demand_key_total,
-                    progress_unit="items",
-                    message=(
-                        f"Refreshing market demand for {demand_key_total} / {demand_key_total} items "
-                        f"({derived_count} rows written)."
-                    ),
+                    progress_current=derived_count,
+                    progress_total=derived_count,
+                    progress_unit="records",
+                    message=f"Refreshed market demand: {derived_count:,} records written.",
                     isolated=True,
                 )
                 self._log_profile_checkpoint(
@@ -1443,26 +1724,31 @@ class SyncService:
         self._update_job_progress(
             session,
             job_id,
-            progress_phase="Downloading ESI market order batches",
+            progress_phase="Downloading ESI market orders",
             progress_current=0,
             progress_total=len(regions),
             progress_unit="regions",
-            message=f"Downloading ESI market orders for 0 / {len(regions)} regions.",
+            message=f"Downloading ESI market orders: 0 / {len(regions)} regions.",
         )
         download_started_at = perf_counter()
+        records_downloaded_so_far = 0
         for region_index, region in enumerate(regions, start=1):
             if cancellation_check is not None:
                 cancellation_check()
             order_rows = cast(list[EsiRegionalOrderRecord], universe_client.fetch_regional_orders(region.region_id))
             downloaded_order_batches.append((region, order_rows))
+            records_downloaded_so_far += len(order_rows)
             self._update_job_progress(
                 session,
                 job_id,
-                progress_phase="Downloading ESI market order batches",
+                progress_phase="Downloading ESI market orders",
                 progress_current=region_index,
                 progress_total=len(regions),
                 progress_unit="regions",
-                message=f"Downloaded ESI market orders for {region_index} / {len(regions)} regions.",
+                message=(
+                    f"Downloading ESI market orders: {region_index} / {len(regions)} regions "
+                    f"({records_downloaded_so_far:,} records)."
+                ),
             )
         self._log_job_stage_checkpoint(
             "opportunity_rebuild",
@@ -1474,11 +1760,11 @@ class SyncService:
         self._update_job_progress(
             session,
             job_id,
-            progress_phase="Processing downloaded ESI market orders",
+            progress_phase="Ingesting ESI market orders",
             progress_current=0,
             progress_total=total_downloaded_orders,
-            progress_unit="downloaded records",
-            message=f"Processing 0 / {total_downloaded_orders} downloaded ESI market orders.",
+            progress_unit="records",
+            message=f"Ingesting ESI market orders: 0 / {total_downloaded_orders:,} records.",
         )
         last_ingest_progress = -1
 
@@ -1495,11 +1781,11 @@ class SyncService:
             self._update_job_progress(
                 session,
                 job_id,
-                progress_phase="Processing downloaded ESI market orders",
+                progress_phase="Ingesting ESI market orders",
                 progress_current=current,
                 progress_total=total,
-                progress_unit="downloaded records",
-                message=f"Processed {current} / {total} downloaded ESI market orders.",
+                progress_unit="records",
+                message=f"Ingesting ESI market orders: {current:,} / {total:,} records.",
                 isolated=True,
             )
         # Resolve target station internal IDs for delta computation
@@ -1666,18 +1952,24 @@ class SyncService:
         rows_inserted = 0
         ingestion_service = EveRefHistoryIngestionService()
         total_dates = len(dates_to_download)
+        # Estimate total bytes from file_size metadata (from totals.json)
+        total_download_bytes = sum(fs for _, fs in dates_to_download if fs is not None)
 
         for index, (history_date, file_size) in enumerate(dates_to_download, start=1):
             if cancellation_check is not None:
                 cancellation_check()
+            file_size_label = f" ({self._format_mb(file_size)} MB)" if file_size else ""
             self._update_job_progress(
                 session,
                 job_id,
-                progress_phase="Ingesting EVE Ref history files",
+                progress_phase="Downloading & ingesting EVE Ref history",
                 progress_current=index - 1,
                 progress_total=total_dates,
-                progress_unit="dates",
-                message=f"Ingesting EVE Ref history for {history_date.isoformat()} ({index} / {total_dates}).",
+                progress_unit="files",
+                message=(
+                    f"Downloading EVE Ref history: file {index} / {total_dates} "
+                    f"({history_date.isoformat()}{file_size_label})."
+                ),
             )
 
             def ingest_date() -> int:
@@ -1736,11 +2028,14 @@ class SyncService:
             self._update_job_progress(
                 session,
                 job_id,
-                progress_phase="Ingesting EVE Ref history files",
+                progress_phase="Downloading & ingesting EVE Ref history",
                 progress_current=index,
                 progress_total=total_dates,
-                progress_unit="dates",
-                message=f"Ingested EVE Ref history for {history_date.isoformat()} ({index} / {total_dates}).",
+                progress_unit="files",
+                message=(
+                    f"EVE Ref history: {index} / {total_dates} files done "
+                    f"({rows_inserted:,} records ingested)."
+                ),
             )
 
         self._log_job_stage_checkpoint(
@@ -1834,8 +2129,8 @@ class SyncService:
             progress_phase="Refreshing ESI demand records",
             progress_current=0,
             progress_total=total_esi_keys,
-            progress_unit="keys",
-            message=f"Refreshing ESI demand for {total_esi_keys} location/item pairs.",
+            progress_unit="records",
+            message=f"Refreshing ESI demand: 0 / {total_esi_keys:,} records.",
         )
         demand_service = MarketDemandResolutionService()
         demand_preload_started_at = perf_counter()
@@ -1882,8 +2177,8 @@ class SyncService:
                     progress_phase="Refreshing ESI demand records",
                     progress_current=idx,
                     progress_total=total_esi_keys,
-                    progress_unit="keys",
-                    message=f"Refreshing ESI demand: {idx} / {total_esi_keys} keys ({derived_count} rows written).",
+                    progress_unit="records",
+                    message=f"Refreshing ESI demand: {idx:,} / {total_esi_keys:,} records ({derived_count:,} written).",
                 )
         session.commit()
         self._log_profile_checkpoint(
@@ -2044,6 +2339,12 @@ class SyncService:
                 snapshot_time=normalized_snapshot_time,
                 orders=batch.orders,
             )
+            self._replace_structure_live_market_orders(
+                session,
+                structure_id=tracked_structure.structure_id,
+                snapshot_time=normalized_snapshot_time,
+                orders=batch.orders,
+            )
             snapshot_count += 1
 
             current_snapshot = session.get(StructureSnapshot, snapshot_result.snapshot_id)
@@ -2102,6 +2403,55 @@ class SyncService:
             type_ids=tuple(sorted(touched_type_ids)),
             records_processed=snapshot_count + delta_count + demand_period_count,
         )
+
+    def _replace_structure_live_market_orders(
+        self,
+        session: Session,
+        *,
+        structure_id: int,
+        snapshot_time: datetime,
+        orders: list[StructureOrderInput],
+    ) -> int:
+        location = session.scalar(select(Location).where(Location.location_id == structure_id))
+        if location is None or location.system_id is None or location.region_id is None:
+            return 0
+
+        # Delete existing orders for this location.
+        session.execute(delete(EsiMarketOrder).where(EsiMarketOrder.location_id == location.id))
+
+        # Also delete any orders with matching order_ids that may live under a
+        # different location (e.g. from regional ESI sync that captured the same
+        # order under the region's NPC station bucket).  Without this, the
+        # INSERT below hits a UniqueViolation on the order_id unique constraint.
+        incoming_order_ids = [order.order_id for order in orders]
+        if incoming_order_ids:
+            for batch_start in range(0, len(incoming_order_ids), 5000):
+                batch_ids = incoming_order_ids[batch_start : batch_start + 5000]
+                session.execute(
+                    delete(EsiMarketOrder).where(EsiMarketOrder.order_id.in_(batch_ids))
+                )
+
+        for order in orders:
+            session.add(
+                EsiMarketOrder(
+                    order_id=order.order_id,
+                    region_id=location.region_id,
+                    location_id=location.id,
+                    type_id=order.type_id,
+                    system_id=location.system_id,
+                    is_buy_order=order.is_buy_order,
+                    price=order.price,
+                    volume_total=order.volume_total or order.volume_remain,
+                    volume_remain=order.volume_remain,
+                    min_volume=order.min_volume or 1,
+                    order_range=order.order_range or "station",
+                    issued=order.issued or snapshot_time,
+                    duration=order.duration or 90,
+                    updated_at=snapshot_time,
+                )
+            )
+        session.commit()
+        return len(orders)
 
     def _refresh_market_prices_for_locations(
         self,
@@ -2462,8 +2812,8 @@ class SyncService:
                 progress_phase=progress_phase_label,
                 progress_current=0,
                 progress_total=len(scopes),
-                progress_unit="targets",
-                message=f"{progress_phase_label} for 0 / {len(scopes)} targets.",
+                progress_unit="scopes",
+                message=f"{progress_phase_label}: 0 / {len(scopes)} scopes (0 records generated).",
                 isolated=True,
             )
 
@@ -2555,10 +2905,10 @@ class SyncService:
                     progress_phase=progress_phase_label,
                     progress_current=scope_count,
                     progress_total=len(scopes),
-                    progress_unit="targets",
+                    progress_unit="scopes",
                     message=(
-                        f"{progress_phase_label}: {scope_count} / {len(scopes)} targets "
-                        f"({generated_count} opportunity rows written)."
+                        f"{progress_phase_label}: {scope_count} / {len(scopes)} scopes "
+                        f"({generated_count:,} records generated)."
                     ),
                     isolated=True,
                 )
@@ -3177,9 +3527,27 @@ class SyncService:
             return (0, 0, 0, 0)
 
         since_date = self._history_sync_since_date(session, lookback_days=lookback_days)
+
+        def _history_download_progress(dp: DownloadProgress) -> None:
+            total_mb = self._format_mb(dp.total_bytes) if dp.total_bytes else "?"
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Downloading Adam4EVE price history",
+                progress_current=dp.downloaded_bytes,
+                progress_total=dp.total_bytes,
+                progress_unit="bytes",
+                message=(
+                    f"Downloading file {dp.file_index} / {dp.file_total}: "
+                    f"{dp.file_name} ({self._format_mb(dp.downloaded_bytes)} / {total_mb} MB)"
+                ),
+                isolated=True,
+            )
+
         cached_history_exports = self.adam_client.cache_station_price_history_exports(
             since_date=since_date,
             session=session,
+            progress_callback=_history_download_progress,
         )
         if not cached_history_exports:
             total_price_rows = 0
@@ -3194,6 +3562,7 @@ class SyncService:
                 self._log_profile_checkpoint(
                     "refresh_price_periods_from_history",
                     started_at=refresh_started_at,
+                    session=session,
                     touched_key_count=len(refresh_keys),
                     price_row_count=total_price_rows,
                 )
@@ -3206,64 +3575,67 @@ class SyncService:
             return (0, 0, 0, total_price_rows)
 
         history_phase_label = "Importing Adam4EVE station price history"
+        file_count = len(cached_history_exports)
         self._update_job_progress(
             session,
             job_id,
             progress_phase=history_phase_label,
             progress_current=0,
-            progress_total=len(cached_history_exports),
+            progress_total=file_count,
             progress_unit="files",
-            message=f"{history_phase_label} (0 / {len(cached_history_exports)} files).",
+            message=f"{history_phase_label}: 0 / {file_count} files.",
         )
 
-        total_history_processed = 0
-        total_created = 0
-        total_updated = 0
         total_price_rows = 0
         truncate_price_history_daily(session)
-        all_touched_keys: set[tuple[int, int]] = set()
         for file_index, (export, cached_file) in enumerate(cached_history_exports, start=1):
             self._check_for_cancellation(session, job_id)
             file_started_at = perf_counter()
-            self._update_job_progress(
-                session,
-                job_id,
-                progress_phase=history_phase_label,
-                progress_current=file_index - 1,
-                progress_total=len(cached_history_exports),
-                progress_unit="files",
-                message=(
-                    f"{history_phase_label}: file {file_index} / "
-                    f"{len(cached_history_exports)}: {export.export_key}."
-                ),
-            )
-            touched_keys = import_price_csv_to_daily(session, cached_file.path)
-            all_touched_keys.update(touched_keys)
+
+            def _price_file_progress(
+                phase_label: str,
+                fraction: float,
+                _idx: int = file_index,
+                _key: str = export.export_key,
+            ) -> None:
+                self._update_job_progress(
+                    session,
+                    job_id,
+                    progress_phase=history_phase_label,
+                    progress_current=_idx - 1,
+                    progress_total=file_count,
+                    progress_unit="files",
+                    message=(
+                        f"{history_phase_label}: file {_idx}/{file_count} "
+                        f"({_key}: {phase_label})."
+                    ),
+                    isolated=True,
+                )
+
+            import_price_csv_to_daily(session, cached_file.path, progress_callback=_price_file_progress)
             self._log_profile_checkpoint(
                 "ingest_history_file",
                 started_at=file_started_at,
+                session=session,
                 file_index=file_index,
-                file_total=len(cached_history_exports),
+                file_total=file_count,
                 export_key=export.export_key,
-                records_processed=len(touched_keys),
             )
             self._update_job_progress(
                 session,
                 job_id,
                 progress_phase=history_phase_label,
                 progress_current=file_index,
-                progress_total=len(cached_history_exports),
+                progress_total=file_count,
                 progress_unit="files",
-                message=(
-                    f"{history_phase_label}: done {file_index} / "
-                    f"{len(cached_history_exports)} files ({export.export_key})."
-                ),
+                message=f"{history_phase_label}: {file_index} / {file_count} files.",
             )
 
-        session.commit()
-        touched_price_history_keys = list(missing_price_period_keys) + sorted(all_touched_keys)
+        all_touched_keys = query_touched_price_keys(session)
+        touched_price_history_keys = list(missing_price_period_keys) + all_touched_keys
         total_history_processed = len(all_touched_keys)
         total_created = len(all_touched_keys)
+        total_updated = 0
 
         refresh_keys = sorted(set(touched_price_history_keys))
         if refresh_keys:
@@ -3276,6 +3648,7 @@ class SyncService:
             self._log_profile_checkpoint(
                 "refresh_price_periods_from_history",
                 started_at=refresh_started_at,
+                session=session,
                 touched_key_count=len(refresh_keys),
                 price_row_count=total_price_rows,
             )
@@ -3300,50 +3673,98 @@ class SyncService:
         job_id: int,
         since_date: date | None,
     ) -> None:
+        def _volume_download_progress(dp: DownloadProgress) -> None:
+            total_mb = self._format_mb(dp.total_bytes) if dp.total_bytes else "?"
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase="Downloading Adam4EVE volume history",
+                progress_current=dp.downloaded_bytes,
+                progress_total=dp.total_bytes,
+                progress_unit="bytes",
+                message=(
+                    f"Downloading file {dp.file_index} / {dp.file_total}: "
+                    f"{dp.file_name} ({self._format_mb(dp.downloaded_bytes)} / {total_mb} MB)"
+                ),
+                isolated=True,
+            )
+
         cached_volume_exports = self.adam_client.cache_station_volume_history_exports(
             since_date=since_date,
             session=session,
+            progress_callback=_volume_download_progress,
         )
+        vol_file_count = len(cached_volume_exports)
         logger.info(
             "adam4eve volume sync starting file_count=%s since_date=%s",
-            len(cached_volume_exports),
+            vol_file_count,
             since_date,
         )
 
-        total_volume_processed = 0
-        total_volume_created = 0
-        total_volume_updated = 0
-        all_touched_volume_keys: set[tuple[int, int]] = set()
+        volume_phase_label = "Importing Adam4EVE volume history"
         if cached_volume_exports:
             truncate_volume_history_daily(session)
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase=volume_phase_label,
+                progress_current=0,
+                progress_total=vol_file_count,
+                progress_unit="files",
+                message=f"{volume_phase_label}: 0 / {vol_file_count} files.",
+            )
         for file_index, (export, cached_file) in enumerate(cached_volume_exports, start=1):
             self._check_for_cancellation(session, job_id)
-            touched_keys = import_volume_csv_to_daily(session, cached_file.path)
-            all_touched_volume_keys.update(touched_keys)
+
+            def _volume_file_progress(
+                phase_label: str,
+                fraction: float,
+                _idx: int = file_index,
+                _key: str = export.export_key,
+            ) -> None:
+                self._update_job_progress(
+                    session,
+                    job_id,
+                    progress_phase=volume_phase_label,
+                    progress_current=_idx - 1,
+                    progress_total=vol_file_count,
+                    progress_unit="files",
+                    message=(
+                        f"{volume_phase_label}: file {_idx}/{vol_file_count} "
+                        f"({_key}: {phase_label})."
+                    ),
+                    isolated=True,
+                )
+
+            import_volume_csv_to_daily(session, cached_file.path, progress_callback=_volume_file_progress)
+            self._update_job_progress(
+                session,
+                job_id,
+                progress_phase=volume_phase_label,
+                progress_current=file_index,
+                progress_total=vol_file_count,
+                progress_unit="files",
+                message=f"{volume_phase_label}: {file_index} / {vol_file_count} files.",
+            )
             logger.info(
-                "adam4eve volume sync ingested file=%s/%s export=%s touched_keys=%s",
+                "adam4eve volume sync ingested file=%s/%s export=%s",
                 file_index,
-                len(cached_volume_exports),
+                vol_file_count,
                 export.export_key,
-                len(touched_keys),
             )
 
-        touched_volume_history_keys = sorted(all_touched_volume_keys)
-        if touched_volume_history_keys:
-            total_volume_processed = len(touched_volume_history_keys)
-            total_volume_created = len(touched_volume_history_keys)
-            session.commit()
+        touched_volume_history_keys = query_touched_volume_keys(session) if cached_volume_exports else []
 
+        volume_refresh_started_at = perf_counter()
         refreshed_volume_periods = MarketVolumePeriodService().refresh_touched_periods_from_history(
             session, location_type_keys=touched_volume_history_keys, period_days_list=[7, 14]
         )
-        logger.info(
-            "adam4eve volume sync refreshed periods=%s touched_keys=%s processed=%s created=%s updated=%s",
-            refreshed_volume_periods,
-            len(set(touched_volume_history_keys)),
-            total_volume_processed,
-            total_volume_created,
-            total_volume_updated,
+        self._log_profile_checkpoint(
+            "refresh_volume_periods_from_history",
+            started_at=volume_refresh_started_at,
+            session=session,
+            touched_key_count=len(touched_volume_history_keys),
+            volume_row_count=refreshed_volume_periods,
         )
 
     def _history_sync_items(self, session: Session, *, region_ids: list[int]) -> list[Item]:
@@ -3641,6 +4062,62 @@ class SyncService:
                 session.close()
 
         return load_diagnostics()
+
+    # ------------------------------------------------------------------
+    # Job schedule configuration
+    # ------------------------------------------------------------------
+
+    def get_schedule_configs(self) -> list[JobScheduleConfigResponse]:
+        session = self.session_factory()
+        try:
+            rows = session.scalars(
+                select(JobScheduleConfig).order_by(JobScheduleConfig.job_type)
+            ).all()
+            return [
+                JobScheduleConfigResponse(
+                    job_type=r.job_type,
+                    label=r.label,
+                    trigger_type=r.trigger_type,
+                    interval_minutes=r.interval_minutes,
+                    cron_hour=r.cron_hour,
+                    cron_minute=r.cron_minute,
+                    enabled=r.enabled,
+                )
+                for r in rows
+            ]
+        finally:
+            session.close()
+
+    def update_schedule_config(
+        self, job_type: str, update: JobScheduleConfigUpdate
+    ) -> JobScheduleConfigResponse:
+        session = self.session_factory()
+        try:
+            row = session.get(JobScheduleConfig, job_type)
+            if row is None:
+                raise LookupError(f"Schedule config for job type {job_type!r} not found.")
+            if update.trigger_type is not None:
+                row.trigger_type = update.trigger_type
+            if update.interval_minutes is not None:
+                row.interval_minutes = update.interval_minutes
+            if update.cron_hour is not None:
+                row.cron_hour = update.cron_hour
+            if update.cron_minute is not None:
+                row.cron_minute = update.cron_minute
+            if update.enabled is not None:
+                row.enabled = update.enabled
+            session.commit()
+            return JobScheduleConfigResponse(
+                job_type=row.job_type,
+                label=row.label,
+                trigger_type=row.trigger_type,
+                interval_minutes=row.interval_minutes,
+                cron_hour=row.cron_hour,
+                cron_minute=row.cron_minute,
+                enabled=row.enabled,
+            )
+        finally:
+            session.close()
 
 
 @dataclass(frozen=True)

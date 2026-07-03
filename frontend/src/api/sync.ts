@@ -1,12 +1,12 @@
-import { apiGet, apiPost } from "./client";
-import type { ClearSyncDataResponse, FallbackDiagnostic, SyncJobRun, SyncStatusCard } from "../types/sync";
+import { apiGet, apiPost, apiPut } from "./client";
+import type { ClearSyncDataResponse, FallbackDiagnostic, JobScheduleConfig, JobScheduleConfigUpdate, PaginatedSyncJobs, SyncJobRun, SyncStatusCard } from "../types/sync";
 
 export function getSyncStatus() {
   return apiGet<SyncStatusCard[]>("/sync/status");
 }
 
-export function getSyncJobs() {
-  return apiGet<SyncJobRun[]>("/sync/jobs");
+export function getSyncJobs(limit = 25, offset = 0) {
+  return apiGet<PaginatedSyncJobs>(`/sync/jobs?limit=${limit}&offset=${offset}`);
 }
 
 export function getFallbackDiagnostics() {
@@ -27,4 +27,12 @@ export function cancelSyncJob(jobId: number) {
 
 export function clearStaleJobs() {
   return apiPost<{ cleared: number; message: string }>("/sync/clear-stale-jobs");
+}
+
+export function getScheduleConfigs() {
+  return apiGet<JobScheduleConfig[]>("/sync/schedules");
+}
+
+export function updateScheduleConfig(args: { jobType: string; update: JobScheduleConfigUpdate }) {
+  return apiPut<JobScheduleConfig>(`/sync/schedules/${args.jobType}`, args.update);
 }

@@ -49,6 +49,17 @@ const actions = [
   },
 ];
 
+const freshTradeDataJobType = "fresh_trade_data_sync";
+const freshTradeDataBlockingJobs = [
+  freshTradeDataJobType,
+  "foundation_import_sync",
+  "adam4eve_sync",
+  "everef_history_sync",
+  "esi_market_orders_sync",
+  "character_sync",
+  "structure_snapshot_sync",
+];
+
 export function ManualSyncActions({
   onRun,
   onClear,
@@ -61,11 +72,32 @@ export function ManualSyncActions({
   isClearingStale = false,
   lastMessage,
 }: Props) {
+  const isFreshTradeDataActive = activeJobTypes.includes(freshTradeDataJobType);
+  const isFreshTradeDataBlocked = freshTradeDataBlockingJobs.some((jobType) => activeJobTypes.includes(jobType));
+  let freshTradeDataLabel = "Refresh All Trade Data";
+  if (isPending && pendingJobType === freshTradeDataJobType) {
+    freshTradeDataLabel = "Starting Refresh All Trade Data...";
+  } else if (isFreshTradeDataActive) {
+    freshTradeDataLabel = "Refresh All Trade Data Already Running";
+  } else if (isFreshTradeDataBlocked) {
+    freshTradeDataLabel = "Refresh All Trade Data Blocked by Active Jobs";
+  }
+
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Manual Sync Actions</h2>
         <span>{lastMessage ?? "Choose a job to enqueue or run."}</span>
+      </div>
+      <div style={{ marginBottom: "0.5rem" }}>
+        <button
+          className="refresh-button"
+          disabled={isPending || isFreshTradeDataBlocked}
+          onClick={() => onRun(freshTradeDataJobType)}
+          type="button"
+        >
+          {freshTradeDataLabel}
+        </button>
       </div>
       <div style={{ marginBottom: "0.5rem" }}>
         <button
@@ -96,7 +128,7 @@ export function ManualSyncActions({
         {actions.map((action) => (
           (() => {
             const isActive = activeJobTypes.includes(action.key);
-            const isDisabled = isPending || isActive;
+            const isDisabled = isPending || isActive || isFreshTradeDataActive;
             let label = action.runLabel;
             if (isPending && pendingJobType === action.key) {
               label = `Starting ${action.runLabel}...`;

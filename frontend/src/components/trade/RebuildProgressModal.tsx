@@ -45,9 +45,9 @@ export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, err
 
     const poll = async () => {
       try {
-        const jobs = await getSyncJobs();
+        const { jobs } = await getSyncJobs();
         const job = jobs.find(
-          (j) =>
+          (j: SyncJobRun) =>
             j.job_type === "target_rebuild" &&
             rebuildStartedAt !== null &&
             new Date(j.started_at) >= rebuildStartedAt,
@@ -118,7 +118,7 @@ export function RebuildProgressModal({ isOpen, rebuildStartedAt, isComplete, err
             ) : null}
             <p className="sync-progress-meta">
               {activeJob.progress_current != null && activeJob.progress_total != null
-                ? `Step ${activeJob.progress_current} of ${activeJob.progress_total}`
+                ? `${activeJob.progress_current.toLocaleString()} / ${activeJob.progress_total.toLocaleString()} ${activeJob.progress_unit ?? "records"}`
                 : activeJob.message ?? "Working..."
               }
               {" \u00b7 "}

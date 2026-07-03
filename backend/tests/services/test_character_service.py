@@ -79,9 +79,23 @@ class MockCharacterSyncEsiClient:
 
 
 class BrokenRefreshCharacterSyncEsiClient(MockCharacterSyncEsiClient):
+    """Simulates a permanently revoked token (CCP returns 400 invalid_grant)."""
+
     def refresh_access_token(self, refresh_token: str) -> dict:
+        from app.services.esi.client import EsiTokenRevokedError
+
         assert refresh_token == "refresh-token"
-        raise RuntimeError("refresh rejected")
+        raise EsiTokenRevokedError("refresh rejected")
+
+
+class TransientRefreshCharacterSyncEsiClient(MockCharacterSyncEsiClient):
+    """Simulates a transient failure (network/5xx) during token refresh."""
+
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        from app.services.esi.client import EsiTokenRefreshError
+
+        assert refresh_token == "refresh-token"
+        raise EsiTokenRefreshError("ESI SSO returned 502")
 
 
 def seed_character_data(session: Session) -> None:
@@ -615,7 +629,7 @@ def test_sync_character_marks_character_for_reauth_when_token_refresh_fails() ->
 
     service = CharacterService(session_factory=lambda: session, esi_client=BrokenRefreshCharacterSyncEsiClient())
 
-    with pytest.raises(LookupError, match="Reconnect the same character via EVE SSO"):
+    with pytest.raises(LookupError, match="permanently revoked"):
         service.sync_character(90000042)
 
     session.expire_all()
@@ -632,3 +646,28 @@ def test_sync_character_marks_character_for_reauth_when_token_refresh_fails() ->
     assert sync_state.orders_sync_status == "reauth_required"
     assert sync_state.skills_sync_status == "reauth_required"
     assert sync_state.structures_sync_status == "reauth_required"
+
+
+def test_sync_character_does_not_disable_on_transient_token_failure() -> None:
+    """Transient token refresh failures (network/5xx) should NOT disable the character."""
+    session = build_session()
+    seed_character_data(session)
+    token = session.scalar(
+        select(EsiCharacterToken)
+        .join(EsiCharacter, EsiCharacter.id == EsiCharacterToken.character_id)
+        .where(EsiCharacter.character_id == 90000042)
+    )
+    assert token is not None
+    token.expires_at = datetime.now(UTC) - timedelta(minutes=5)
+    session.commit()
+
+    service = CharacterService(session_factory=lambda: session, esi_client=TransientRefreshCharacterSyncEsiClient())
+
+    with pytest.raises(LookupError, match="Temporary token refresh failure"):
+        service.sync_character(90000042)
+
+    session.expire_all()
+    character = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000042))
+    assert character is not None
+    # Character should still be enabled — not marked for reauth
+    assert character.sync_enabled is True

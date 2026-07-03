@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { SyncPage } from "./SyncPage";
+import type { SyncStatusCard } from "../types/sync";
 
 const hookState = vi.hoisted(() => ({
   statusData: [
@@ -10,6 +11,7 @@ const hookState = vi.hoisted(() => ({
       key: "worker",
       label: "Worker Health",
       status: "healthy",
+      health_color: null,
       last_successful_sync: "2026-03-20T09:00:00Z",
       next_scheduled_sync: "2026-03-20T09:10:00Z",
       recent_error_count: 0,
@@ -23,16 +25,17 @@ const hookState = vi.hoisted(() => ({
       key: "esi_market_orders_sync",
       label: "ESI market orders sync",
       status: "running",
+      health_color: "green",
       last_successful_sync: null,
       next_scheduled_sync: null,
       recent_error_count: 0,
-      active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
-      progress_phase: "Processing downloaded ESI market orders",
+      active_message: "Ingesting ESI market orders: 60 / 100 records.",
+      progress_phase: "Ingesting ESI market orders",
       progress_current: 60,
       progress_total: 100,
-      progress_unit: "downloaded records",
+      progress_unit: "records",
     },
-  ],
+  ] as SyncStatusCard[],
   jobsData: [
     {
       id: 1,
@@ -61,11 +64,11 @@ const hookState = vi.hoisted(() => ({
       records_processed: 60,
       target_type: "regions",
       target_id: "1",
-      progress_phase: "Processing downloaded ESI market orders",
+      progress_phase: "Ingesting ESI market orders",
       progress_current: 60,
       progress_total: 100,
-      progress_unit: "downloaded records",
-      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      progress_unit: "records",
+      message: "Ingesting ESI market orders: 60 / 100 records.",
       error_details: null,
     },
   ],
@@ -130,7 +133,7 @@ vi.mock("../hooks/useSyncData", () => ({
     data: hookState.statusData,
   }),
   useSyncJobs: () => ({
-    data: hookState.jobsData,
+    data: { jobs: hookState.jobsData, total: hookState.jobsData.length },
   }),
   useFallbackDiagnostics: () => ({
     data: hookState.diagnosticsData,
@@ -143,6 +146,13 @@ vi.mock("../hooks/useSyncData", () => ({
     isError: false,
     error: null,
     data: null,
+    mutate: vi.fn(),
+  }),
+  useScheduleConfigs: () => ({
+    data: [],
+  }),
+  useUpdateScheduleConfig: () => ({
+    isPending: false,
     mutate: vi.fn(),
   }),
 }));
@@ -164,6 +174,7 @@ afterEach(() => {
       key: "worker",
       label: "Worker Health",
       status: "healthy",
+      health_color: null,
       last_successful_sync: "2026-03-20T09:00:00Z",
       next_scheduled_sync: "2026-03-20T09:10:00Z",
       recent_error_count: 0,
@@ -177,14 +188,15 @@ afterEach(() => {
       key: "esi_market_orders_sync",
       label: "ESI market orders sync",
       status: "running",
+      health_color: "green",
       last_successful_sync: null,
       next_scheduled_sync: null,
       recent_error_count: 0,
-      active_message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
-      progress_phase: "Processing downloaded ESI market orders",
+      active_message: "Ingesting ESI market orders: 60 / 100 records.",
+      progress_phase: "Ingesting ESI market orders",
       progress_current: 60,
       progress_total: 100,
-      progress_unit: "downloaded records",
+      progress_unit: "records",
     },
   ];
   hookState.jobsData = [
@@ -215,11 +227,11 @@ afterEach(() => {
       records_processed: 60,
       target_type: "regions",
       target_id: "1",
-      progress_phase: "Processing downloaded ESI market orders",
+      progress_phase: "Ingesting ESI market orders",
       progress_current: 60,
       progress_total: 100,
-      progress_unit: "downloaded records",
-      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      progress_unit: "records",
+      message: "Ingesting ESI market orders: 60 / 100 records.",
       error_details: null,
     },
   ];
@@ -255,10 +267,37 @@ test("renders sync dashboard data", () => {
 
   expect(screen.getByText("Sync Dashboard")).toBeInTheDocument();
   expect(screen.getByText("Worker Health")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Refresh All Trade Data Blocked by Active Jobs" })).toBeDisabled();
   expect(screen.getByText("Clear SDE Data")).toBeInTheDocument();
   expect(screen.getByText("Sync EVE Ref History Now")).toBeInTheDocument();
   expect(screen.getByText("Job History")).toBeInTheDocument();
   expect(screen.getByText("Demand Fallback Diagnostics")).toBeInTheDocument();
+});
+
+test("starts full trade data refresh from the manual actions button", () => {
+  hookState.statusData = [
+    {
+      key: "worker",
+      label: "Worker Health",
+      status: "healthy",
+      health_color: null,
+      last_successful_sync: "2026-03-20T09:00:00Z",
+      next_scheduled_sync: "2026-03-20T09:10:00Z",
+      recent_error_count: 0,
+      active_message: null,
+      progress_phase: null,
+      progress_current: null,
+      progress_total: null,
+      progress_unit: null,
+    },
+  ];
+  hookState.jobsData = [];
+
+  renderSyncPage();
+
+  fireEvent.click(screen.getByRole("button", { name: "Refresh All Trade Data" }));
+
+  expect(hookState.runJob.mutate).toHaveBeenCalledWith("fresh_trade_data_sync");
 });
 
 test("surfaces immediate run-job failures from sync buttons", () => {
@@ -290,9 +329,9 @@ test("surfaces immediate run-job failures from sync buttons", () => {
 test("shows running progress for active sync jobs", () => {
   renderSyncPage();
 
-  expect(screen.getAllByText("Processing downloaded ESI market orders")).not.toHaveLength(0);
-  expect(screen.getAllByText("60 / 100 downloaded records")).not.toHaveLength(0);
-  expect(screen.getAllByText(/12\.0 downloaded records\/s/)).not.toHaveLength(0);
+  expect(screen.getAllByText("Ingesting ESI market orders")).not.toHaveLength(0);
+  expect(screen.getAllByText("60 / 100 records")).not.toHaveLength(0);
+  expect(screen.getAllByText(/60 \/ 100 records/)).not.toHaveLength(0);
   expect(screen.getByLabelText("ESI market orders sync progress")).toBeInTheDocument();
   expect(screen.getByLabelText("esi_market_orders_sync progress")).toBeInTheDocument();
 });
@@ -303,6 +342,7 @@ test("overlays fresher active job progress onto stale status cards", () => {
       key: "esi_market_orders_sync",
       label: "ESI market orders sync",
       status: "healthy",
+      health_color: "green",
       last_successful_sync: "2026-03-20T09:00:00Z",
       next_scheduled_sync: null,
       recent_error_count: 0,
@@ -324,11 +364,11 @@ test("overlays fresher active job progress onto stale status cards", () => {
       records_processed: 60,
       target_type: "regions",
       target_id: "1",
-      progress_phase: "Processing downloaded ESI market orders",
+      progress_phase: "Ingesting ESI market orders",
       progress_current: 60,
       progress_total: 100,
-      progress_unit: "downloaded records",
-      message: "Processed 60 / 100 downloaded records at 12.0 downloaded records/s.",
+      progress_unit: "records",
+      message: "Ingesting ESI market orders: 60 / 100 records.",
       error_details: null,
     },
   ];
@@ -339,10 +379,9 @@ test("overlays fresher active job progress onto stale status cards", () => {
   const statusCard = screen.getByText("ESI market orders sync").closest("article");
 
   expect(statusCard).not.toBeNull();
-  expect(within(statusCard as HTMLElement).getByText("running")).toBeInTheDocument();
-  expect(within(statusCard as HTMLElement).getByText("Processing downloaded ESI market orders")).toBeInTheDocument();
-  expect(within(statusCard as HTMLElement).getByText("60 / 100 downloaded records")).toBeInTheDocument();
-  expect(within(statusCard as HTMLElement).getByText(/12\.0 downloaded records\/s/)).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getByText("healthy")).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getByText("Ingesting ESI market orders")).toBeInTheDocument();
+  expect(within(statusCard as HTMLElement).getAllByText(/60 \/ 100 records/)).not.toHaveLength(0);
 });
 
 test("shows immediate pending feedback for the selected sync action", () => {

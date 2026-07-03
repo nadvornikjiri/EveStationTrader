@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import logging
@@ -14,6 +15,20 @@ from app.core.config import get_settings
 from app.models.all_models import BulkImportCursor, BulkImportFile
 
 logger = logging.getLogger("app.imports")
+
+
+@dataclass(frozen=True)
+class DownloadProgress:
+    """Progress state for a single file download."""
+    file_index: int
+    file_total: int
+    file_name: str
+    downloaded_bytes: int
+    total_bytes: int | None
+
+
+#: Callback signature: ``(progress: DownloadProgress) -> None``
+DownloadProgressCallback = Callable[[DownloadProgress], None]
 
 
 @dataclass(frozen=True)
@@ -128,6 +143,9 @@ class BulkImportService:
         remote_path: str,
         client: httpx.Client,
         covered_date: date | None = None,
+        progress_callback: DownloadProgressCallback | None = None,
+        file_index: int = 0,
+        file_total: int = 0,
     ) -> CachedImportFile:
         return self.get_cached_or_fetch(
             session,
@@ -135,7 +153,13 @@ class BulkImportService:
             file_key=file_key,
             remote_path=remote_path,
             covered_date=covered_date,
-            downloader=lambda: self._download_with_client(client, remote_path),
+            downloader=lambda: self._stream_download_with_client(
+                client,
+                remote_path,
+                progress_callback=progress_callback,
+                file_index=file_index,
+                file_total=file_total,
+            ),
         )
 
     def _record_cached_file(
@@ -183,17 +207,53 @@ class BulkImportService:
 
     @staticmethod
     def _download_with_client(client: httpx.Client, remote_path: str) -> bytes:
+        return BulkImportService._stream_download_with_client(client, remote_path)
+
+    @staticmethod
+    def _stream_download_with_client(
+        client: httpx.Client,
+        remote_path: str,
+        *,
+        progress_callback: DownloadProgressCallback | None = None,
+        file_index: int = 0,
+        file_total: int = 0,
+    ) -> bytes:
         import time as _time
 
+        file_name = remote_path.rsplit("/", 1)[-1] if "/" in remote_path else remote_path
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                response = client.get(remote_path)
-                response.raise_for_status()
-                content = getattr(response, "content", None)
-                if content is not None:
-                    return content
-                return response.text.encode("utf-8")
+                if progress_callback is not None:
+                    # Stream with progress reporting
+                    with client.stream("GET", remote_path) as response:
+                        response.raise_for_status()
+                        content_length_header = response.headers.get("content-length")
+                        total_bytes = int(content_length_header) if content_length_header else None
+                        chunks: list[bytes] = []
+                        downloaded = 0
+                        _REPORT_INTERVAL = 1_048_576  # report every ~1 MB
+                        last_reported = 0
+                        for chunk in response.iter_bytes(chunk_size=131_072):
+                            chunks.append(chunk)
+                            downloaded += len(chunk)
+                            if downloaded - last_reported >= _REPORT_INTERVAL or downloaded == total_bytes:
+                                last_reported = downloaded
+                                progress_callback(DownloadProgress(
+                                    file_index=file_index,
+                                    file_total=file_total,
+                                    file_name=file_name,
+                                    downloaded_bytes=downloaded,
+                                    total_bytes=total_bytes,
+                                ))
+                        return b"".join(chunks)
+                else:
+                    response = client.get(remote_path)
+                    response.raise_for_status()
+                    content = getattr(response, "content", None)
+                    if content is not None:
+                        return content
+                    return response.text.encode("utf-8")
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 last_error = exc
                 if attempt < 2:

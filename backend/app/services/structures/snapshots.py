@@ -15,6 +15,9 @@ class StructureOrderInput:
     is_buy_order: bool
     price: float
     volume_remain: int
+    volume_total: int | None = None
+    min_volume: int | None = None
+    order_range: str | None = None
     issued: datetime | None = None
     duration: int | None = None
 

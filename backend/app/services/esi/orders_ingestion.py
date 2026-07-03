@@ -324,6 +324,17 @@ class EsiRegionalOrderIngestionService:
             )
         )
 
+        # Ensure the id sequence stays in sync after bulk INSERT.  The INSERT
+        # above lets PostgreSQL auto-generate ids via the sequence default, but
+        # if the sequence ever falls behind (e.g. from a past raw COPY), every
+        # subsequent ORM insert will hit a PK collision.
+        session.execute(
+            text(
+                "SELECT setval('esi_market_orders_id_seq', "
+                "COALESCE((SELECT MAX(id) FROM esi_market_orders), 1))"
+            )
+        )
+
         session.commit()
         return EsiMarketOrderIngestionResult(
             region_id=0,

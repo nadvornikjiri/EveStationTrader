@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.services.adam4eve.history_ingestion import AdamStationPriceHistoryRecord
-from app.services.sync.bulk_imports import BulkImportService, CachedImportFile
+from app.services.sync.bulk_imports import BulkImportService, CachedImportFile, DownloadProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,11 @@ class Adam4EveClient:
         *,
         since_date: date | None,
         session: Session | None = None,
+        progress_callback: DownloadProgressCallback | None = None,
     ) -> list[tuple[AdamMarketOrdersExport, CachedImportFile]]:
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self._resolve_market_orders_exports(client, since_date=since_date)
+            file_total = len(exports)
             return [
                 (
                     export,
@@ -120,9 +122,12 @@ class Adam4EveClient:
                         remote_path=export.path,
                         client=client,
                         covered_date=export.covered_through_date,
+                        progress_callback=progress_callback,
+                        file_index=idx + 1,
+                        file_total=file_total,
                     ),
                 )
-                for export in exports
+                for idx, export in enumerate(exports)
             ]
 
     def fetch_regional_price_history(
@@ -189,9 +194,11 @@ class Adam4EveClient:
         since_date: date | None,
         hub_only: bool = False,
         session: Session | None = None,
+        progress_callback: DownloadProgressCallback | None = None,
     ) -> list[tuple[AdamStationPriceHistoryExport, CachedImportFile]]:
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self._resolve_station_price_history_exports(client, since_date=since_date, hub_only=hub_only)
+            file_total = len(exports)
             return [
                 (
                     export,
@@ -202,9 +209,12 @@ class Adam4EveClient:
                         remote_path=export.path,
                         client=client,
                         covered_date=export.covered_through_date,
+                        progress_callback=progress_callback,
+                        file_index=idx + 1,
+                        file_total=file_total,
                     ),
                 )
-                for export in exports
+                for idx, export in enumerate(exports)
             ]
 
     def cache_station_volume_history_exports(
@@ -213,9 +223,11 @@ class Adam4EveClient:
         since_date: date | None,
         hub_only: bool = False,
         session: Session | None = None,
+        progress_callback: DownloadProgressCallback | None = None,
     ) -> list[tuple[AdamStationVolumeHistoryExport, CachedImportFile]]:
         with httpx.Client(base_url=ADAM4EVE_STATIC_BASE_URL, headers=self.get_headers(), timeout=120.0) as client:
             exports = self._resolve_station_volume_history_exports(client, since_date=since_date, hub_only=hub_only)
+            file_total = len(exports)
             return [
                 (
                     export,
@@ -226,9 +238,12 @@ class Adam4EveClient:
                         remote_path=export.url,
                         client=client,
                         covered_date=export.covered_through_date,
+                        progress_callback=progress_callback,
+                        file_index=idx + 1,
+                        file_total=file_total,
                     ),
                 )
-                for export in exports
+                for idx, export in enumerate(exports)
             ]
 
     def _resolve_latest_market_orders_export(self, client: httpx.Client) -> AdamMarketOrdersExport:

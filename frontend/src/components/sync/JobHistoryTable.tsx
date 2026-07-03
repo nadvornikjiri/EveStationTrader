@@ -2,6 +2,10 @@ import type { SyncJobRun } from "../../types/sync";
 
 type Props = {
   jobs: SyncJobRun[];
+  total: number;
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
   onCancel: (jobId: number) => void;
   isCancelling: boolean;
 };
@@ -21,15 +25,20 @@ function formatProgress(job: SyncJobRun) {
   if (job.progress_current === null || job.progress_total === null) {
     return null;
   }
+  if (job.progress_unit === "bytes") {
+    const currentMB = (job.progress_current / 1_048_576).toFixed(1);
+    const totalMB = (job.progress_total / 1_048_576).toFixed(1);
+    return `${currentMB} / ${totalMB} MB`;
+  }
   return `${job.progress_current.toLocaleString()} / ${job.progress_total.toLocaleString()} ${job.progress_unit ?? "records"}`;
 }
 
-export function JobHistoryTable({ jobs, onCancel, isCancelling }: Props) {
+export function JobHistoryTable({ jobs, total, page, totalPages, onPageChange, onCancel, isCancelling }: Props) {
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Job History</h2>
-        <span>{jobs.length} recent jobs</span>
+        <span>{total} total jobs</span>
       </div>
       <div className="table-scroll">
         <table className="data-table">
@@ -96,6 +105,45 @@ export function JobHistoryTable({ jobs, onCancel, isCancelling }: Props) {
           </tbody>
         </table>
       </div>
+      {totalPages > 1 ? (
+        <div className="pagination-panel" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 0" }}>
+          <button
+            type="button"
+            className="inline-more-button"
+            disabled={page === 0}
+            onClick={() => onPageChange(0)}
+          >
+            First
+          </button>
+          <button
+            type="button"
+            className="inline-more-button"
+            disabled={page === 0}
+            onClick={() => onPageChange(page - 1)}
+          >
+            ← Prev
+          </button>
+          <span>
+            Page {page + 1} of {totalPages}
+          </span>
+          <button
+            type="button"
+            className="inline-more-button"
+            disabled={page >= totalPages - 1}
+            onClick={() => onPageChange(page + 1)}
+          >
+            Next →
+          </button>
+          <button
+            type="button"
+            className="inline-more-button"
+            disabled={page >= totalPages - 1}
+            onClick={() => onPageChange(totalPages - 1)}
+          >
+            Last
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

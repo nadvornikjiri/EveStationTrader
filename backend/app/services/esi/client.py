@@ -23,6 +23,14 @@ MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 1.0
 
 
+class EsiTokenRevokedError(Exception):
+    """Raised when CCP rejects the refresh token as permanently invalid."""
+
+
+class EsiTokenRefreshError(Exception):
+    """Raised on transient failures during token refresh (network, 5xx, etc.)."""
+
+
 @dataclass
 class EsiRateLimitState:
     """Tracks ESI error-limit state from response headers."""
@@ -110,7 +118,10 @@ class EsiStructureOrderRecord(TypedDict):
     type_id: int
     is_buy_order: bool
     price: float
+    volume_total: int
     volume_remain: int
+    min_volume: int
+    range: str
     issued: str | None
     duration: int | None
 
@@ -252,17 +263,52 @@ class EsiClient:
         }
 
     def refresh_access_token(self, refresh_token: str) -> dict:
-        """Refresh an expired access token via EVE SSO."""
-        response = httpx.post(
-            EVE_SSO_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
-            headers=self._sso_basic_auth_headers(),
-            timeout=30.0,
-        )
-        response.raise_for_status()
+        """Refresh an expired access token via EVE SSO.
+
+        Raises:
+            EsiTokenRevokedError: The refresh token is permanently invalid
+                (for example HTTP 400 with ``invalid_grant``). Caller should mark the
+                character for re-authentication.
+            EsiTokenRefreshError: A transient failure (timeout, 5xx, network).
+                Caller should retry later without disabling the character.
+        """
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.settings.esi_client_id,
+        }
+        try:
+            response = httpx.post(
+                EVE_SSO_TOKEN_URL,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30.0,
+            )
+        except (httpx.TimeoutException, httpx.ConnectError, OSError) as exc:
+            raise EsiTokenRefreshError(f"Network error during token refresh: {exc}") from exc
+
+        if response.status_code in (400, 401, 403):
+            # CCP returns 400 for invalid_grant (revoked / changed password),
+            # 401 for invalid client credentials or revoked tokens,
+            # 403 when the token lacks required scopes.
+            body = response.text
+            logger.warning("ESI token refresh returned %d: %s", response.status_code, body[:500])
+            raise EsiTokenRevokedError(
+                f"Token permanently invalid (HTTP {response.status_code}): {body[:200]}"
+            )
+
+        if response.status_code >= 500:
+            raise EsiTokenRefreshError(
+                f"ESI SSO returned {response.status_code} during token refresh"
+            )
+
+        # Catch any other unexpected 4xx as revoked to be safe
+        if response.status_code >= 400:
+            body = response.text
+            logger.warning("ESI token refresh unexpected %d: %s", response.status_code, body[:500])
+            raise EsiTokenRevokedError(
+                f"Token refresh rejected (HTTP {response.status_code}): {body[:200]}"
+            )
         data = response.json()
         expires_in = int(data.get("expires_in", 1199))
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
@@ -560,7 +606,10 @@ class EsiClient:
             "type_id": self._require_integer(payload, "type_id"),
             "is_buy_order": self._require_boolean(payload, "is_buy_order"),
             "price": self._require_numeric(payload, "price"),
+            "volume_total": self._require_integer(payload, "volume_total"),
             "volume_remain": self._require_integer(payload, "volume_remain"),
+            "min_volume": self._require_integer(payload, "min_volume"),
+            "range": self._require_string(payload, "range"),
             "issued": self._normalize_datetime(issued) if isinstance(issued, str) else None,
             "duration": int(duration) if isinstance(duration, int) else None,
         }

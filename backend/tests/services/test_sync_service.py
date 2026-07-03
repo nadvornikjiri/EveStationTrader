@@ -20,6 +20,7 @@ from app.models.all_models import (
     BulkImportCursor,
     BulkImportFile,
     EsiCharacter,
+    EsiCharacterSyncState,
     EsiCharacterToken,
     EsiHistoryDaily,
     EsiMarketOrder,
@@ -46,6 +47,7 @@ from app.models.all_models import (
     UserSetting,
     WorkerHeartbeat,
 )
+from app.api.schemas.sync import SyncJobRunResponse
 from app.repositories.seed_data import ItemSeed, RegionSeed, StaticFoundationSeedSource, StationSeed, SystemSeed
 from app.services.characters.service import CharacterService, DiscoveredStructureInput
 from app.services.adam4eve.client import (
@@ -628,6 +630,36 @@ class ScopeAwareStructureEsiClient:
         raise AssertionError(f"unexpected refresh for token {refresh_token}")
 
 
+class RevokedThenValidStructureEsiClient:
+    def __init__(self) -> None:
+        self.refresh_tokens: list[str] = []
+        self.tokens_used: list[str] = []
+
+    def refresh_access_token(self, refresh_token: str) -> dict[str, str]:
+        from app.services.esi.client import EsiTokenRevokedError
+
+        self.refresh_tokens.append(refresh_token)
+        if refresh_token == "refresh-revoked":
+            raise EsiTokenRevokedError("refresh rejected")
+        raise AssertionError(f"unexpected refresh for token {refresh_token}")
+
+    def fetch_structure_orders(self, access_token: str, structure_id: int) -> list[dict[str, object]] | None:
+        self.tokens_used.append(access_token)
+        if access_token != "token-valid":
+            raise AssertionError(f"unexpected token used for structure import: {access_token}")
+        return [
+            {
+                "order_id": 1,
+                "type_id": 34,
+                "is_buy_order": False,
+                "price": 99.5,
+                "volume_remain": 12,
+                "issued": "2026-03-20T10:00:00+00:00",
+                "duration": 90,
+            }
+        ]
+
+
 class StubAdamClient:
     def __init__(
         self,
@@ -976,6 +1008,73 @@ def seed_structure_snapshot_sync_inputs(session: Session) -> tuple[int, int]:
         ],
     )
     return structure.location_id, item.id
+
+
+def make_child_sync_response(job_type: str, *, status: str = "success", records_processed: int = 1) -> SyncJobRunResponse:
+    now = datetime.now(UTC)
+    return SyncJobRunResponse(
+        id=abs(hash((job_type, status))) % 1_000_000,
+        started_at=now,
+        finished_at=now,
+        job_type=job_type,
+        status=status,
+        duration_ms=1,
+        records_processed=records_processed,
+        target_type="test",
+        target_id=None,
+        progress_phase="Completed" if status == "success" else None,
+        progress_current=None,
+        progress_total=None,
+        progress_unit=None,
+        message=f"{job_type} {status}",
+        error_details="synthetic failure" if status != "success" else None,
+    )
+
+
+def test_fresh_trade_data_sync_runs_foundation_raw_jobs_then_structures() -> None:
+    session = build_session()
+    service = SyncService(session_factory=lambda: session)
+    calls: list[str] = []
+    call_lock = threading.Lock()
+
+    def fake_child_job(job_type: str) -> SyncJobRunResponse:
+        with call_lock:
+            calls.append(job_type)
+        return make_child_sync_response(job_type, records_processed=10)
+
+    service._run_fresh_child_job = fake_child_job  # type: ignore[method-assign]
+
+    result = service.trigger_job("fresh_trade_data_sync")
+
+    raw_jobs = set(SyncService.FRESH_TRADE_RAW_JOBS)
+    assert result.status == "success"
+    assert result.records_processed == 60
+    assert result.target_type == "sync_jobs"
+    assert calls[0] == "foundation_import_sync"
+    assert set(calls[1:5]) == raw_jobs
+    assert calls[5] == "structure_snapshot_sync"
+
+
+def test_fresh_trade_data_sync_fails_before_structure_when_parallel_child_fails() -> None:
+    session = build_session()
+    service = SyncService(session_factory=lambda: session)
+    calls: list[str] = []
+    call_lock = threading.Lock()
+
+    def fake_child_job(job_type: str) -> SyncJobRunResponse:
+        with call_lock:
+            calls.append(job_type)
+        if job_type == "everef_history_sync":
+            return make_child_sync_response(job_type, status="failed")
+        return make_child_sync_response(job_type)
+
+    service._run_fresh_child_job = fake_child_job  # type: ignore[method-assign]
+
+    result = service.trigger_job("fresh_trade_data_sync")
+
+    assert result.status == "failed"
+    assert "everef_history_sync finished with status failed" in (result.error_details or "")
+    assert "structure_snapshot_sync" not in calls
 
 
 def seed_raw_trade_inputs(session: Session) -> tuple[int, int, int, int]:
@@ -1570,7 +1669,7 @@ def test_trigger_job_foundation_import_sync_lists_newest_first() -> None:
 
     first = service.trigger_job("foundation_import_sync")
     second = service.trigger_job("foundation_import_sync")
-    jobs = service.list_jobs()
+    jobs, total = service.list_jobs()
 
     assert first.status == "success"
     assert first.finished_at is not None
@@ -1582,6 +1681,7 @@ def test_trigger_job_foundation_import_sync_lists_newest_first() -> None:
     assert second.id != first.id
     assert [job.id for job in jobs] == [second.id, first.id]
     assert all(job.status == "success" for job in jobs)
+    assert total == 2
 
 
 def test_trigger_job_foundation_import_sync_persists_universe_rows() -> None:
@@ -1640,7 +1740,7 @@ def test_cancel_job_marks_long_running_job_as_cancelled() -> None:
 
     job_id: int | None = None
     for _ in range(100):
-        jobs = controller.list_jobs()
+        jobs, _ = controller.list_jobs()
         if jobs:
             job_id = jobs[0].id
             if jobs[0].status == "running":
@@ -2602,7 +2702,7 @@ def test_get_status_uses_persisted_sync_job_history() -> None:
 
     assert cards["adam4eve_sync"].last_successful_sync == adam_success
     assert cards["adam4eve_sync"].recent_error_count == 0
-    assert cards["adam4eve_sync"].status == "healthy"
+    assert cards["adam4eve_sync"].status == "degraded"
     assert cards["esi_market_orders_sync"].last_successful_sync is None
     assert cards["esi_market_orders_sync"].recent_error_count == 1
     assert cards["esi_market_orders_sync"].status == "degraded"
@@ -2630,7 +2730,7 @@ def test_get_status_exposes_active_job_progress() -> None:
 
     cards = {card.key: card for card in service.get_status()}
 
-    assert cards["esi_market_orders_sync"].status == "running"
+    assert cards["esi_market_orders_sync"].status == "degraded"
     assert cards["esi_market_orders_sync"].progress_phase == "Processing downloaded ESI market orders"
     assert cards["esi_market_orders_sync"].progress_current == 60
     assert cards["esi_market_orders_sync"].progress_total == 100
@@ -2846,7 +2946,7 @@ def test_list_jobs_finalizes_stale_cancelling_jobs() -> None:
     )
     session.commit()
 
-    jobs = service.list_jobs()
+    jobs, _ = service.list_jobs()
     refreshed_job = session.scalar(select(SyncJobRun).order_by(SyncJobRun.id.desc()))
 
     assert jobs[0].status == "cancelled"
@@ -2878,10 +2978,10 @@ def test_get_status_returns_stable_defaults_when_no_history_exists() -> None:
 
     assert cards["adam4eve_sync"].last_successful_sync is None
     assert cards["adam4eve_sync"].recent_error_count == 0
-    assert cards["adam4eve_sync"].status == "idle"
+    assert cards["adam4eve_sync"].status == "degraded"
     assert cards["opportunity_rebuild"].last_successful_sync is None
     assert cards["opportunity_rebuild"].recent_error_count == 0
-    assert cards["opportunity_rebuild"].status == "idle"
+    assert cards["opportunity_rebuild"].status == "degraded"
 
 
 def test_get_status_propagates_database_errors() -> None:
@@ -2960,6 +3060,10 @@ def test_list_jobs_propagates_database_errors() -> None:
     service = SyncService(session_factory=lambda: build_session())
 
     class BrokenJobsSession:
+        def scalar(self, *args, **kwargs):
+            del args, kwargs
+            raise OperationalError("SELECT 1", {}, Exception("synthetic database failure"))
+
         def scalars(self, *args, **kwargs):
             del args, kwargs
             raise OperationalError("SELECT 1", {}, Exception("synthetic database failure"))
@@ -3090,6 +3194,12 @@ def test_trigger_job_structure_snapshot_sync_persists_snapshot_delta_and_demand_
             StructureDemandPeriod.period_days == 14,
         )
     )
+    live_orders = session.scalars(
+        select(EsiMarketOrder)
+        .join(Location, Location.id == EsiMarketOrder.location_id)
+        .where(Location.location_id == structure_id)
+        .order_by(EsiMarketOrder.order_id)
+    ).all()
 
     assert result.status == "success"
     assert result.records_processed == 5
@@ -3101,6 +3211,10 @@ def test_trigger_job_structure_snapshot_sync_persists_snapshot_delta_and_demand_
     assert demand_period is not None
     assert demand_period.buy_from_sell_period == pytest.approx(30)
     assert demand_period.sell_to_buy_period == pytest.approx(25)
+    assert [(order.order_id, order.price, order.volume_total, order.volume_remain) for order in live_orders] == [
+        (1, 100.0, 20, 20),
+        (2, 90.0, 15, 15),
+    ]
 
     rerun = service.trigger_job("structure_snapshot_sync")
     rerun_snapshots = session.scalars(
@@ -3307,6 +3421,93 @@ def test_settings_scoped_structure_snapshot_client_skips_characters_without_stru
     assert batch.structure_id == 1022734985680
     assert [order.order_id for order in batch.orders] == [1]
     assert esi_client.tokens_used == ["token-with-structure-scope"]
+
+
+def test_settings_scoped_structure_snapshot_client_marks_revoked_character_and_uses_next_candidate() -> None:
+    session = build_session()
+    region = Region(region_id=10000002, name="The Forge")
+    session.add(region)
+    session.flush()
+
+    system = System(system_id=30000142, region_id=region.id, name="Jita", security_status=0.9)
+    item = Item(type_id=34, name="Tritanium", volume_m3=0.01, group_name="Mineral", category_name="Material")
+    user = User(primary_character_id=None)
+    session.add_all([system, item, user])
+    session.flush()
+
+    revoked = EsiCharacter(
+        user_id=user.id,
+        character_id=90000077,
+        character_name="Revoked Structure Scope",
+        corporation_name="Signal Cartel",
+        granted_scopes="esi-markets.structure_markets.v1",
+        sync_enabled=True,
+    )
+    valid = EsiCharacter(
+        user_id=user.id,
+        character_id=90000078,
+        character_name="Valid Structure Scope",
+        corporation_name="Signal Cartel",
+        granted_scopes="esi-markets.structure_markets.v1",
+        sync_enabled=True,
+    )
+    session.add_all([revoked, valid])
+    session.flush()
+    session.add_all(
+        [
+            EsiCharacterToken(
+                character_id=revoked.id,
+                access_token="token-revoked",
+                refresh_token="refresh-revoked",
+                expires_at=datetime.now(UTC) - timedelta(minutes=5),
+            ),
+            EsiCharacterToken(
+                character_id=valid.id,
+                access_token="token-valid",
+                refresh_token="refresh-valid",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        ]
+    )
+    session.commit()
+
+    character_service = CharacterService(session_factory=lambda: session)
+    for character in (revoked, valid):
+        character_service.discover_character_accessible_structures(
+            character.character_id,
+            [
+                DiscoveredStructureInput(
+                    structure_id=1022734985680,
+                    structure_name="Jita Freeport",
+                    system_name="Jita",
+                    region_name="The Forge",
+                    access_verified_at=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+                    tracking_enabled=True,
+                )
+            ],
+        )
+
+    esi_client = RevokedThenValidStructureEsiClient()
+    client = SettingsScopedStructureSnapshotClient(session_factory=lambda: session, esi_client=cast(Any, esi_client))
+
+    batch = client.fetch_structure_snapshot(1022734985680)
+
+    assert batch is not None
+    assert [order.order_id for order in batch.orders] == [1]
+    assert esi_client.refresh_tokens == ["refresh-revoked"]
+    assert esi_client.tokens_used == ["token-valid"]
+
+    session.expire_all()
+    revoked = session.scalar(select(EsiCharacter).where(EsiCharacter.character_id == 90000077))
+    sync_state = session.scalar(
+        select(EsiCharacterSyncState)
+        .join(EsiCharacter, EsiCharacter.id == EsiCharacterSyncState.character_id)
+        .where(EsiCharacter.character_id == 90000077)
+    )
+    assert revoked is not None
+    assert sync_state is not None
+    assert revoked.sync_enabled is False
+    assert sync_state.structures_sync_status == "reauth_required"
 
 
 def test_trigger_job_structure_snapshot_sync_ignores_unselected_tracked_structures() -> None:

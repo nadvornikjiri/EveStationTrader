@@ -5,6 +5,7 @@ const links = [
   { to: "/sync", label: "Sync" },
   { to: "/characters", label: "Characters" },
   { to: "/database", label: "Database" },
+  { to: "/logs", label: "Logs" },
   { to: "/settings", label: "Settings" },
 ];
 

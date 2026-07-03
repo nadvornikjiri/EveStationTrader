@@ -12,6 +12,11 @@ function formatProgress(current: number | null, total: number | null, unit: stri
   if (current === null || total === null) {
     return null;
   }
+  if (unit === "bytes") {
+    const currentMB = (current / 1_048_576).toFixed(1);
+    const totalMB = (total / 1_048_576).toFixed(1);
+    return `${currentMB} / ${totalMB} MB`;
+  }
   return `${current.toLocaleString()} / ${total.toLocaleString()} ${unit ?? "records"}`;
 }
 
@@ -26,8 +31,16 @@ export function StatusCards({ cards }: Props) {
   return (
     <section className="card-grid">
       {cards.map((card) => (
-        <article key={card.key} className="panel status-card">
-          <span className="eyebrow">{card.status}</span>
+        <article
+          key={card.key}
+          className={`panel status-card${card.health_color ? ` status-card-${card.health_color}` : ""}`}
+        >
+          <span className="sync-health-line">
+            <span className="eyebrow">{card.status}</span>
+            {card.health_color ? (
+              <span aria-label={`${card.label} health ${card.health_color}`} className="sync-health-dot" />
+            ) : null}
+          </span>
           <h2>{card.label}</h2>
           <p>Last success: {formatTimestamp(card.last_successful_sync)}</p>
           <p>Next run: {formatTimestamp(card.next_scheduled_sync)}</p>

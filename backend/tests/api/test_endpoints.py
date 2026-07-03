@@ -471,10 +471,12 @@ def test_get_sync_jobs_includes_progress_fields(client) -> None:
 
     response = client.get("/api/sync/jobs")
     assert response.status_code == 200
-    assert response.json()[0]["progress_phase"] == "Processing downloaded ESI market orders"
-    assert response.json()[0]["progress_current"] == 60
-    assert response.json()[0]["progress_total"] == 100
-    assert response.json()[0]["progress_unit"] == "downloaded records"
+    data = response.json()
+    assert data["total"] >= 1
+    assert data["jobs"][0]["progress_phase"] == "Processing downloaded ESI market orders"
+    assert data["jobs"][0]["progress_current"] == 60
+    assert data["jobs"][0]["progress_total"] == 100
+    assert data["jobs"][0]["progress_unit"] == "downloaded records"
 
 
 def test_get_database_tables(client) -> None:

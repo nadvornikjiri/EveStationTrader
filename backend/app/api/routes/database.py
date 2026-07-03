@@ -23,7 +23,11 @@ def list_database_tables() -> list[DatabaseTableSummary]:
         table_summaries: list[DatabaseTableSummary] = []
         for table_name in sorted(inspector.get_table_names()):
             quoted_table_name = preparer.quote(table_name)
-            row_count = session.execute(text(f"SELECT count(*) FROM {quoted_table_name}")).scalar_one()
+            try:
+                row_count = session.execute(text(f"SELECT count(*) FROM {quoted_table_name}")).scalar_one()
+            except Exception:
+                session.rollback()
+                row_count = -1
             table_summaries.append(DatabaseTableSummary(name=table_name, row_count=row_count))
         return table_summaries
     finally:

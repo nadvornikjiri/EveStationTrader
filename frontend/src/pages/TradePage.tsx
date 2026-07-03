@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useMemo, useState } from "react";
 
 import { refreshTradeOpportunities } from "../api/trade";
+import { runSyncJob } from "../api/sync";
 import { InTransitOverlay } from "../components/trade/InTransitOverlay";
 import { ItemDetailPanel } from "../components/trade/ItemDetailPanel";
 import { RebuildProgressModal } from "../components/trade/RebuildProgressModal";
@@ -13,6 +14,7 @@ import {
   sortSummaries,
 } from "../components/trade/SourceSummaryTable";
 import { useSettings } from "../hooks/useSettingsData";
+import { useSyncStatus } from "../hooks/useSyncData";
 import { TradeControls } from "../components/trade/TradeControls";
 import {
   useDeleteInTransitAsset,
@@ -26,6 +28,21 @@ import {
   useUpsertInTransitAsset,
 } from "../hooks/useTradeData";
 import type { OpportunityItem, ShoppingListEntry, TradeFilters } from "../types/trade";
+
+function formatDurationAgo(dateStr: string | null | undefined): string {
+  if (!dateStr) return "Never";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (diff < 0) return "Just now";
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m ago` : `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h ago`;
+}
 
 const INITIAL_EXPANDED_ROW_RENDER_LIMIT = 200;
 const EXPANDED_ROW_RENDER_INCREMENT = 200;
@@ -80,6 +97,9 @@ export function TradePage() {
   const [isRebuildModalOpen, setIsRebuildModalOpen] = useState(false);
   const [rebuildStartedAt, setRebuildStartedAt] = useState<Date | null>(null);
   const [isRebuildComplete, setIsRebuildComplete] = useState(false);
+  const [isRebuildingAll, setIsRebuildingAll] = useState(false);
+  const [rebuildAllError, setRebuildAllError] = useState<string | null>(null);
+  const syncStatus = useSyncStatus();
   const [shoppingList, setShoppingList] = useState<ShoppingListEntry[]>([]);
   const [isShoppingListOpen, setIsShoppingListOpen] = useState(false);
   const [isInTransitOpen, setIsInTransitOpen] = useState(false);
@@ -283,6 +303,26 @@ export function TradePage() {
     }
   };
 
+  const lastRebuildCard = useMemo(
+    () => (syncStatus.data ?? []).find((c) => c.key === "opportunity_rebuild"),
+    [syncStatus.data],
+  );
+  const lastRebuildAge = formatDurationAgo(lastRebuildCard?.last_successful_sync);
+  const isRebuildRunning = lastRebuildCard?.status === "running";
+
+  const handleRebuildAllTargets = async () => {
+    if (isRebuildingAll || isRebuildRunning) return;
+    setIsRebuildingAll(true);
+    setRebuildAllError(null);
+    try {
+      await runSyncJob("opportunity_rebuild");
+    } catch (error) {
+      setRebuildAllError(error instanceof Error ? error.message : "Rebuild all targets failed.");
+    } finally {
+      setIsRebuildingAll(false);
+    }
+  };
+
   const handleOpenShoppingList = () => {
     setIsShoppingListOpen(true);
     setIsInTransitOpen(false);
@@ -400,18 +440,34 @@ export function TradePage() {
           <span className="eyebrow">Trading Analysis</span>
           <h1>Regional Day Trader</h1>
         </div>
-        <button
-          className="refresh-button"
-          type="button"
-          disabled={targetId === null || isRefreshing}
-          onClick={() => {
-            void handleRebuildSelectedTarget();
-          }}
-        >
-          {isRefreshing ? "Rebuilding Selected Target..." : "Rebuild Selected Target"}
-        </button>
+        <div className="trade-header-actions">
+          <span className="trade-rebuild-age" title="Time since last full opportunity rebuild">
+            {isRebuildRunning ? "Rebuilding..." : `Last rebuild: ${lastRebuildAge}`}
+          </span>
+          <button
+            className="refresh-button"
+            type="button"
+            disabled={targetId === null || isRefreshing}
+            onClick={() => {
+              void handleRebuildSelectedTarget();
+            }}
+          >
+            {isRefreshing ? "Rebuilding Target..." : "Rebuild Target"}
+          </button>
+          <button
+            className="refresh-button"
+            type="button"
+            disabled={isRebuildingAll || isRebuildRunning}
+            onClick={() => {
+              void handleRebuildAllTargets();
+            }}
+          >
+            {isRebuildingAll || isRebuildRunning ? "Rebuilding All..." : "Rebuild All"}
+          </button>
+        </div>
       </header>
       {refreshError ? <p role="alert">{refreshError}</p> : null}
+      {rebuildAllError ? <p role="alert">{rebuildAllError}</p> : null}
       <TradeControls
         targets={targets}
         targetId={targetId}

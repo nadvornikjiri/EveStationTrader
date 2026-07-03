@@ -18,6 +18,7 @@ export function AppRoutes() {
         <Route path="/characters" element={<CharactersPage />} />
         <Route path="/characters/:id" element={<CharacterDetailPage />} />
         <Route path="/database" element={<DatabasePage />} />
+        <Route path="/logs" element={<DatabasePage initialTable="app_log_entries" />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>

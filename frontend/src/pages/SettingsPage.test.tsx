@@ -19,7 +19,7 @@ const hookState = vi.hoisted(() => ({
       fallback_policy: "regional_fallback",
       shipping_cost_per_m3: 350,
       target_market_location_ids: [60003760],
-      source_region_ids: [],
+      source_region_ids: [] as number[],
       default_filters: {},
     },
   },

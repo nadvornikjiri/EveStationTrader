@@ -25,9 +25,9 @@ function stringifyValue(value: unknown) {
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 
-export function DatabasePage() {
+export function DatabasePage({ initialTable }: { initialTable?: string } = {}) {
   const tables = useDatabaseTables();
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [selectedTable, setSelectedTable] = useState<string | null>(initialTable ?? null);
   const [filterInput, setFilterInput] = useState("");
   const deferredFilterInput = useDeferredValue(filterInput);
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -56,9 +56,10 @@ export function DatabasePage() {
 
   useEffect(() => {
     if (selectedTable === null && (tables.data?.length ?? 0) > 0) {
-      setSelectedTable(tables.data?.[0].name ?? null);
+      const fallback = initialTable ?? tables.data?.[0]?.name ?? null;
+      setSelectedTable(fallback);
     }
-  }, [selectedTable, tables.data]);
+  }, [initialTable, selectedTable, tables.data]);
 
   useEffect(() => {
     const resolvedPageIndex = (tableData.data?.page ?? 1) - 1;
@@ -150,7 +151,7 @@ export function DatabasePage() {
       <header className="page-header">
         <div>
           <span className="eyebrow">Diagnostics</span>
-          <h1>Database</h1>
+          <h1>{initialTable ? "Logs" : "Database"}</h1>
         </div>
       </header>
 
@@ -228,7 +229,18 @@ export function DatabasePage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Rows</h2>
-          <span>{tableData.isLoading ? "Loading..." : selectedTable ?? "No table selected"}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            {tableData.isLoading ? "Loading..." : selectedTable ?? "No table selected"}
+            <button
+              type="button"
+              className="inline-more-button"
+              disabled={tableData.isFetching}
+              onClick={() => { tableData.refetch(); }}
+              title="Refresh table data"
+            >
+              {tableData.isFetching ? "⟳" : "↻"} Refresh
+            </button>
+          </span>
         </div>
         {tables.error ? (
           <p className="detail-empty">Could not load database tables right now.</p>
